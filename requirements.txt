@@ -1,0 +1,7 @@
+livekit-agents>=0.8.0  
+livekit-plugins-groq>=0.1.0  
+livekit-plugins-openai>=0.1.0  
+livekit-plugins-silero>=0.1.0  
+httpx>=0.27.0  
+beautifulsoup4>=4.12.0  
+python-dotenv>=1.0.1
