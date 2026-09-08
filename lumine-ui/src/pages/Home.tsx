@@ -1,105 +1,72 @@
-import {
-    Mic,
-    Settings,
-    Brain,
-    Plug,
-} from "lucide-react";
+import { useState, type CSSProperties } from "react";
+import "./index.css";
+import { DEFAULT_APPEARANCE } from "./home/constants";
+import { AppearanceDialog } from "./home/components/AppearanceDialog";
+import Context from "./Context";
+import { MainSpace } from "./home/components/MainSpace";
+import { Sidebar } from "./home/components/Sidebar";
+import type { LumineState } from "./home/types";
+import { getReadableForeground, getReadableTextColor } from "./home/utils";
+import { usePreferences } from "./home/hooks/usePreferences";
+import { useConversation } from "./home/conversation/useConversation";
+import { ConversationPanel } from "./home/components/ConversationPanel";
+import type { Appearance } from "./home/types";
 
+/** Page-level state owner. Child components receive data and callbacks only. */
 export default function Home() {
-    return (
-        <main className="min-h-screen bg-slate-950 text-white flex flex-col">
+  const [nav, setNav] = useState("home");
+  const [state, setState] = useState<LumineState>("idle");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [conversationOpen, setConversationOpen] = useState(false);
+  const conversation = useConversation();
+  const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, presets, savePreset, deletePreset } = usePreferences();
 
-            {/* Top Bar */}
+  const customColors = Object.fromEntries(
+    (["accent", "icon", "canvas", "surface", "stage", "text", "avatar"] as const)
+      .filter((key) => mode === "light" || appearance[key] !== DEFAULT_APPEARANCE[key])
+      .map((key) => {
+        if (key === "icon") {
+          const fallback = mode === "light" ? "#5f5c57" : "#aaa39b";
+          const backgrounds = mode === "light" ? ["#fbfaf8", "#f4f3f0"] : ["#211f1d", "#181715"];
+          return [`--color-${key}`, getReadableForeground(appearance[key], backgrounds, fallback, 3)];
+        }
+        if (key === "text") {
+          const fallback = mode === "light" ? "#252525" : "#f1ece5";
+          const backgrounds = mode === "light" ? ["#fbfaf8", "#f4f3f0"] : ["#211f1d", "#181715"];
+          return [`--color-${key}`, getReadableForeground(appearance[key], backgrounds, fallback, 4.5)];
+        }
+        return [`--color-${key}`, appearance[key]];
+      }),
+  );
+  const conversationColors = Object.fromEntries(
+    (["chatSurface", "chatUser", "chatAssistant", "chatText", "chatAccent"] as const)
+      .filter((key) => mode === "dark" || appearance[key] !== DEFAULT_APPEARANCE[key])
+      .map((key) => [`--conversation-${key.replace("chat", "").toLowerCase()}`, appearance[key]]),
+  );
 
-            <header className="h-16 border-b border-slate-800 flex items-center justify-between px-6">
+  // Default dark tokens come from CSS; changed values continue to work in either mode.
+  const variables = {
+    ...customColors,
+    ...conversationColors,
+    ...(mode === "light" || appearance.accent !== DEFAULT_APPEARANCE.accent
+      ? { "--color-accent-soft": `color-mix(in srgb, ${appearance.accent} 18%, white)` }
+      : {}),
+    "--font-ui": fontStack(appearance.font),
+    "--conversation-font": fontStack(appearance.chatFont),
+    "--color-stage-text": getReadableTextColor(
+      mode === "light" || appearance.stage !== DEFAULT_APPEARANCE.stage ? appearance.stage : "#11100f",
+    ),
+  } as CSSProperties;
 
-                <h1 className="text-xl font-semibold tracking-wide">
-                    ✦ Lumine
-                </h1>
+  return <div className={`lumine-app theme-${mode} route-${nav} ${conversationOpen && nav === "home" ? "conversation-open" : ""}`} style={variables}>
+    <Sidebar active={nav} onChange={setNav} onSettings={() => setSettingsOpen(true)} />
+    <MainSpace state={state} setState={setState} cursorGaze={cursorGaze} showAvatarColor={appearance.showAvatarColor} conversationOpen={conversationOpen} onConversationToggle={() => setConversationOpen((open) => !open)} />
+    {conversationOpen && nav === "home" && <ConversationPanel messages={conversation.messages} agentStatus={conversation.agentStatus} bubbleVariant={appearance.chatBubbleVariant} onClose={() => setConversationOpen(false)} onClear={conversation.clearMessages} onReset={conversation.resetMessages} onAddMessage={conversation.addMessage} />}
+    {nav !== "home" && <Context state={state} onSettings={() => setSettingsOpen(true)} />}
+    {settingsOpen && <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} deletePreset={deletePreset} onReset={() => { setMode("dark"); setCursorGaze(true); setAppearance({ ...DEFAULT_APPEARANCE }); }} onClose={() => setSettingsOpen(false)} />}
+  </div>;
+}
 
-                <button className="p-2 rounded-lg hover:bg-slate-800">
-                    <Settings size={20}/>
-                </button>
-
-            </header>
-
-
-            {/* Center */}
-
-            <section className="flex-1 flex flex-col justify-center items-center">
-
-                {/* Avatar */}
-
-                <div className="w-56 h-56 rounded-full border border-cyan-500/20 bg-slate-900 flex items-center justify-center shadow-2xl">
-
-                    <div className="space-y-6">
-
-                        <div className="flex gap-8 justify-center">
-
-                            <div className="w-5 h-5 rounded bg-cyan-400"/>
-
-                            <div className="w-5 h-5 rounded bg-cyan-400"/>
-
-                        </div>
-
-                        <div className="w-24 h-2 rounded-full bg-cyan-400 mx-auto"/>
-
-                    </div>
-
-                </div>
-
-                <h2 className="mt-8 text-3xl font-bold">
-                    Lumine
-                </h2>
-
-                <p className="mt-2 text-slate-400">
-                    Ready to chat
-                </p>
-
-               
-
-                <button className="mt-10 flex items-center gap-3 bg-cyan-500 hover:bg-cyan-400 transition px-8 py-4 rounded-full text-black font-semibold">
-
-                    <Mic size={20}/>
-
-                    Start Conversation
-
-                </button>
-
-            </section>
-
-
-
-            {/* Bottom */}
-
-            <footer className="border-t border-slate-800 h-16 flex justify-center gap-10 items-center">
-
-                <button className="flex items-center gap-2 text-slate-400 hover:text-cyan-400">
-
-                    <Brain size={18}/>
-
-                    Memory
-
-                </button>
-
-                <button className="flex items-center gap-2 text-slate-400 hover:text-cyan-400">
-
-                    <Settings size={18}/>
-
-                    Settings
-
-                </button>
-
-                <button className="flex items-center gap-2 text-slate-400 hover:text-cyan-400">
-
-                    <Plug size={18}/>
-
-                    Plugins
-
-                </button>
-
-            </footer>
-
-        </main>
-    );
+function fontStack(font: Appearance["font"]) {
+  return font === "Newsreader" ? "Newsreader, serif" : font === "Space Grotesk" ? "Space Grotesk, sans-serif" : font === "DM Mono" ? "DM Mono, monospace" : font === "Roboto" ? "Roboto, sans-serif" : font === "Ubuntu" ? "Ubuntu, sans-serif" : "Manrope, sans-serif";
 }
