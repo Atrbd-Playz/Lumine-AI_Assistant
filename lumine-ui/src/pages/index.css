@@ -26,6 +26,7 @@
 
   --color-control-icon: #aaa39b;
   --color-control-hover: #f1ece5;
+  --voice-button-icon: #0B0B12;
 
   --color-avatar: #df6232;
 
@@ -283,7 +284,7 @@ input {
 .conversation-toggle:hover,
 .conversation-toggle.is-open {
   color: var(--color-accent);
-  background: var(--color-accent-soft);
+  /* background: var(--color-accent-soft); */
   border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
 }
 
@@ -1041,11 +1042,16 @@ input {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  color: #ffffff;
+  color:var(--voice-button-icon, #ffffff);
   background: var(--color-accent);
+  border: 2px solid color-mix(in srgb, var(--voice-button-icon, #ffffff) 42%, transparent);
   cursor: pointer;
-  box-shadow: var(--shadow-soft);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 16%, transparent), var(--shadow-soft);
   transition: 0.2s ease;
+}
+
+.voice-button svg{
+  color: var(--voice-button-icon, #ffffff);
 }
 
 .voice-button:hover {
@@ -1055,6 +1061,7 @@ input {
 .voice-button.is-listening {
   box-shadow:
     0 0 0 8px color-mix(in srgb, var(--color-accent) 13%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--color-accent) 16%, transparent),
     var(--shadow-soft);
 }
 
@@ -1727,6 +1734,77 @@ input {
   padding: 7px 10px;
   color: var(--color-text-soft);
   font-size: 16px;
+}
+
+.palette-import {
+  margin-top: 18px;
+  padding-top: 17px;
+  border-top: 1px solid var(--color-border);
+}
+
+.file-button {
+  position: relative;
+  padding: 7px 10px;
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.file-button input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.palette-import textarea {
+  width: 100%;
+  min-height: 150px;
+  box-sizing: border-box;
+  margin-top: 12px;
+  padding: 10px;
+  resize: vertical;
+  color: var(--color-text);
+  background: var(--color-canvas);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  font: 10px / 1.5 var(--font-mono);
+}
+
+.palette-import textarea:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent);
+}
+
+.palette-import-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.palette-import-actions button {
+  padding: 7px 10px;
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.palette-import-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.import-message {
+  margin: 8px 0 0;
+  color: var(--color-accent);
+  font-size: 11px;
 }
 
 .appearance-dialog footer {

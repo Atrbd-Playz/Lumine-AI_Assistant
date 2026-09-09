@@ -1,0 +1,34 @@
+{
+  "light": {
+    "Sakura": {
+      "accent": "#d95f8c",
+      "icon": "#8d6472",
+      "canvas": "#fff5f7",
+      "surface": "#fffafd",
+      "stage": "#fff0f4",
+      "text": "#3a2630",
+      "avatar": "#f39ab5",
+      "chatSurface": "#fffafd",
+      "chatUser": "#ffe3ec",
+      "chatAssistant": "#f7c9d8",
+      "chatText": "#3a2630",
+      "chatAccent": "#d95f8c"
+    }
+  },
+  "dark": {
+    "Night": {
+      "accent": "#ff78ab",
+      "icon": "#c8a0b2",
+      "canvas": "#1d1720",
+      "surface": "#28202b",
+      "stage": "#140f18",
+      "text": "#ffeaf2",
+      "avatar": "#ec5e98",
+      "chatSurface": "#28202b",
+      "chatUser": "#382735",
+      "chatAssistant": "#51283e",
+      "chatText": "#ffeaf2",
+      "chatAccent": "#ff78ab"
+    }
+  }
+}

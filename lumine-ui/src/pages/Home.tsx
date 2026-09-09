@@ -19,7 +19,7 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [conversationOpen, setConversationOpen] = useState(false);
   const conversation = useConversation();
-  const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, presets, savePreset, deletePreset } = usePreferences();
+  const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
 
   const customColors = Object.fromEntries(
     (["accent", "icon", "canvas", "surface", "stage", "text", "avatar"] as const)
@@ -53,6 +53,7 @@ export default function Home() {
       : {}),
     "--font-ui": fontStack(appearance.font),
     "--conversation-font": fontStack(appearance.chatFont),
+    "--voice-button-icon": getReadableTextColor(appearance.accent),
     "--color-stage-text": getReadableTextColor(
       mode === "light" || appearance.stage !== DEFAULT_APPEARANCE.stage ? appearance.stage : "#11100f",
     ),
@@ -63,7 +64,7 @@ export default function Home() {
     <MainSpace state={state} setState={setState} cursorGaze={cursorGaze} showAvatarColor={appearance.showAvatarColor} conversationOpen={conversationOpen} onConversationToggle={() => setConversationOpen((open) => !open)} />
     {conversationOpen && nav === "home" && <ConversationPanel messages={conversation.messages} agentStatus={conversation.agentStatus} bubbleVariant={appearance.chatBubbleVariant} onClose={() => setConversationOpen(false)} onClear={conversation.clearMessages} onReset={conversation.resetMessages} onAddMessage={conversation.addMessage} />}
     {nav !== "home" && <Context state={state} onSettings={() => setSettingsOpen(true)} />}
-    {settingsOpen && <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} deletePreset={deletePreset} onReset={() => { setMode("dark"); setCursorGaze(true); setAppearance({ ...DEFAULT_APPEARANCE }); }} onClose={() => setSettingsOpen(false)} />}
+    {settingsOpen && <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={() => { setMode("dark"); setCursorGaze(true); resetAppearance(); }} onClose={() => setSettingsOpen(false)} />}
   </div>;
 }
 

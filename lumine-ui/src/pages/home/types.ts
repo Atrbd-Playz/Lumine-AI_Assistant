@@ -33,6 +33,8 @@ export type Appearance = {
 };
 
 export type AppearancePreset = Pick<Appearance, "accent" | "icon" | "canvas" | "surface" | "stage" | "text" | "avatar" | "chatSurface" | "chatUser" | "chatAssistant" | "chatText" | "chatAccent">;
+export type ThemePalettes = Record<ThemeMode, AppearancePreset>;
+export type ThemePresetCollection = Partial<Record<ThemeMode, Record<string, AppearancePreset>>>;
 
 export type IconName =
   | "home"
