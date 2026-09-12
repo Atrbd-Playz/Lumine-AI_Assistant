@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 from dotenv import load_dotenv
 
 from livekit.agents import (
@@ -17,12 +19,16 @@ from livekit.plugins import (
 
 from pathlib import Path
 
-PERSONA = Path("prompts/persona.md").read_text(encoding="utf-8")
+PERSONA = (Path(__file__).resolve().parent / "prompts" / "persona.md").read_text(encoding="utf-8")
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("lumine")
+
+
+def emit_runtime_event(event_type: str, **payload):
+    print(f"LUMINE_EVENT {json.dumps({'type': event_type, **payload})}", flush=True)
 
 
 class Lumine(Agent):
@@ -36,6 +42,7 @@ async def entrypoint(ctx: JobContext):
     logger.info(f"Connecting to room: {ctx.room.name}")
 
     await ctx.connect()
+    emit_runtime_event("connected", room=ctx.room.name)
 
     session = AgentSession(
     vad=silero.VAD.load(
@@ -45,7 +52,7 @@ async def entrypoint(ctx: JobContext):
     stt=groq.STT(),
 
     llm=groq.LLM(
-        model="llama-3.3-70b-versatile",
+        model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
         temperature=0.7,
     ),
 
@@ -58,6 +65,25 @@ async def entrypoint(ctx: JobContext):
 
     min_endpointing_delay=0.4,
 )
+
+    @session.on("conversation_item_added")
+    def on_conversation_item_added(event):
+        item = event.item
+        content = getattr(item, "content", [])
+        text = " ".join(
+            part if isinstance(part, str) else getattr(part, "text", "")
+            for part in content
+        ).strip()
+        if text:
+            emit_runtime_event(
+                "conversation",
+                role=getattr(item, "role", "assistant"),
+                content=text,
+            )
+
+    @session.on("error")
+    def on_session_error(event):
+        emit_runtime_event("error", message=str(getattr(event, "error", event)))
 
     await session.start(
         room=ctx.room,

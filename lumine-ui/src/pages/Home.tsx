@@ -11,15 +11,19 @@ import { usePreferences } from "./home/hooks/usePreferences";
 import { useConversation } from "./home/conversation/useConversation";
 import { ConversationPanel } from "./home/components/ConversationPanel";
 import type { Appearance } from "./home/types";
+import { useLumineSession } from "../hooks/useLumineSession";
 
-/** Page-level state owner. Child components receive data and callbacks only. */
 export default function Home() {
   const [nav, setNav] = useState("home");
-  const [state, setState] = useState<LumineState>("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [conversationOpen, setConversationOpen] = useState(false);
+  const [toast, setToast] = useState<{ tone: "success" | "error" | "info"; message: string } | null>(null);
   const conversation = useConversation();
   const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
+  const session = useLumineSession({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onError: (message) => setToast({ tone: "error", message }) });
+
+  const sessionState: LumineState = session.status === "speaking" ? "speaking" : session.status === "listening" ? "listening" : session.status === "idle" || session.status === "error" ? "idle" : "thinking";
+  const conversationStatus = session.status === "speaking" ? "speaking" : session.status === "listening" ? "listening" : session.status === "error" ? "error" : session.status === "idle" ? "idle" : "thinking";
 
   const customColors = Object.fromEntries(
     (["accent", "icon", "canvas", "surface", "stage", "text", "avatar"] as const)
@@ -60,10 +64,20 @@ export default function Home() {
   } as CSSProperties;
 
   return <div className={`lumine-app theme-${mode} route-${nav} ${conversationOpen && nav === "home" ? "conversation-open" : ""}`} style={variables}>
+    {toast && <div className={`runtime-toast is-${toast.tone}`} role="status"><span className="runtime-toast-dot" /><span>{toast.message}</span><button onClick={() => setToast(null)} aria-label="Dismiss notification">×</button></div>}
     <Sidebar active={nav} onChange={setNav} onSettings={() => setSettingsOpen(true)} />
-    <MainSpace state={state} setState={setState} cursorGaze={cursorGaze} showAvatarColor={appearance.showAvatarColor} conversationOpen={conversationOpen} onConversationToggle={() => setConversationOpen((open) => !open)} />
-    {conversationOpen && nav === "home" && <ConversationPanel messages={conversation.messages} agentStatus={conversation.agentStatus} bubbleVariant={appearance.chatBubbleVariant} onClose={() => setConversationOpen(false)} onClear={conversation.clearMessages} onReset={conversation.resetMessages} onAddMessage={conversation.addMessage} />}
-    {nav !== "home" && <Context state={state} onSettings={() => setSettingsOpen(true)} />}
+    <MainSpace
+      state={sessionState}
+      cursorGaze={cursorGaze}
+      showAvatarColor={appearance.showAvatarColor}
+      conversationOpen={conversationOpen}
+      onConversationToggle={() => setConversationOpen((open) => !open)}
+      sessionStatus={session.status}
+      onConnect={() => { conversation.clearMessages(); void session.connect(); }}
+      onDisconnect={() => { void session.disconnect(); }}
+    />
+    {conversationOpen && nav === "home" && <ConversationPanel messages={conversation.messages} agentStatus={conversationStatus} bubbleVariant={appearance.chatBubbleVariant} onClose={() => setConversationOpen(false)} onClear={conversation.clearMessages} onReset={conversation.resetMessages} onAddMessage={conversation.addMessage} />}
+    {nav !== "home" && <Context state={sessionState} onSettings={() => setSettingsOpen(true)} />}
     {settingsOpen && <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={() => { setMode("dark"); setCursorGaze(true); resetAppearance(); }} onClose={() => setSettingsOpen(false)} />}
   </div>;
 }

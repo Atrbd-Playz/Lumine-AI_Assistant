@@ -185,15 +185,17 @@ Platform-specific considerations that should be isolated later include:
 
 ### Planned backend work
 
-- [ ] agent manager / lifecycle API
-- [ ] start / stop / restart commands
-- [ ] health/status monitoring
+- [~] agent manager / lifecycle API
+- [~] start / stop / restart commands
+- [~] health/status monitoring
 - [ ] structured config contract
 - [ ] app-sidecar packaging
-- [ ] graceful shutdown handling
+- [~] graceful shutdown handling
 - [ ] crash recovery
 - [ ] cross-platform binary packaging
-- [ ] explicit backend-to-front-end state events
+- [~] explicit backend-to-front-end state events
+
+The Python agent remains intact and is still the voice service. The Tauri layer is now responsible for the development lifecycle contract, but the full desktop runtime is still not yet build-verified because the Tauri shell remains blocked by the Windows resource issue.
 
 ## Constraints and guardrails
 

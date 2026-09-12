@@ -145,14 +145,16 @@ The next required milestone is Phase 2: Tauri ↔ Agent Integration.
 
 ### PHASE 2 — Tauri ↔ Agent Integration
 
-- [ ] Agent manager
-- [ ] Start agent
-- [ ] Stop agent
-- [ ] Restart agent
-- [ ] Agent health/status
-- [ ] IPC protocol
-- [ ] Agent lifecycle events
-- [ ] Graceful shutdown
+- [~] Agent manager
+- [~] Start agent
+- [~] Stop agent
+- [~] Restart agent
+- [~] Agent health/status
+- [~] IPC protocol
+- [~] Agent lifecycle events
+- [~] Graceful shutdown
+
+Current verified status: the Tauri side has a Rust agent manager and IPC command contract in place, but the application is still blocked from a clean build by a Tauri Windows resource issue in the bundle configuration.
 
 ### PHASE 3 — Desktop Experience
 

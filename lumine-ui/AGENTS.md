@@ -210,13 +210,15 @@ The future Tauri responsibilities should include:
 
 ### Planned work
 
-- [ ] Tauri IPC contract
-- [ ] typed agent state events
+- [~] Tauri IPC contract
+- [~] typed agent state events
 - [ ] tray and window lifecycle
-- [ ] agent manager commands
+- [~] agent manager commands
 - [ ] wake-word integration
 - [ ] state synchronization with avatar animation
 - [ ] final desktop companion flow
+
+The frontend now invokes Tauri agent lifecycle commands and listens for high-level runtime events, but the app still cannot complete a full Tauri compile because the bundle icon configuration is failing in the Windows resource build step.
 
 ## Cross-platform and packaging constraints
 

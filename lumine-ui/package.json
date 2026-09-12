@@ -19,6 +19,7 @@
     "class-variance-authority": "^0.7.1",
     "cn": "^0.2.6",
     "framer-motion": "^12.43.0",
+    "livekit-client": "^2.22.3",
     "lucide-react": "^1.28.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
