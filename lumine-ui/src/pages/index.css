@@ -943,6 +943,75 @@ input {
   filter: sepia(0.2) saturate(1.22);
 }
 
+.avatar-lab-trigger {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 4;
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-stage-text) 18%, transparent);
+  border-radius: 999px;
+  color: var(--color-stage-text-soft);
+  background: color-mix(in srgb, var(--color-stage) 82%, transparent);
+  font: 500 10px var(--font-mono);
+  cursor: pointer;
+}
+
+.avatar-lab-trigger:hover,
+.avatar-lab button:hover {
+  color: var(--color-stage-text);
+  border-color: var(--color-accent);
+}
+
+.avatar-lab {
+  position: fixed;
+  top: 84px;
+  right: 20px;
+  z-index: 5;
+  width: min(306px, calc(100vw - 48px));
+  max-height: min(620px, calc(100vh - 108px));
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-stage-text) 18%, transparent);
+  border-radius: 12px;
+  color: var(--color-stage-text);
+  background: color-mix(in srgb, var(--color-stage) 94%, black);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.3);
+  font-size: 11px;
+}
+
+.avatar-lab-head,
+.avatar-lab-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.avatar-lab-head {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.avatar-lab-head:active { cursor: grabbing; }
+
+.avatar-lab-head strong { font-size: 13px; }
+.avatar-lab-head span,
+.avatar-lab-state,
+.avatar-lab-section > span,
+.avatar-lab-row > span { color: var(--color-stage-text-soft); }
+.avatar-lab-state { margin: 9px 0 12px; line-height: 1.5; }
+.avatar-lab-state b { color: var(--color-stage-text); font-weight: 500; }
+.avatar-lab-section { margin-top: 12px; }
+.avatar-lab-section > span { display: block; margin-bottom: 6px; font: 500 9px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
+.avatar-lab-section > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.avatar-lab button { padding: 5px 7px; border: 1px solid color-mix(in srgb, var(--color-stage-text) 14%, transparent); border-radius: 6px; color: var(--color-stage-text-soft); background: transparent; font-size: 10px; cursor: pointer; }
+.avatar-lab button.is-selected { color: var(--color-stage); border-color: var(--color-stage-text); background: var(--color-stage-text); }
+.avatar-lab-row { margin-top: 14px; }
+.avatar-lab-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+.avatar-lab-actions button:first-child { color: var(--color-stage); border-color: var(--color-accent); background: var(--color-accent); }
+
 /* ==========================================================================
    Bottom command controls
    ========================================================================== */
