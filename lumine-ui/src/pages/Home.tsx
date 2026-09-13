@@ -11,7 +11,7 @@ import { usePreferences } from "./home/hooks/usePreferences";
 import { useConversation } from "./home/conversation/useConversation";
 import { ConversationPanel } from "./home/components/ConversationPanel";
 import type { Appearance } from "./home/types";
-import { useLumineSession } from "../hooks/useLumineSession";
+import { useLumineVoice } from "../features/voice/useLumineVoice";
 
 export default function Home() {
   const [nav, setNav] = useState("home");
@@ -20,7 +20,7 @@ export default function Home() {
   const [toast, setToast] = useState<{ tone: "success" | "error" | "info"; message: string } | null>(null);
   const conversation = useConversation();
   const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
-  const session = useLumineSession({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onError: (message) => setToast({ tone: "error", message }) });
+  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onError: (message) => setToast({ tone: "error", message }) });
 
   const sessionState: LumineState = session.status === "speaking" ? "speaking" : session.status === "listening" ? "listening" : session.status === "idle" || session.status === "error" ? "idle" : "thinking";
   const conversationStatus = session.status === "speaking" ? "speaking" : session.status === "listening" ? "listening" : session.status === "error" ? "error" : session.status === "idle" ? "idle" : "thinking";

@@ -1,15 +1,20 @@
 import json
 import logging
 import os
+import time
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 from livekit.agents import (
     Agent,
     AgentSession,
+    AgentServer,
     JobContext,
     WorkerOptions,
     cli,
 )
+from livekit import rtc
 
 from livekit.plugins import (
     groq,
@@ -17,14 +22,16 @@ from livekit.plugins import (
     cartesia,
 )
 
-from pathlib import Path
+AGENT_DIR = Path(__file__).resolve().parent
+PERSONA = (AGENT_DIR / "prompts" / "persona.md").read_text(encoding="utf-8")
 
-PERSONA = (Path(__file__).resolve().parent / "prompts" / "persona.md").read_text(encoding="utf-8")
-
-load_dotenv()
+# Tauri launches this script with the repository root as cwd; keep worker
+# configuration anchored to the agent directory like manual `python agent.py`.
+load_dotenv(AGENT_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("lumine")
+WORKER_STARTED_AT = time.monotonic()
 
 
 def emit_runtime_event(event_type: str, **payload):
@@ -85,6 +92,23 @@ async def entrypoint(ctx: JobContext):
     def on_session_error(event):
         emit_runtime_event("error", message=str(getattr(event, "error", event)))
 
+    async def close_session(reason: str = "room ended"):
+        emit_runtime_event("session_ending", room=ctx.room.name, reason=reason)
+        await session.aclose()
+        emit_runtime_event("session_ended", room=ctx.room.name, reason=reason)
+
+    ctx.add_shutdown_callback(close_session)
+
+    @ctx.room.on("participant_disconnected")
+    def on_participant_disconnected(participant):
+        remaining_users = [
+            remote
+            for remote in ctx.room.remote_participants.values()
+            if remote.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT
+        ]
+        if participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT and not remaining_users:
+            ctx.shutdown(reason="user left room")
+
     await session.start(
         room=ctx.room,
         agent=Lumine(),
@@ -98,9 +122,23 @@ Greet the user briefly and ask how you can help.
     )
 
 
-if __name__ == "__main__":
-    cli.run_app(
-        WorkerOptions(
-            entrypoint_fnc=entrypoint,
-        )
+options = WorkerOptions(
+    entrypoint_fnc=entrypoint,
+    agent_name="lumine",
+)
+server = AgentServer.from_server_options(options)
+
+
+def on_worker_registered(worker_id, _server_info):
+    emit_runtime_event(
+        "worker_registered",
+        worker_id=worker_id,
+        agent_name="lumine",
+        registration_ms=round((time.monotonic() - WORKER_STARTED_AT) * 1000),
     )
+
+
+server.on("worker_registered", on_worker_registered)
+
+if __name__ == "__main__":
+    cli.run_app(server)

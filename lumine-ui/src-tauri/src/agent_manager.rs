@@ -2,6 +2,8 @@ use std::env;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -12,6 +14,7 @@ const RUNTIME_EVENT_PREFIX: &str = "LUMINE_EVENT ";
 #[serde(rename_all = "snake_case")]
 pub enum AgentState {
     Booting,
+    Ready,
     Sleeping,
     Listening,
     Thinking,
@@ -33,6 +36,13 @@ pub struct AgentStatus {
 pub struct AgentManager {
     child: Option<Child>,
     status: AgentStatus,
+    readiness: Arc<(Mutex<Readiness>, Condvar)>,
+}
+
+#[derive(Default)]
+struct Readiness {
+    registered: bool,
+    error: Option<String>,
 }
 
 impl Default for AgentManager {
@@ -46,6 +56,7 @@ impl Default for AgentManager {
                 pid: None,
                 error: None,
             },
+            readiness: Arc::new((Mutex::new(Readiness::default()), Condvar::new())),
         }
     }
 }
@@ -62,6 +73,12 @@ impl AgentManager {
         let agent_script = resolve_agent_script()?;
         let project_root = resolve_project_root()?;
         let agent_args = resolve_agent_args();
+        {
+            let (state, _) = &*self.readiness;
+            let mut state = state.lock().map_err(|err| format!("Worker readiness lock poisoned: {err}"))?;
+            state.registered = false;
+            state.error = None;
+        }
 
         let mut command = Command::new(&python_bin);
         command
@@ -80,21 +97,23 @@ impl AgentManager {
                 pid: None,
                 error: Some(message.clone()),
             };
-            app.emit("agent.error", &self.status)
+            app.emit("agent_error", &self.status)
                 .ok();
-            app.emit("agent.state_changed", &self.status)
+            app.emit("agent_state_changed", &self.status)
                 .ok();
             message
         })?;
 
         let pid = child.id();
+        println!("[LUMINE][WORKER] spawn pid={pid}");
         self.child = Some(child);
         let child = self.child.as_mut().expect("agent child was just stored");
+        let readiness = Arc::clone(&self.readiness);
         if let Some(stdout) = child.stdout.take() {
-            spawn_output_reader(app.clone(), stdout, "stdout");
+            spawn_output_reader(app.clone(), stdout, "stdout", Some(readiness));
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_output_reader(app.clone(), stderr, "stderr");
+            spawn_output_reader(app.clone(), stderr, "stderr", None);
         }
         self.status = AgentStatus {
             state: AgentState::Booting,
@@ -104,11 +123,38 @@ impl AgentManager {
             error: None,
         };
 
-        app.emit("agent.started", &self.status)
-            .map_err(|err| format!("Failed to emit agent.started: {err}"))?;
-        app.emit("agent.state_changed", &self.status)
-            .map_err(|err| format!("Failed to emit agent.state_changed: {err}"))?;
+        app.emit("agent_started", &self.status)
+            .map_err(|err| format!("Failed to emit agent_started: {err}"))?;
+        app.emit("agent_state_changed", &self.status)
+            .map_err(|err| format!("Failed to emit agent_state_changed: {err}"))?;
 
+        Ok(self.status.clone())
+    }
+
+    pub fn wait_until_ready(&mut self, app: &AppHandle) -> Result<AgentStatus, String> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let (readiness_lock, readiness_signal) = &*self.readiness;
+        let mut readiness = readiness_lock.lock().map_err(|err| format!("Worker readiness lock poisoned: {err}"))?;
+        while !readiness.registered && readiness.error.is_none() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.status.state = AgentState::Error;
+                self.status.connected = false;
+                self.status.error = Some("Lumine worker did not register with LiveKit within 20 seconds.".to_string());
+                return Err(self.status.error.clone().unwrap_or_else(|| "Lumine worker readiness timed out.".to_string()));
+            }
+            let result = readiness_signal.wait_timeout(readiness, remaining).map_err(|err| format!("Worker readiness wait failed: {err}"))?;
+            readiness = result.0;
+        }
+        if let Some(error) = readiness.error.clone() {
+            self.status.state = AgentState::Error;
+            self.status.connected = false;
+            self.status.error = Some(error.clone());
+            return Err(error);
+        }
+        self.status.state = AgentState::Ready;
+        self.status.connected = true;
+        app.emit("agent_state_changed", &self.status).ok();
         Ok(self.status.clone())
     }
 
@@ -122,8 +168,8 @@ impl AgentManager {
                 error: None,
             };
 
-            app.emit("agent.state_changed", &self.status)
-                .map_err(|err| format!("Failed to emit agent.state_changed: {err}"))?;
+            app.emit("agent_state_changed", &self.status)
+                .map_err(|err| format!("Failed to emit agent_state_changed: {err}"))?;
 
             let _ = child.kill();
             let _ = child.wait();
@@ -138,10 +184,10 @@ impl AgentManager {
             error: None,
         };
 
-        app.emit("agent.stopped", &self.status)
-            .map_err(|err| format!("Failed to emit agent.stopped: {err}"))?;
-        app.emit("agent.state_changed", &self.status)
-            .map_err(|err| format!("Failed to emit agent.state_changed: {err}"))?;
+        app.emit("agent_stopped", &self.status)
+            .map_err(|err| format!("Failed to emit agent_stopped: {err}"))?;
+        app.emit("agent_state_changed", &self.status)
+            .map_err(|err| format!("Failed to emit agent_state_changed: {err}"))?;
 
         Ok(self.status.clone())
     }
@@ -181,8 +227,8 @@ impl AgentManager {
                     error: Some("Agent process exited unexpectedly.".to_string()),
                 };
 
-                let _ = app.emit("agent.error", &self.status);
-                let _ = app.emit("agent.state_changed", &self.status);
+                let _ = app.emit("agent_error", &self.status);
+                let _ = app.emit("agent_state_changed", &self.status);
             }
             Ok(None) => {}
             Err(err) => {
@@ -194,8 +240,8 @@ impl AgentManager {
                     pid: None,
                     error: Some(format!("Failed to inspect the agent process: {err}")),
                 };
-                let _ = app.emit("agent.error", &self.status);
-                let _ = app.emit("agent.state_changed", &self.status);
+                let _ = app.emit("agent_error", &self.status);
+                let _ = app.emit("agent_state_changed", &self.status);
             }
         }
     }
@@ -252,6 +298,16 @@ fn resolve_python_bin() -> Result<String, String> {
         }
     }
 
+    let root = resolve_project_root()?;
+    let bundled = if cfg!(windows) {
+        root.join(".venv").join("Scripts").join("python.exe")
+    } else {
+        root.join(".venv").join("bin").join("python")
+    };
+    if bundled.exists() {
+        return Ok(bundled.to_string_lossy().to_string());
+    }
+
     for candidate in ["python", "python3"] {
         if Command::new(candidate)
             .arg("--version")
@@ -275,7 +331,7 @@ fn resolve_agent_args() -> Vec<String> {
         .unwrap_or_else(|| vec!["dev".to_string()])
 }
 
-fn spawn_output_reader<R>(app: AppHandle, reader: R, stream: &'static str)
+fn spawn_output_reader<R>(app: AppHandle, reader: R, stream: &'static str, readiness: Option<Arc<(Mutex<Readiness>, Condvar)>>)
 where
     R: Read + Send + 'static,
 {
@@ -284,7 +340,22 @@ where
             println!("[agent:{stream}] {line}");
             if let Some(payload) = line.strip_prefix(RUNTIME_EVENT_PREFIX) {
                 if let Ok(event) = serde_json::from_str::<serde_json::Value>(payload) {
-                    let _ = app.emit("agent.runtime", event);
+                    if let Some(readiness) = &readiness {
+                        let event_type = event.get("type").and_then(serde_json::Value::as_str);
+                        if event_type == Some("worker_registered") || event_type == Some("error") {
+                            let (lock, signal) = &**readiness;
+                            if let Ok(mut state) = lock.lock() {
+                                if event_type == Some("worker_registered") {
+                                    state.registered = true;
+                                    println!("[LUMINE][WORKER] registered");
+                                } else {
+                                    state.error = event.get("message").and_then(serde_json::Value::as_str).map(String::from);
+                                }
+                                signal.notify_all();
+                            }
+                        }
+                    }
+                    let _ = app.emit("agent_runtime", event);
                 }
             }
         }
