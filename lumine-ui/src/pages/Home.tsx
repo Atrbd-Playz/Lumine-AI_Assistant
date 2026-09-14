@@ -2,9 +2,9 @@ import { useState, type CSSProperties } from "react";
 import "./index.css";
 import { DEFAULT_APPEARANCE } from "./home/constants";
 import { AppearanceDialog } from "./home/components/AppearanceDialog";
-import Context from "./Context";
 import { MainSpace } from "./home/components/MainSpace";
 import { Sidebar } from "./home/components/Sidebar";
+import { WorkspaceView } from "./home/components/WorkspaceView";
 import type { LumineState } from "./home/types";
 import { getReadableForeground, getReadableTextColor } from "./home/utils";
 import { usePreferences } from "./home/hooks/usePreferences";
@@ -15,12 +15,23 @@ import { useLumineVoice } from "../features/voice/useLumineVoice";
 
 export default function Home() {
   const [nav, setNav] = useState("home");
+  const [glassMode, setGlassMode] = useState(() => localStorage.getItem("lumine.presentation-mode") === "glass");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [conversationOpen, setConversationOpen] = useState(false);
   const [toast, setToast] = useState<{ tone: "success" | "error" | "info"; message: string } | null>(null);
   const conversation = useConversation();
   const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
   const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onError: (message) => setToast({ tone: "error", message }) });
+
+  const handleNavigation = (next: string) => {
+    if (next === "conversation") {
+      setNav("home");
+      setConversationOpen(true);
+      return;
+    }
+    setConversationOpen(false);
+    setNav(next);
+  };
 
   const sessionState: LumineState = session.status === "speaking" ? "speaking" : session.status === "listening" ? "listening" : session.status === "idle" || session.status === "error" ? "idle" : "thinking";
   const conversationStatus = session.status === "speaking" ? "speaking" : session.status === "listening" ? "listening" : session.status === "error" ? "error" : session.status === "idle" ? "idle" : "thinking";
@@ -63,10 +74,12 @@ export default function Home() {
     ),
   } as CSSProperties;
 
-  return <div className={`lumine-app theme-${mode} route-${nav} ${conversationOpen && nav === "home" ? "conversation-open" : ""}`} style={variables}>
+  const toggleGlassMode = () => setGlassMode((enabled) => { const next = !enabled; localStorage.setItem("lumine.presentation-mode", next ? "glass" : "classic"); return next; });
+
+  return <div className={`lumine-app theme-${mode} route-${nav} ${glassMode ? "visual-glass" : "visual-classic"} ${conversationOpen && nav === "home" ? "conversation-open" : ""}`} style={variables}>
     {toast && <div className={`runtime-toast is-${toast.tone}`} role="status"><span className="runtime-toast-dot" /><span>{toast.message}</span><button onClick={() => setToast(null)} aria-label="Dismiss notification">×</button></div>}
-    <Sidebar active={nav} onChange={setNav} onSettings={() => setSettingsOpen(true)} />
-    <MainSpace
+    <Sidebar active={conversationOpen ? "conversation" : nav} onChange={handleNavigation} onSettings={() => setSettingsOpen(true)} />
+    {nav === "home" ? <MainSpace
       state={sessionState}
       cursorGaze={cursorGaze}
       showAvatarColor={appearance.showAvatarColor}
@@ -75,9 +88,12 @@ export default function Home() {
       sessionStatus={session.status}
       onConnect={() => { conversation.clearMessages(); void session.connect(); }}
       onDisconnect={() => { void session.disconnect(); }}
-    />
+      glassMode={glassMode}
+      onGlassModeToggle={toggleGlassMode}
+      muted={session.muted}
+      onMuteToggle={() => { void session.toggleMute(); }}
+    /> : <WorkspaceView kind={nav as "tools" | "memory" | "activity"} onSettings={() => setSettingsOpen(true)} />}
     {conversationOpen && nav === "home" && <ConversationPanel messages={conversation.messages} agentStatus={conversationStatus} bubbleVariant={appearance.chatBubbleVariant} onClose={() => setConversationOpen(false)} onClear={conversation.clearMessages} onReset={conversation.resetMessages} onAddMessage={conversation.addMessage} />}
-    {nav !== "home" && <Context state={sessionState} onSettings={() => setSettingsOpen(true)} />}
     {settingsOpen && <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={() => { setMode("dark"); setCursorGaze(true); resetAppearance(); }} onClose={() => setSettingsOpen(false)} />}
   </div>;
 }

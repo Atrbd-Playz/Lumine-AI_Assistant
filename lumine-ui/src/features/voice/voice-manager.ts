@@ -22,6 +22,7 @@ export type VoiceMessage = {
 
 export type VoiceManagerSnapshot = {
   state: LumineVoiceStatus;
+  muted: boolean;
   error: string | null;
   startedAt: number | null;
   isActive: boolean;
@@ -39,6 +40,7 @@ type SessionContext = {
   attachedTrackSids: Set<string>;
   agentTimer?: number;
   agentConnected: boolean;
+  muted: boolean;
   disposed: boolean;
 };
 
@@ -96,6 +98,7 @@ export type VoiceLifecycleCallbacks = {
 
 export class LumineVoiceManager {
   private state: LumineVoiceStatus = "idle";
+  private muted = false;
   private error: string | null = null;
   private startedAt: number | null = null;
   private activeSession: SessionContext | null = null;
@@ -111,6 +114,7 @@ export class LumineVoiceManager {
   getSnapshot(): VoiceManagerSnapshot {
     return {
       state: this.state,
+      muted: this.muted,
       error: this.error,
       startedAt: this.startedAt,
       isActive: this.state !== "idle" && this.state !== "error",
@@ -181,6 +185,7 @@ export class LumineVoiceManager {
     }
 
     this.state = "idle";
+    this.muted = false;
     this.error = null;
     this.publish();
     console.info("[Voice] Cleanup complete", { sessionId: session.id, room: session.roomName });
@@ -209,6 +214,7 @@ export class LumineVoiceManager {
       remoteAudioElements: new Set(),
       attachedTrackSids: new Set(),
       agentConnected: false,
+      muted: false,
       disposed: false,
     };
 
@@ -360,6 +366,7 @@ export class LumineVoiceManager {
       }
 
       await room.localParticipant.setMicrophoneEnabled(true);
+      this.muted = false;
       this.setState("initializing");
 
       session.agentTimer = window.setTimeout(() => {
@@ -404,6 +411,18 @@ export class LumineVoiceManager {
 
     this.operationLock = false;
     this.setState("idle");
+  }
+
+  async setMuted(muted: boolean): Promise<void> {
+    const session = this.activeSession;
+    if (!session || session.disposed || this.state === "disconnecting") {
+      return;
+    }
+
+    await session.room.localParticipant.setMicrophoneEnabled(!muted);
+    session.muted = muted;
+    this.muted = muted;
+    this.publish();
   }
 
   private async handleFailure(message: string) {

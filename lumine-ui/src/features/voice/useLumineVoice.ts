@@ -14,6 +14,7 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onError }: UseLumin
   const managerRef = useRef<LumineVoiceManager | null>(null);
   const [snapshot, setSnapshot] = useState({
     state: "idle" as LumineVoiceStatus,
+    muted: false,
     error: null as string | null,
     startedAt: null as number | null,
     isActive: false,
@@ -63,11 +64,14 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onError }: UseLumin
     error: snapshot.error,
     startedAt: snapshot.startedAt,
     isActive: snapshot.isActive,
+    muted: snapshot.muted,
     session: snapshot.sessionId ? { sessionId: snapshot.sessionId, roomName: snapshot.roomName ?? "", participantIdentity: "", agentIdentity: "Lumine" } : null,
     connect: () => managerRef.current!.start(),
     disconnect: () => managerRef.current!.stop(),
     start: () => managerRef.current!.start(),
     stop: () => managerRef.current!.stop(),
+    setMuted: (muted: boolean) => managerRef.current!.setMuted(muted),
+    toggleMute: () => managerRef.current!.setMuted(!snapshot.muted),
     getState: () => managerRef.current!.getState(),
     isConnected: snapshot.state !== "idle" && snapshot.state !== "error" && snapshot.state !== "disconnecting",
     isListening: snapshot.state === "listening",

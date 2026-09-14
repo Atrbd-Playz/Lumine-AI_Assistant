@@ -38,11 +38,16 @@ export type ThemePresetCollection = Partial<Record<ThemeMode, Record<string, App
 
 export type IconName =
   | "home"
+  | "chat"
+  | "tools"
+  | "memory"
+  | "activity"
   | "spark"
   | "check"
   | "clock"
   | "settings"
   | "mic"
+  | "mic-off"
   | "send"
   | "stop"
   | "more"
@@ -52,4 +57,5 @@ export type IconName =
   | "waveform"
   | "trash"
   | "reset"
-  | "close";
+  | "close"
+  | "presentation";

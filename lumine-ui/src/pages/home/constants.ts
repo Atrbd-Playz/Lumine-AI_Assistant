@@ -80,8 +80,9 @@ export const INITIAL_ENTRIES: Entry[] = [
 ];
 
 export const NAV_ITEMS = [
-  ["home", "home"],
-  ["presence", "spark"],
-  ["tasks", "check"],
-  ["history", "clock"],
+  ["home", "home", "Home"],
+  ["conversation", "chat", "Conversation"],
+  ["tools", "tools", "Tools"],
+  ["memory", "memory", "Memory"],
+  ["activity", "activity", "Activity"],
 ] as const;
