@@ -51,7 +51,7 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onError 
     }
   }, [snapshot.state]);
 
-  const status: LumineVoiceConnectionState = snapshot.state === "idle"
+  const status: LumineVoiceConnectionState = snapshot.state === "disconnected" || snapshot.state === "idle"
     ? "idle"
     : snapshot.state === "connecting"
       ? "connecting"
@@ -61,7 +61,7 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onError 
           ? "listening"
           : snapshot.state === "speaking"
             ? "speaking"
-            : snapshot.state === "disconnecting"
+            : snapshot.state === "disconnecting" || snapshot.state === "ending"
               ? "disconnecting"
               : snapshot.state === "error"
                 ? "error"
@@ -84,8 +84,6 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onError 
     stop: () => managerRef.current!.stop(),
     setMuted: (muted: boolean) => managerRef.current!.setMuted(muted),
     toggleMute: () => managerRef.current!.setMuted(!snapshot.muted),
-    getState: () => managerRef.current!.getState(),
-    isConnected: snapshot.state !== "idle" && snapshot.state !== "error" && snapshot.state !== "disconnecting",
     isListening: snapshot.state === "listening",
     isSpeaking: snapshot.state === "speaking",
     isThinking: snapshot.state === "thinking",

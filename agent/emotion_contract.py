@@ -1,12 +1,15 @@
 import re
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
 
 CANONICAL_EMOTIONS = [
     "neutral",
     "happy",
     "loving",
+    "delighted",
+    "amused",
     "excited",
     "playful",
+    "mischievous",
     "jealous",
     "wink",
     "sleepy",
@@ -21,6 +24,11 @@ CANONICAL_EMOTIONS = [
     "focused",
     "proud",
     "worried",
+    "relieved",
+    "determined",
+    "calm",
+    "alert",
+    "concerned",
     "idle",
 ]
 
@@ -30,14 +38,25 @@ EMOTION_ALIASES = {
     "neutral": "neutral",
     "default": "neutral",
     "none": "neutral",
+    "delighted": "delighted",
+    "amused": "amused",
+    "mischievous": "mischievous",
+    "relieved": "relieved",
+    "determined": "determined",
+    "calm": "calm",
+    "alert": "alert",
+    "concerned": "concerned",
 }
 
 EmotionPrimary = Literal[
     "neutral",
     "happy",
     "loving",
+    "delighted",
+    "amused",
     "excited",
     "playful",
+    "mischievous",
     "jealous",
     "wink",
     "sleepy",
@@ -52,9 +71,15 @@ EmotionPrimary = Literal[
     "focused",
     "proud",
     "worried",
+    "relieved",
+    "determined",
+    "calm",
+    "alert",
+    "concerned",
 ]
 
 EmotionSource = Literal["llm", "heuristic", "voice", "system", "user", "lab"]
+
 
 class EmotionIntent(dict):
     def __init__(
@@ -79,7 +104,7 @@ class EmotionIntent(dict):
     def __getattr__(self, name: str):
         try:
             return self[name]
-        except KeyError as exc:  # pragma: no cover - attribute access guard
+        except KeyError as exc:
             raise AttributeError(name) from exc
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -200,6 +225,207 @@ def build_emotion_event(payload: dict[str, Any]) -> dict[str, Any]:
             "priority": 0,
         }
     return event
+
+
+EMOTION_HINTS: dict[str, list[str]] = {
+    "happy": [
+        "happy", "smile", "smiling", "grin", "laugh", "cheerful", "joyful", "glad", "delighted",
+        "thrilled", "pleasant", "yay", "so happy", "i'm glad", "beautiful", "that makes me smile",
+        "খুশি", "আনন্দ", "ভালো", "সুখী", "হাসি", "মজা", "মজার", "সুন্দর", "سعيد", "ممتاز",
+        "أحب", "رائع", "ضحك", "فرح",
+    ],
+    "delighted": [
+        "delighted", "overjoyed", "ecstatic", "thrilled", "blissful", "giddy", "amazing",
+        "wonderful", "অসাধারণ", "ভীষণ খুশি", "আনন্দিত", "مبهج", "مستمتع", "ممتاز", "روعه",
+    ],
+    "amused": [
+        "amused", "amuse", "giggle", "chuckle", "tease", "banter", "joke", "funny", "silly",
+        "হাসি", "মজার", "কৌতুক", "তামাশা", "مزاح", "مضحك", "بريء",
+    ],
+    "excited": [
+        "excited", "buzzing", "energized", "let's go", "this is huge", "so exciting", "can't wait",
+        "eager", "উচ্ছ্বসিত", "আনন্দিত", "দারুণ", "চলুন", "বিস্মিত", "متحمس", "مثير", "استثنائي", "هيا",
+    ],
+    "playful": [
+        "playful", "cute", "adorable", "act cute", "be cute", "tease", "silly", "flirty", "wink",
+        "naughty", "হেহে", "মজার", "কৌতুক", "চুটকি", "সিলি", "আদর", "مزاح", "مضحك", "لطيف",
+    ],
+    "mischievous": [
+        "mischievous", "scheming", "sneaky", "plotting", "secretive", "trickster", "little prank",
+        "naughty", "চতুর", "খেলা", "গোপন", "মراوغ", "মকائد", "مزاح",
+    ],
+    "jealous": [
+        "jealous", "act jealous", "be jealous", "who is she", "you seem interested in her",
+        "i'm not jealous", "hmm, who's that", "envy", "হিংসা", "ঈর্ষা", "কার সাথে", "উৎসুক",
+        "حسد", "منزعج", "من يـهي؟", "غيرة",
+    ],
+    "thinking": [
+        "let me think", "hmm", "consider", "ponder", "evaluate", "analyze", "thinking",
+        "reflecting", "চিন্তা কর", "হুম", "বিবেচনা", "ভেবে দেখি", "আলোচনা", "ফিরে", "ফকর",
+        "أفكر", "اعتبر", "حلل",
+    ],
+    "confused": [
+        "confused", "unclear", "not sure", "what do you mean", "huh", "i don't get it",
+        "puzzled", "mixed up", "ভুল বুঝেছি", "বুঝতে পারছি না", "কী বলছ", "হু", "غير واضح",
+        "لا أفهم", "مربك", "ما الذي تقصده",
+    ],
+    "sad": [
+        "sad", "down", "upset", "hurt", "disappointed", "lonely", "teary", "crying", "downcast",
+        "দুঃখ", "বিষণ্ণ", "আহত", "হতাশ", "একাকী", "দুর্বল", "حزين", "مكتئব", "মؤلم", "آسف",
+    ],
+    "angry": [
+        "angry", "mad", "furious", "annoyed", "frustrated", "that's not fair", "i'm upset",
+        "rage", "irritated", "রাগ", "ক্রুদ্ধ", "চট", "অপমান", "অন্যায়", "غاضب", "مستاء",
+        "غير عادل", "متوتر",
+    ],
+    "curious": [
+        "curious", "wonder", "ask", "learn", "tell me more", "what happened", "tell me",
+        "inquisitive", "কৌতূহল", "জানতে চাই", "বিস্তারিত", "কি ঘটেছে", "استفسار", "أرغب في معرفة",
+        "ما الذي حدث",
+    ],
+    "focused": [
+        "focus", "important", "urgent", "serious", "need to work", "we need to fix this",
+        "locked in", "concentrated", "ফোকাস", "গুরুত্বপূর্ণ", "জরুরি", "গুরুতর", "কাজ করতে",
+        "تركيز", "مهم", "عاجل", "نحتاج إلى إصلاح",
+    ],
+    "proud": [
+        "proud", "great job", "excellent", "accomplished", "well done", "nice work", "confident",
+        "heroic", "গর্ব", "ভাল কাজ", "অসাধারণ", "সফল", "চমৎকার", "ফুর", "عمل رائع", "ممتاز",
+        "ফخور",
+    ],
+    "worried": [
+        "worried", "nervous", "afraid", "stress", "anxious", "unsafe", "i'm scared", "fearful",
+        "tense", "চিন্তিত", "ভয়", "ডর", "বিষণ্ন", "অস্বস্তি", "قلق", "خائف", "متوتر", "غير آمن",
+    ],
+    "surprised": [
+        "surprised", "wow", "oh wow", "unexpected", "impossible", "that shocked me", "omg",
+        "shocked", "আশ্চর্য", "ওহ", "অপ্রত্যাশিত", "চমকে গেছি", "মন্দহশ", "مفاجأة", "wow",
+        "أوه",
+    ],
+    "shy": [
+        "shy", "blush", "blushing", "embarrassed", "awkward", "timid", "bashful", "soft voice",
+        "লজ্জা", "শরম", "অস্বস্তি", "হতাশ", "خجل", "محرج", "মكتুম", "লাজুক",
+    ],
+    "embarrassed": [
+        "embarrassed", "ashamed", "awkward", "i feel silly", "red face", "flustered", "cringe",
+        "লজ্জিত", "শরম", "হতাশ", "অস্বস্তি", "মরজ", "খজোল", "أشعر بالغباء", "محرج",
+    ],
+    "loving": [
+        "aww", "i'm really glad you're here", "i care about you", "sweet", "you're important to me",
+        "affectionate", "love", "আহা", "ভালোবাসি", "প্রেম", "তোমাকে ভালোবাসি", "তুমি গুরুত্বপূর্ণ",
+        "أوه", "أحبك", "أهتم بك", "رقيق",
+    ],
+    "relieved": [
+        "relieved", "phew", "finally", "safe now", "calmed down", "comforted", "breath easy",
+        "স্বস্তি", "শেষে", "শান্তি", "মুক্তি", "راحة", "آمان",
+    ],
+    "determined": [
+        "determined", "resolve", "commit", "will do it", "get it done", "decisive",
+        "focused on fixing", "নির্ধারিত", "তৈরি", "চূড়ান্ত", "কাজ করতে", "عزم", "مصر",
+    ],
+    "calm": [
+        "calm", "steady", "peaceful", "relax", "easy", "comfortable", "centered", "শান্ত",
+        "নির্মল", "ধীরে", "راحة", "هادئ", "سهل",
+    ],
+    "alert": [
+        "alert", "on guard", "listening", "sharp", "aware", "ready", "attentive", "সজাগ",
+        "মনোযোগ", "দৃষ্টি", "মستيقظ", "جاهز", "منتبه",
+    ],
+    "concerned": [
+        "concerned", "worried", "careful", "unsafe", "watch out", "cautious", "hmm maybe",
+        "ফিকর", "চিন্তিত", "সতর্ক", "মقلق", "انتباه", "حذر",
+    ],
+}
+
+ROLEPLAY_PATTERNS = [
+    "act shy", "be shy", "blush", "blushing",
+    "act happy", "be happy", "smile", "laugh",
+    "act excited", "be excited", "get excited",
+    "act proud", "be proud", "stand proud",
+    "act angry", "be angry", "get angry",
+    "act jealous", "be jealous", "get jealous",
+    "act confused", "be confused",
+    "act curious", "be curious",
+    "act calm", "be calm",
+    "act surprised", "be surprised",
+    "act playful", "be playful", "wink",
+    "act worried", "be worried",
+    "act sad", "be sad",
+    "act loving", "be loving",
+    "act determined", "be determined",
+    "act focused", "be focused",
+    "roleplay", "pretend to be",
+]
+
+
+def _split_emotion_segments(text: str) -> list[str]:
+    cleaned = re.sub(r"\s+", " ", text.strip())
+    if not cleaned:
+        return []
+    segments = re.split(r"(?:then|and|but|while|so|as|because)|[;,.!?]+", cleaned)
+    segments = [segment.strip() for segment in segments if segment and segment.strip()]
+    return segments or [cleaned]
+
+
+def _emotion_score(text: str, emotion: str) -> int:
+    lower = text.lower()
+    keywords = EMOTION_HINTS.get(emotion, [])
+    score = 0
+    for keyword in keywords:
+        if keyword in lower:
+            score += 3 if len(keyword) <= 4 else 2
+    for pattern in (f"act {emotion}", f"be {emotion}", f"get {emotion}", f"look {emotion}", f"feel {emotion}"):
+        if pattern in lower:
+            score += 5
+    return score
+
+
+def extract_emotion_sequence(text: str, source: str = "llm") -> list[dict[str, object]]:
+    if not text:
+        return []
+
+    events: list[dict[str, object]] = []
+    for segment in _split_emotion_segments(text):
+        scored: list[tuple[str, int]] = []
+        for emotion in EMOTION_HINTS:
+            score = _emotion_score(segment, emotion)
+            if score:
+                scored.append((emotion, score))
+        if not scored:
+            continue
+        scored.sort(key=lambda item: item[1], reverse=True)
+        primary = scored[0][0]
+        secondary = scored[1][0] if len(scored) > 1 and scored[1][1] >= 2 else None
+        intensity = min(1.0, max(0.0, 0.35 + (scored[0][1] * 0.08)))
+        events.append(
+            build_emotion_event({
+                "primary": primary,
+                "secondary": secondary,
+                "intensity": round(intensity, 2),
+                "source": "user" if source == "user" else "heuristic",
+                "priority": 5,
+                "durationMs": max(900, min(2200, 500 + len(segment) * 18)),
+            })
+        )
+
+    if not events:
+        return [
+            build_emotion_event({
+                "primary": "neutral",
+                "secondary": None,
+                "intensity": 0.0,
+                "source": "user" if source == "user" else "heuristic",
+                "durationMs": 700,
+            })
+        ]
+    return events
+
+
+def infer_emotion_from_text(text: str, source: str = "llm") -> dict[str, object] | None:
+    sequence = extract_emotion_sequence(text, source=source)
+    if not sequence:
+        return None
+    return sequence[0]
 
 
 def parse_llm_emotion_response(data: Any) -> tuple[str, dict[str, Any]]:

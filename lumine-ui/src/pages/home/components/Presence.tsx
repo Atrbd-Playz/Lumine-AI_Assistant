@@ -8,8 +8,11 @@ import type { LumineActivity, LumineEmotion, LumineEmotionIntent } from "../../.
 import type { LumineState } from "../types";
 import { clamp } from "../utils";
 
-const deadzone = 0.08;
-const gazeSmoothing = 0.14;
+const deadzone = 0.12;
+const gazeSmoothing = 0.08;
+const gazeRangeX = 7.5;
+const gazeRangeY = 5.5;
+const DEFAULT_REACTION_HOLD_MS = 3000;
 
 const stateEmotion: Record<LumineState, LumineEmotion> = { idle: "neutral", listening: "neutral", thinking: "thinking", speaking: "neutral" };
 const stateActivity: Record<LumineState, LumineActivity> = { idle: "none", listening: "listening", thinking: "none", speaking: "speaking" };
@@ -40,8 +43,8 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
       }
       const rect = avatar.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
-      const nextX = clamp((event.clientX - (rect.left + rect.width / 2)) / (rect.width / 2), -1, 1) * 5;
-      const nextY = clamp((event.clientY - (rect.top + rect.height / 2)) / (rect.height / 2), -1, 1) * 4;
+      const nextX = clamp((event.clientX - (rect.left + rect.width / 2)) / (rect.width / 2), -1, 1) * gazeRangeX;
+      const nextY = clamp((event.clientY - (rect.top + rect.height / 2)) / (rect.height / 2), -1, 1) * gazeRangeY;
       const dx = nextX - targetGazeRef.current.x;
       const dy = nextY - targetGazeRef.current.y;
       const distance = Math.hypot(dx, dy);
@@ -75,12 +78,13 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
   }, [cursorGaze]);
 
   useEffect(() => {
-    if (!emotionIntent || emotionIntent.primary === "neutral") {
-      setReaction(null);
+    if (!emotionIntent) {
       return;
     }
+
+    const holdMs = Math.max(1800, emotionIntent.durationMs ?? DEFAULT_REACTION_HOLD_MS);
     setReaction(emotionIntent);
-    const timer = window.setTimeout(() => setReaction(null), emotionIntent.durationMs ?? 1800);
+    const timer = window.setTimeout(() => setReaction(null), holdMs);
     return () => window.clearTimeout(timer);
   }, [emotionIntent]);
 

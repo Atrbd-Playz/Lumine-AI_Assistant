@@ -1,10 +1,11 @@
 import unittest
 
-from agent.agent import infer_emotion_from_text
 from agent.emotion_contract import (
     EmotionIntent,
     EmotionResponse,
     build_emotion_event,
+    extract_emotion_sequence,
+    infer_emotion_from_text,
     normalize_emotion,
     validate_emotion_event,
 )
@@ -69,6 +70,29 @@ class EmotionContractTests(unittest.TestCase):
         event = infer_emotion_from_text("What is Python?", source="user")
         self.assertEqual(event["payload"]["primary"], "neutral")
         self.assertEqual(event["payload"]["intensity"], 0.0)
+
+    def test_non_english_emotion_keywords_resolve_naturally(self):
+        bangla = infer_emotion_from_text("আমি খুব খুশি এবং আনন্দিত।", source="user")
+        self.assertEqual(bangla["payload"]["primary"], "happy")
+
+        arabic = infer_emotion_from_text("أنا متحمس جدًا لهذا!", source="user")
+        self.assertEqual(arabic["payload"]["primary"], "excited")
+
+        confused = infer_emotion_from_text("আমি বুঝতে পারছি না, এটা কী?", source="user")
+        self.assertEqual(confused["payload"]["primary"], "confused")
+
+    def test_roleplay_cover_expands_shy_and_other_variants(self):
+        shy = infer_emotion_from_text("Act shy and blush a little.", source="user")
+        self.assertEqual(shy["payload"]["primary"], "shy")
+
+        proud = infer_emotion_from_text("Be proud, calm, and curious.", source="user")
+        self.assertIn(proud["payload"]["primary"], {"proud", "calm", "curious"})
+
+    def test_extract_emotion_sequence_supports_multiple_moods_in_one_message(self):
+        sequence = extract_emotion_sequence("Act shy, then laugh happily, then get excited.", source="user")
+        self.assertGreaterEqual(len(sequence), 2)
+        emotions = {event["payload"]["primary"] for event in sequence}
+        self.assertTrue({"shy", "happy", "excited"} & emotions)
 
 
 if __name__ == "__main__":

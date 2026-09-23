@@ -5,14 +5,17 @@ import { resolveEmotionIntent } from "../emotion/emotion-controller";
 import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
 
 export type LumineVoiceStatus =
-  | "idle"
+  | "disconnected"
   | "connecting"
+  | "connected"
+  | "ending"
+  | "error"
+  | "idle"
   | "initializing"
   | "listening"
   | "thinking"
   | "speaking"
-  | "disconnecting"
-  | "error";
+  | "disconnecting";
 
 export type VoiceMessage = {
   role: "user" | "lumine";
@@ -103,11 +106,12 @@ export type VoiceLifecycleCallbacks = {
 };
 
 export class LumineVoiceManager {
-  private state: LumineVoiceStatus = "idle";
+  private state: LumineVoiceStatus = "disconnected";
   private muted = false;
   private error: string | null = null;
   private startedAt: number | null = null;
   private activeSession: SessionContext | null = null;
+  private generation = 0;
   private operationLock = false;
   private readonly onStateChange: (snapshot: VoiceManagerSnapshot) => void;
   private readonly callbacks: VoiceLifecycleCallbacks;
@@ -140,7 +144,7 @@ export class LumineVoiceManager {
   }
 
   private isCurrentSession(session: SessionContext) {
-    return this.activeSession === session && !session.disposed;
+    return this.activeSession === session && !session.disposed && session.generation === this.generation;
   }
 
   private async cleanupSession(session: SessionContext, reason?: string) {
@@ -185,15 +189,18 @@ export class LumineVoiceManager {
       console.warn("[Voice] Room removal failed", error);
     }
 
-    if (this.activeSession === session) {
+    const shouldResetUi = this.activeSession === session;
+    if (shouldResetUi) {
       this.activeSession = null;
       this.startedAt = null;
     }
 
-    this.state = "idle";
-    this.muted = false;
-    this.error = null;
-    this.publish();
+    if (shouldResetUi || this.generation === session.generation) {
+      this.state = "disconnected";
+      this.muted = false;
+      this.error = null;
+      this.publish();
+    }
     console.info("[Voice] Cleanup complete", { sessionId: session.id, room: session.roomName });
   }
 
@@ -225,6 +232,8 @@ export class LumineVoiceManager {
       disposed: false,
     };
 
+    const generation = ++this.generation;
+    session.generation = generation;
     this.activeSession = session;
     this.startedAt = Date.now();
     this.setState("connecting");
@@ -285,6 +294,7 @@ export class LumineVoiceManager {
       }
 
       console.info("[Voice] Agent joined", { sessionId: session.id, identity: participant.identity });
+      this.setState("connected");
       this.setState("listening");
       participant.audioTrackPublications.forEach((publication) => handlePublished(publication, participant));
     };
@@ -306,7 +316,7 @@ export class LumineVoiceManager {
     const handleDisconnected = () => {
       if (ownsSession()) {
         console.info("[Voice] Room disconnected", { sessionId: session.id, room: roomName });
-        this.setState("idle");
+        this.setState("disconnected");
       }
     };
 
@@ -437,16 +447,24 @@ export class LumineVoiceManager {
     }
 
     this.operationLock = true;
-    this.setState("disconnecting");
+    this.state = "ending";
+    this.error = null;
+    this.publish();
+
     const active = this.activeSession;
+    const generation = session.generation;
     this.activeSession = null;
+    this.state = "disconnected";
+    this.muted = false;
+    this.error = null;
+    this.publish();
 
     if (active) {
       await this.cleanupSession(active, "user stopped session");
     }
 
     this.operationLock = false;
-    this.setState("idle");
+    this.generation = Math.max(this.generation, generation + 1);
   }
 
   async setMuted(muted: boolean): Promise<void> {
@@ -478,12 +496,6 @@ export class LumineVoiceManager {
     this.callbacks.onError(message);
     await this.cleanupSession(session, message);
     this.operationLock = false;
-    this.state = "idle";
-    this.error = null;
-    this.publish();
-  }
-
-  getState() {
-    return this.state;
+    this.state = "disconnected";
   }
 }

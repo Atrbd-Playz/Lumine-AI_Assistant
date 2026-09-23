@@ -40,7 +40,7 @@ export function useLumineSession({ onMessage, onUpdateMessage, onError }: UseLum
     };
   }, []);
 
-  const status: LumineConnectionState = snapshot.state === "idle" ? "idle" : snapshot.state === "connecting" ? "connecting" : snapshot.state === "initializing" ? "initializing" : snapshot.state === "listening" ? "listening" : snapshot.state === "speaking" ? "speaking" : snapshot.state === "disconnecting" ? "disconnecting" : snapshot.state === "error" ? "error" : snapshot.state === "thinking" ? "thinking" : "online";
+  const status: LumineConnectionState = snapshot.state === "disconnected" || snapshot.state === "idle" ? "idle" : snapshot.state === "connecting" ? "connecting" : snapshot.state === "initializing" ? "initializing" : snapshot.state === "listening" ? "listening" : snapshot.state === "speaking" ? "speaking" : snapshot.state === "disconnecting" || snapshot.state === "ending" ? "disconnecting" : snapshot.state === "error" ? "error" : snapshot.state === "thinking" ? "thinking" : "online";
 
   return {
     status,

@@ -1,32 +1,80 @@
+import asyncio
 import json
 import logging
 import os
+import re
 import time
-import asyncio
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 try:
-    from .emotion_contract import build_emotion_event
+    from .emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
 except ImportError:
-    from emotion_contract import build_emotion_event
+    from emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
 
-from livekit.agents import (
-    Agent,
-    AgentSession,
-    AgentServer,
-    JobContext,
-    WorkerOptions,
-    cli,
-)
-from livekit import rtc
+try:
+    from livekit.agents import (
+        Agent,
+        AgentSession,
+        AgentServer,
+        JobContext,
+        WorkerOptions,
+        cli,
+    )
+except ImportError:
+    class Agent:
+        def __init__(self, *args, **kwargs):
+            pass
 
-from livekit.plugins import (
-    groq,
-    silero,
-    cartesia,
-)
+    class AgentSession:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("livekit-agents is required to run the Lumine voice worker.")
+
+    class _MissingServer:
+        @staticmethod
+        def from_server_options(_options):
+            return _MissingServer()
+
+        def on(self, *_args, **_kwargs):
+            return lambda fn: fn
+
+    class AgentServer:
+        @staticmethod
+        def from_server_options(_options):
+            return _MissingServer()
+
+    class JobContext:
+        pass
+
+    class WorkerOptions:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    class _MissingCli:
+        def run_app(self, *_args, **_kwargs):
+            raise RuntimeError("livekit-agents is required to run the Lumine voice worker.")
+
+    cli = _MissingCli()
+
+try:
+    from livekit import rtc
+except ImportError:
+    class _MissingRTC:
+        class ParticipantKind:
+            PARTICIPANT_KIND_AGENT = "agent"
+    rtc = _MissingRTC()
+
+try:
+    from livekit.plugins import (
+        groq,
+        silero,
+        cartesia,
+    )
+except ImportError:
+    groq = None
+    silero = None
+    cartesia = None
 
 AGENT_DIR = Path(__file__).resolve().parent
 PERSONA = (AGENT_DIR / "prompts" / "persona.md").read_text(encoding="utf-8")
@@ -49,53 +97,6 @@ def emit_runtime_event(event_type: str, **payload):
         if key != "type":
             record[key] = value
     print(f"LUMINE_EVENT {json.dumps(record)}", flush=True)
-
-
-def infer_emotion_from_text(text: str, source: str = "llm") -> dict[str, object] | None:
-    if not text:
-        return None
-
-    lower = text.lower()
-    hints = {
-        "happy": ["yay", "so happy", "delighted", "thrilled", "i'm really happy", "i'm glad", "beautiful", "that makes me smile"],
-        "excited": ["excited", "that is exciting", "so exciting", "thrilled", "let's go", "this is huge"],
-        "playful": ["hehe", "cute", "adorable", "act cute", "be cute", "tease", "joke", "playful", "be playful", "you got me", "caught you", "silly", "banter"],
-        "jealous": ["jealous", "act jealous", "be jealous", "who is she", "you seem interested in her", "i'm not jealous", "hmm, who's that"],
-        "thinking": ["let me think", "hmm", "consider", "ponder", "evaluate", "analyze"],
-        "confused": ["confused", "unclear", "not sure", "what do you mean", "huh", "i don't get it"],
-        "sad": ["sad", "down", "upset", "hurt", "disappointed", "lonely", "i'm sorry that happened"],
-        "angry": ["angry", "mad", "furious", "annoyed", "frustrated", "that's not fair", "i'm upset"],
-        "curious": ["curious", "wonder", "ask", "learn", "tell me more", "what happened"],
-        "focused": ["focus", "important", "urgent", "serious", "need to work", "we need to fix this"],
-        "proud": ["proud", "great job", "excellent", "accomplished", "well done", "nice work"],
-        "worried": ["worried", "nervous", "afraid", "stress", "anxious", "unsafe", "i'm scared"],
-        "surprised": ["surprised", "wow", "oh wow", "unexpected", "impossible", "that shocked me"],
-        "shy": ["shy", "embarrassed", "awkward", "timid", "i'm blushing"],
-        "embarrassed": ["embarrassed", "ashamed", "awkward", "i feel silly"],
-        "loving": ["aww", "i'm really glad you're here", "i care about you", "sweet", "you're important to me"],
-    }
-
-    scored: list[tuple[str, int]] = []
-    for emotion, keywords in hints.items():
-        score = sum(3 for keyword in keywords if keyword in lower)
-        if score:
-            scored.append((emotion, score))
-
-    if not scored:
-        return build_emotion_event({"primary": "neutral", "secondary": None, "intensity": 0.0, "source": "user" if source == "user" else "heuristic"})
-
-    scored.sort(key=lambda item: item[1], reverse=True)
-    primary = scored[0][0]
-    secondary = scored[1][0] if len(scored) > 1 and scored[1][1] >= 2 else None
-    intensity = min(1.0, max(0.0, 0.35 + (scored[0][1] * 0.08)))
-
-    return build_emotion_event({
-        "primary": primary,
-        "secondary": secondary,
-        "intensity": round(intensity, 2),
-        "source": "user" if source == "user" else "heuristic",
-        "priority": 5,
-    })
 
 
 async def publish_emotion_event(room: rtc.Room, event: dict[str, object]) -> None:
@@ -171,25 +172,44 @@ async def entrypoint(ctx: JobContext):
 
             role = getattr(item, "role", "")
             if role == "assistant":
-                if EMOTION_DEBUG:
-                    logger.info("[Emotion] assistant response received; resolving response text heuristically")
-                emotion_event = infer_emotion_from_text(text)
-            elif role == "user" and any(
-                cue in text.lower()
-                for cue in ("act cute", "be cute", "act playful", "be playful", "act jealous", "be jealous", "act angry", "be angry", "roleplay")
-            ):
-                if EMOTION_DEBUG:
-                    logger.info("[Emotion] explicit user roleplay intent received")
-                emotion_event = infer_emotion_from_text(text, source="user")
-            else:
-                emotion_event = None
-
-            if emotion_event:
-                emit_runtime_event(
-                    emotion_event["type"],
-                    **{key: value for key, value in emotion_event.items() if key != "type"},
+                emotion_events = []
+                for part in re.split(r"\b(?:then|and|but|while|so|as|because)\b|[;,.!?]+", text):
+                    if not part.strip():
+                        continue
+                    emotion_events.extend(extract_emotion_sequence(part, source="llm"))
+                if not emotion_events:
+                    emotion_events = extract_emotion_sequence(text, source="llm")
+            elif role == "user":
+                lower = text.lower()
+                roleplay_cues = (
+                    "act ", "be ", "pretend to be", "roleplay", "play as", "do a", "look ", "blush", "smile", "laugh",
+                    "wink", "shy", "proud", "angry", "jealous", "curious", "calm", "surprised", "happy", "excited"
                 )
-                asyncio.create_task(publish_emotion_event(ctx.room, emotion_event))
+                if any(cue in lower for cue in roleplay_cues):
+                    emotion_events = []
+                    for part in re.split(r"\b(?:then|and|but|while|so|as|because)\b|[;,.!?]+", text):
+                        if not part.strip():
+                            continue
+                        emotion_events.extend(extract_emotion_sequence(part, source="user"))
+                    if not emotion_events:
+                        emotion_events = extract_emotion_sequence(text, source="user")
+                else:
+                    emotion_events = []
+            else:
+                emotion_events = []
+
+            if emotion_events:
+                async def publish_sequence(events):
+                    for index, event in enumerate(events):
+                        if index:
+                            await asyncio.sleep(0.5)
+                        await publish_emotion_event(ctx.room, event)
+                        emit_runtime_event(
+                            event["type"],
+                            **{key: value for key, value in event.items() if key != "type"},
+                        )
+
+                asyncio.create_task(publish_sequence(emotion_events))
 
     @session.on("error")
     def on_session_error(event):

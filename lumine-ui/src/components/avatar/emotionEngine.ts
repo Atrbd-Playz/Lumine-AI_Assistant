@@ -72,9 +72,10 @@ export class LumineAvatarEngine {
     this.intensity = nextIntensity;
     const transitionId = ++this.transitionToken;
     const start = performance.now();
+    const transitionDuration = 420;
     const tick = (now: number) => {
       if (transitionId !== this.transitionToken || this.destroyed) return;
-      const progress = clamp01((now - start) / 260);
+      const progress = clamp01((now - start) / transitionDuration);
       this.render(interpolatePose(from, to, easeInOut(progress)), interpolateArcPose(fromArc, toArc, easeInOut(progress)));
       if (progress < 1) this.transitionRaf = requestAnimationFrame(tick); else this.render();
     };
@@ -86,7 +87,7 @@ export class LumineAvatarEngine {
       proud: "blink", worried: "lookLeft", playful: "wiggle", loving: "happyBlink", jealous: "peek", wink: "happyBlink",
     };
     const animation = signature[emotion];
-    if (animation) window.setTimeout(() => { if (transitionId === this.transitionToken) void this.play(animation, 2); }, 270);
+    if (animation) window.setTimeout(() => { if (transitionId === this.transitionToken) void this.play(animation, 2); }, 360);
   }
   setActivity(activity: LumineActivity) { this.activity = activity; this.render(); }
   setEyeMode(mode: ExpressiveEyeMode) {
