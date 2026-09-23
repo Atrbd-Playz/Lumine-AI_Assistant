@@ -8,10 +8,10 @@ import type { LumineActivity, LumineEmotion, LumineEmotionIntent } from "../../.
 import type { LumineState } from "../types";
 import { clamp } from "../utils";
 
-const deadzone = 0.12;
-const gazeSmoothing = 0.08;
-const gazeRangeX = 7.5;
-const gazeRangeY = 5.5;
+const deadzone = 0.06;
+const gazeSmoothing = 0.18;
+const gazeRangeX = 11.5;
+const gazeRangeY = 7.5;
 const DEFAULT_REACTION_HOLD_MS = 3000;
 
 const stateEmotion: Record<LumineState, LumineEmotion> = { idle: "neutral", listening: "neutral", thinking: "thinking", speaking: "neutral" };
@@ -43,24 +43,35 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
       }
       const rect = avatar.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
-      const nextX = clamp((event.clientX - (rect.left + rect.width / 2)) / (rect.width / 2), -1, 1) * gazeRangeX;
-      const nextY = clamp((event.clientY - (rect.top + rect.height / 2)) / (rect.height / 2), -1, 1) * gazeRangeY;
+
+      const pointerX = clamp((event.clientX - (rect.left + rect.width / 2)) / (rect.width / 2), -1, 1);
+      const pointerY = clamp((event.clientY - (rect.top + rect.height / 2)) / (rect.height / 2), -1, 1);
+      const motionBoostX = clamp((event.movementX ?? 0) / Math.max(window.innerWidth, 1) * 18, -2.5, 2.5);
+      const motionBoostY = clamp((event.movementY ?? 0) / Math.max(window.innerHeight, 1) * 18, -2.5, 2.5);
+
+      const nextX = pointerX * gazeRangeX + motionBoostX;
+      const nextY = pointerY * gazeRangeY + motionBoostY;
       const dx = nextX - targetGazeRef.current.x;
       const dy = nextY - targetGazeRef.current.y;
       const distance = Math.hypot(dx, dy);
-      if (distance < deadzone * 2) {
-        targetGazeRef.current = { x: 0, y: 0 };
+
+      if (distance < deadzone * 8) {
+        targetGazeRef.current = { x: targetGazeRef.current.x * 0.7, y: targetGazeRef.current.y * 0.7 };
         return;
       }
+
       targetGazeRef.current = { x: nextX, y: nextY };
     };
 
     const tick = () => {
       const target = targetGazeRef.current;
       const current = currentGazeRef.current;
+      const nextX = current.x + (target.x - current.x) * gazeSmoothing;
+      const nextY = current.y + (target.y - current.y) * gazeSmoothing;
+
       currentGazeRef.current = {
-        x: current.x + (target.x - current.x) * gazeSmoothing,
-        y: current.y + (target.y - current.y) * gazeSmoothing,
+        x: nextX + (target.x - nextX) * 0.16,
+        y: nextY + (target.y - nextY) * 0.16,
       };
       engine.setGaze(currentGazeRef.current.x, currentGazeRef.current.y);
       rafRef.current = window.requestAnimationFrame(tick);
