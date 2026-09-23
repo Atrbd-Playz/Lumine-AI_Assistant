@@ -1,5 +1,6 @@
 import {
   ArrowCounterClockwise,
+  Eye,
   Bell,
   ChatCircle,
   Check,
@@ -26,6 +27,7 @@ import type { IconName } from "../types";
 
 const iconMap: Record<IconName, PhosphorIcon> = {
   home: House,
+  avatar: Eye,
   spark: Sparkle,
   check: Check,
   clock: Clock,

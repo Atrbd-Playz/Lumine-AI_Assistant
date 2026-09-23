@@ -38,6 +38,7 @@ export type ThemePresetCollection = Partial<Record<ThemeMode, Record<string, App
 
 export type IconName =
   | "home"
+  | "avatar"
   | "chat"
   | "tools"
   | "memory"

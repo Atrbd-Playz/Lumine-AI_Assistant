@@ -12,9 +12,10 @@ import { useConversation } from "./home/conversation/useConversation";
 import { ConversationPanel } from "./home/components/ConversationPanel";
 import type { Appearance } from "./home/types";
 import { useLumineVoice } from "../features/voice/useLumineVoice";
+import AvatarLabPage from "./AvatarLabPage";
 
 export default function Home() {
-  const [nav, setNav] = useState("home");
+  const [nav, setNav] = useState(() => window.location.pathname === "/avatar" ? "avatar" : "home");
   const [glassMode, setGlassMode] = useState(() => localStorage.getItem("lumine.presentation-mode") === "glass");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [conversationOpen, setConversationOpen] = useState(false);
@@ -31,6 +32,7 @@ export default function Home() {
     }
     setConversationOpen(false);
     setNav(next);
+    window.history.pushState({}, "", next === "home" ? "/" : `/${next}`);
   };
 
   const sessionState: LumineState = session.status === "speaking" ? "speaking" : session.status === "listening" ? "listening" : session.status === "idle" || session.status === "error" ? "idle" : "thinking";
@@ -92,7 +94,9 @@ export default function Home() {
       onGlassModeToggle={toggleGlassMode}
       muted={session.muted}
       onMuteToggle={() => { void session.toggleMute(); }}
-    /> : <WorkspaceView kind={nav as "tools" | "memory" | "activity"} onSettings={() => setSettingsOpen(true)} />}
+      emotion={session.emotion}
+      showEmotionDebug={import.meta.env.VITE_LUMINE_DEBUG_EMOTION === "true"}
+    /> : nav === "avatar" ? <AvatarLabPage /> : <WorkspaceView kind={nav as "tools" | "memory" | "activity"} onSettings={() => setSettingsOpen(true)} />}
     {conversationOpen && nav === "home" && <ConversationPanel messages={conversation.messages} agentStatus={conversationStatus} bubbleVariant={appearance.chatBubbleVariant} onClose={() => setConversationOpen(false)} onClear={conversation.clearMessages} onReset={conversation.resetMessages} onAddMessage={conversation.addMessage} />}
     {settingsOpen && <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={() => { setMode("dark"); setCursorGaze(true); resetAppearance(); }} onClose={() => setSettingsOpen(false)} />}
   </div>;

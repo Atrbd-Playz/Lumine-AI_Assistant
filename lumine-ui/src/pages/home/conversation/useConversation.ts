@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { mockConversationService } from "./mockConversationService";
 import type {
   ConversationAgentStatus,
@@ -18,19 +18,19 @@ export function useConversation({ service = mockConversationService }: UseConver
   const [agentStatus, setAgentStatus] = useState<ConversationAgentStatus>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  const addMessage = (message: Omit<ConversationMessage, "id"> & { id?: string }) => {
+  const addMessage = useCallback((message: Omit<ConversationMessage, "id"> & { id?: string }) => {
     const nextMessage = { ...message, id: message.id ?? createMessageId() };
     setMessages((current) => [...current, nextMessage]);
     return nextMessage.id;
-  };
+  }, []);
 
-  const updateMessage = (id: string, changes: Partial<Omit<ConversationMessage, "id">>) => {
+  const updateMessage = useCallback((id: string, changes: Partial<Omit<ConversationMessage, "id">>) => {
     setMessages((current) => current.map((message) => message.id === id ? { ...message, ...changes } : message));
-  };
+  }, []);
 
-  const updateMessageStatus = (id: string, status: ConversationMessageStatus) => {
-    updateMessage(id, { status });
-  };
+  const updateMessageStatus = useCallback((id: string, status: ConversationMessageStatus) => {
+    setMessages((current) => current.map((message) => message.id === id ? { ...message, status } : message));
+  }, []);
 
   const clearMessages = () => setMessages([]);
   const resetMessages = () => {

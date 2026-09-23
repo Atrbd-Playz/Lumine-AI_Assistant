@@ -26,6 +26,7 @@ export function useLumineSession({ onMessage, onUpdateMessage, onError }: UseLum
       {
         onMessage: (message) => onMessage(message as Omit<ConversationMessage, "id"> & { id?: string }),
         onUpdateMessage: (id, changes) => onUpdateMessage(id, changes as Partial<Omit<ConversationMessage, "id">>),
+        onEmotion: () => undefined,
         onError,
       },
       (next) => setSnapshot(next),

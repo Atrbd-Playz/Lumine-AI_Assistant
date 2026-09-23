@@ -1,6 +1,8 @@
 import { ParticipantKind, Room, RoomEvent, Track, type Participant, type RemoteParticipant, type RemoteTrack, type RemoteTrackPublication, type TranscriptionSegment } from "livekit-client";
 import { invoke } from "@tauri-apps/api/core";
 import { LIVEKIT_URL, getLiveKitToken } from "../../lib/livekit";
+import { resolveEmotionIntent } from "../emotion/emotion-controller";
+import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
 
 export type LumineVoiceStatus =
   | "idle"
@@ -16,6 +18,7 @@ export type VoiceMessage = {
   role: "user" | "lumine";
   content: string;
   timestamp: Date;
+  sessionId?: string;
   type: "voice";
   status: "complete" | "processing";
 };
@@ -38,6 +41,7 @@ type SessionContext = {
   room: Room;
   remoteAudioElements: Set<HTMLAudioElement>;
   attachedTrackSids: Set<string>;
+  transcriptMessageIds: Set<string>;
   agentTimer?: number;
   agentConnected: boolean;
   muted: boolean;
@@ -49,6 +53,7 @@ const TOKEN_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const DISPATCH_TIMEOUT_MS = 10_000;
 const AGENT_TIMEOUT_MS = 15_000;
+const EMOTION_DEBUG = import.meta.env.VITE_LUMINE_DEBUG_EMOTION === "true";
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string) {
   let timer: number | undefined;
@@ -93,6 +98,7 @@ async function disconnectRoom(room: Room) {
 export type VoiceLifecycleCallbacks = {
   onMessage: (message: Record<string, unknown> & { id?: string }) => void;
   onUpdateMessage: (id: string, changes: Partial<Record<string, unknown>>) => void;
+  onEmotion: (emotion: LumineEmotionIntent) => void;
   onError: (message: string) => void;
 };
 
@@ -213,6 +219,7 @@ export class LumineVoiceManager {
       room: new Room({ adaptiveStream: true, dynacast: true }),
       remoteAudioElements: new Set(),
       attachedTrackSids: new Set(),
+      transcriptMessageIds: new Set(),
       agentConnected: false,
       muted: false,
       disposed: false,
@@ -325,13 +332,41 @@ export class LumineVoiceManager {
         timestamp: new Date(),
         type: "voice",
         status: segments.every((segment) => segment.final) ? "complete" : "processing",
+        sessionId: session.id,
       };
 
       const rawId = segments[0]?.id;
       if (rawId) {
-        this.callbacks.onUpdateMessage(rawId, message as Partial<Record<string, unknown>>);
+        if (session.transcriptMessageIds.has(rawId)) {
+          this.callbacks.onUpdateMessage(rawId, message as Partial<Record<string, unknown>>);
+        } else {
+          session.transcriptMessageIds.add(rawId);
+          this.callbacks.onMessage({ ...message, id: rawId } as Record<string, unknown>);
+        }
       } else {
         this.callbacks.onMessage(message as Record<string, unknown>);
+      }
+    };
+
+    const handleDataReceived = (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
+      if (!ownsSession() || !participant || !isAgent(participant) || topic !== "lumine.emotion") {
+        return;
+      }
+
+      if (EMOTION_DEBUG) console.info("[Emotion] packet received", { sessionId: session.id, topic, sender: participant.identity });
+      try {
+        const event = JSON.parse(new TextDecoder().decode(payload)) as {
+          type?: string;
+          payload?: Partial<LumineEmotionIntent> & { primary?: string; source?: string };
+        };
+        if (event.type !== "lumine.emotion" || !event.payload) {
+          return;
+        }
+        const emotion = resolveEmotionIntent(event.payload);
+        if (EMOTION_DEBUG) console.info("[Emotion] parsed", emotion);
+        this.callbacks.onEmotion(emotion);
+      } catch (error) {
+        console.warn("[Voice] Ignoring malformed emotion event", error);
       }
     };
 
@@ -343,6 +378,7 @@ export class LumineVoiceManager {
     room.on(RoomEvent.Disconnected, handleDisconnected);
     room.on(RoomEvent.Reconnecting, handleReconnecting);
     room.on(RoomEvent.TranscriptionReceived, handleTranscription);
+    room.on(RoomEvent.DataReceived, handleDataReceived);
 
     try {
       console.info("[Voice] Creating session", { sessionId, room: roomName, identity });

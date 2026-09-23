@@ -81,6 +81,7 @@ export const INITIAL_ENTRIES: Entry[] = [
 
 export const NAV_ITEMS = [
   ["home", "home", "Home"],
+  ["avatar", "avatar", "Avatar Lab"],
   ["conversation", "chat", "Conversation"],
   ["tools", "tools", "Tools"],
   ["memory", "memory", "Memory"],

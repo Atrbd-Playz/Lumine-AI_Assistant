@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConversationMessage } from "../../pages/home/conversation/types";
 import { LumineVoiceManager, type LumineVoiceStatus } from "./voice-manager";
+import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
 
 export type LumineVoiceConnectionState = LumineVoiceStatus | "online" | "waiting" | "reconnecting";
 
 export type UseLumineVoiceOptions = {
   onMessage: (message: Omit<ConversationMessage, "id"> & { id?: string }) => void;
   onUpdateMessage: (id: string, changes: Partial<Omit<ConversationMessage, "id">>) => void;
+  onEmotion?: (emotion: LumineEmotionIntent) => void;
   onError: (message: string) => void;
 };
 
-export function useLumineVoice({ onMessage, onUpdateMessage, onError }: UseLumineVoiceOptions) {
+export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onError }: UseLumineVoiceOptions) {
   const managerRef = useRef<LumineVoiceManager | null>(null);
   const [snapshot, setSnapshot] = useState({
     state: "idle" as LumineVoiceStatus,
@@ -21,12 +23,14 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onError }: UseLumin
     sessionId: null as string | null,
     roomName: null as string | null,
   });
+  const [emotion, setEmotion] = useState<LumineEmotionIntent | null>(null);
 
   if (!managerRef.current) {
     managerRef.current = new LumineVoiceManager(
       {
         onMessage: (message) => onMessage(message as Omit<ConversationMessage, "id"> & { id?: string }),
         onUpdateMessage: (id, changes) => onUpdateMessage(id, changes as Partial<Omit<ConversationMessage, "id">>),
+        onEmotion: (nextEmotion) => { setEmotion(nextEmotion); onEmotion?.(nextEmotion); },
         onError,
       },
       (next) => setSnapshot(next),
@@ -37,8 +41,15 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onError }: UseLumin
     setSnapshot(managerRef.current!.getSnapshot());
     return () => {
       void managerRef.current?.stop();
+      setEmotion(null);
     };
   }, []);
+
+  useEffect(() => {
+    if (snapshot.state === "idle" || snapshot.state === "error") {
+      setEmotion(null);
+    }
+  }, [snapshot.state]);
 
   const status: LumineVoiceConnectionState = snapshot.state === "idle"
     ? "idle"
@@ -62,6 +73,7 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onError }: UseLumin
     state: snapshot.state,
     status,
     error: snapshot.error,
+    emotion,
     startedAt: snapshot.startedAt,
     isActive: snapshot.isActive,
     muted: snapshot.muted,
