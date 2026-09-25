@@ -83,9 +83,20 @@ fn get_livekit_token(room: String, identity: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn dispatch_agent(room: String) -> Result<String, String> {
+fn dispatch_agent(room: String, metadata: Option<String>) -> Result<String, String> {
     if room.is_empty() || room.len() > 128 || !room.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte)) {
         return Err("Invalid LiveKit room name.".to_string());
+    }
+    if let Some(value) = metadata.as_deref() {
+        if value.is_empty() || value.len() > 4096 {
+            return Err("Invalid agent session metadata.".to_string());
+        }
+        let parsed: serde_json::Value = serde_json::from_str(value)
+            .map_err(|_| "Invalid agent session metadata.".to_string())?;
+        let mode = parsed.get("interruption_mode").and_then(serde_json::Value::as_str);
+        if !matches!(mode, Some("finish_response" | "barge_in")) {
+            return Err("Invalid interruption mode.".to_string());
+        }
     }
 
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
@@ -98,10 +109,15 @@ fn dispatch_agent(room: String) -> Result<String, String> {
         if bundled.exists() { bundled.to_string_lossy().to_string() } else { "python".to_string() }
     });
     let script = root.join("agent").join("livekit_dispatch.py");
-    let output = Command::new(python)
+    let mut command = Command::new(python);
+    command
         .arg(script)
         .arg(room)
-        .arg("lumine")
+        .arg("lumine");
+    if let Some(value) = metadata {
+        command.arg(value);
+    }
+    let output = command
         .current_dir(&root)
         .output()
         .map_err(|error| format!("Could not dispatch Lumine: {error}"))?;

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LIVEKIT_URL, getLiveKitToken } from "../../lib/livekit";
 import { resolveEmotionIntent } from "../emotion/emotion-controller";
 import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
+import { interruptionMetadata, type InterruptionMode } from "./interruption";
 
 export type LumineVoiceStatus =
   | "disconnected"
@@ -26,6 +27,16 @@ export type VoiceMessage = {
   status: "complete" | "processing";
 };
 
+export type VoiceToolEvent = {
+  id: string;
+  name: string;
+  status: "started" | "completed" | "failed";
+  message: string;
+  timestamp: Date;
+  sessionId: string;
+  durationMs?: number;
+};
+
 export type VoiceManagerSnapshot = {
   state: LumineVoiceStatus;
   muted: boolean;
@@ -43,6 +54,7 @@ type SessionContext = {
   identity: string;
   room: Room;
   remoteAudioElements: Set<HTMLAudioElement>;
+  audioElementsByTrack: Map<string, HTMLAudioElement>;
   attachedTrackSids: Set<string>;
   transcriptMessageIds: Set<string>;
   agentTimer?: number;
@@ -57,6 +69,38 @@ const CONNECT_TIMEOUT_MS = 15_000;
 const DISPATCH_TIMEOUT_MS = 10_000;
 const AGENT_TIMEOUT_MS = 15_000;
 const EMOTION_DEBUG = import.meta.env.VITE_LUMINE_DEBUG_EMOTION === "true";
+
+type ToolStatusPayload = {
+  type?: string;
+  id?: string;
+  name?: string;
+  tool?: string;
+  status?: string;
+  message?: string;
+  summary?: string;
+  duration_ms?: number;
+  timestamp?: number;
+};
+
+function parseToolStatus(payload: unknown, sessionId: string): VoiceToolEvent | null {
+  if (!payload || typeof payload !== "object") return null;
+  const event = payload as ToolStatusPayload;
+  if (event.type !== "tool_status") return null;
+  const name = (event.name || event.tool || "tool").trim();
+  const status = event.status;
+  if (!name || !event.id || (status !== "started" && status !== "completed" && status !== "failed")) {
+    return null;
+  }
+  return {
+    id: event.id,
+    name,
+    status,
+    message: event.message || event.summary || "",
+    timestamp: typeof event.timestamp === "number" ? new Date(event.timestamp * 1000) : new Date(),
+    sessionId,
+    durationMs: typeof event.duration_ms === "number" ? event.duration_ms : undefined,
+  };
+}
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, message: string) {
   let timer: number | undefined;
@@ -102,6 +146,7 @@ export type VoiceLifecycleCallbacks = {
   onMessage: (message: Record<string, unknown> & { id?: string }) => void;
   onUpdateMessage: (id: string, changes: Partial<Record<string, unknown>>) => void;
   onEmotion: (emotion: LumineEmotionIntent) => void;
+  onToolEvent: (event: VoiceToolEvent) => void;
   onError: (message: string) => void;
 };
 
@@ -176,6 +221,8 @@ export class LumineVoiceManager {
         element.remove();
       });
       session.remoteAudioElements.clear();
+      session.audioElementsByTrack.clear();
+      session.attachedTrackSids.clear();
       await disconnectRoom(session.room);
     } catch (error) {
       console.warn("[Voice] Cleanup warning", error);
@@ -204,7 +251,7 @@ export class LumineVoiceManager {
     console.info("[Voice] Cleanup complete", { sessionId: session.id, room: session.roomName });
   }
 
-  async start(): Promise<void> {
+  async start(interruptionMode: InterruptionMode = "barge_in"): Promise<void> {
     if (this.operationLock && this.activeSession) {
       return;
     }
@@ -217,6 +264,15 @@ export class LumineVoiceManager {
     const sessionId = crypto.randomUUID();
     const roomName = createRoomName();
     const identity = `user-${sessionId.slice(0, 12)}`;
+    const latencyStartedAt = performance.now();
+    const markLatency = (stage: string, details: Record<string, unknown> = {}) => {
+      console.info("[Voice][Latency]", {
+        sessionId,
+        stage,
+        elapsedMs: Math.round(performance.now() - latencyStartedAt),
+        ...details,
+      });
+    };
 
     const session: SessionContext = {
       id: sessionId,
@@ -225,6 +281,7 @@ export class LumineVoiceManager {
       identity,
       room: new Room({ adaptiveStream: true, dynacast: true }),
       remoteAudioElements: new Set(),
+      audioElementsByTrack: new Map(),
       attachedTrackSids: new Set(),
       transcriptMessageIds: new Set(),
       agentConnected: false,
@@ -241,21 +298,40 @@ export class LumineVoiceManager {
     const ownsSession = () => this.isCurrentSession(session);
 
     const attachAudio = (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
-      if (track.kind !== Track.Kind.Audio || !isAgent(participant) || !ownsSession() || session.attachedTrackSids.has(publication.trackSid)) {
+      const existing = session.audioElementsByTrack.get(publication.trackSid);
+      if (track.kind !== Track.Kind.Audio || !isAgent(participant) || !ownsSession() || (existing && !existing.ended)) {
         return;
+      }
+      if (existing) {
+        session.remoteAudioElements.delete(existing);
+        existing.remove();
       }
 
       session.attachedTrackSids.add(publication.trackSid);
       const element = track.attach();
       element.autoplay = true;
       session.remoteAudioElements.add(element);
+      session.audioElementsByTrack.set(publication.trackSid, element);
       console.info("[Voice] Audio attached", { sessionId, trackSid: publication.trackSid });
+      markLatency("agent_audio_attached", { trackSid: publication.trackSid });
       this.setState("speaking");
 
+      const logMediaEvent = (eventName: string) => {
+        console.info("[Voice][Audio]", { sessionId, trackSid: publication.trackSid, event: eventName });
+      };
+      element.addEventListener("playing", () => logMediaEvent("playing"));
+      element.addEventListener("stalled", () => logMediaEvent("stalled"));
+      element.addEventListener("waiting", () => logMediaEvent("waiting"));
+      element.addEventListener("error", () => logMediaEvent("error"));
       element.addEventListener(
         "ended",
         () => {
+          logMediaEvent("ended");
           session.remoteAudioElements.delete(element);
+          if (session.audioElementsByTrack.get(publication.trackSid) === element) {
+            session.audioElementsByTrack.delete(publication.trackSid);
+            session.attachedTrackSids.delete(publication.trackSid);
+          }
           element.remove();
           if (ownsSession()) {
             this.setState("listening");
@@ -265,6 +341,7 @@ export class LumineVoiceManager {
       );
 
       void element.play().catch(() => {
+        logMediaEvent("play_rejected");
         if (ownsSession()) {
           void this.handleFailure("Lumine connected, but audio playback was blocked.");
         }
@@ -294,6 +371,7 @@ export class LumineVoiceManager {
       }
 
       console.info("[Voice] Agent joined", { sessionId: session.id, identity: participant.identity });
+      markLatency("agent_joined", { identity: participant.identity });
       this.setState("connected");
       this.setState("listening");
       participant.audioTrackPublications.forEach((publication) => handlePublished(publication, participant));
@@ -303,14 +381,34 @@ export class LumineVoiceManager {
       attachAudio(track, publication, participant);
     };
 
-    const handleUnsubscribed = (track: RemoteTrack) => {
+    const handleUnsubscribed = (track: RemoteTrack, publication?: RemoteTrackPublication) => {
       if (!ownsSession()) {
         return;
+      }
+      const trackSid = publication?.trackSid ?? track.sid;
+      console.info("[Voice][Audio]", { sessionId: session.id, trackSid, event: "unsubscribed" });
+      markLatency("agent_track_unsubscribed", { trackSid });
+      if (!trackSid) {
+        track.detach().forEach((element) => {
+          session.remoteAudioElements.delete(element);
+          element.remove();
+        });
+        return;
+      }
+      session.attachedTrackSids.delete(trackSid);
+      const attached = session.audioElementsByTrack.get(trackSid);
+      if (attached) {
+        session.audioElementsByTrack.delete(trackSid);
+        session.remoteAudioElements.delete(attached);
+        attached.remove();
       }
       track.detach().forEach((element) => {
         session.remoteAudioElements.delete(element);
         element.remove();
       });
+      if (session.remoteAudioElements.size === 0 && ownsSession()) {
+        this.setState("listening");
+      }
     };
 
     const handleDisconnected = () => {
@@ -359,24 +457,32 @@ export class LumineVoiceManager {
     };
 
     const handleDataReceived = (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
-      if (!ownsSession() || !participant || !isAgent(participant) || topic !== "lumine.emotion") {
+      if (!ownsSession() || !participant || !isAgent(participant) || (topic !== "lumine.emotion" && topic !== "lumine.tool")) {
         return;
       }
 
-      if (EMOTION_DEBUG) console.info("[Emotion] packet received", { sessionId: session.id, topic, sender: participant.identity });
+      const receivedAt = performance.now();
+      if (EMOTION_DEBUG) console.info("[Voice] data packet received", { sessionId: session.id, topic, sender: participant.identity, receivedAt });
       try {
-        const event = JSON.parse(new TextDecoder().decode(payload)) as {
+        const decoded = JSON.parse(new TextDecoder().decode(payload)) as {
           type?: string;
           payload?: Partial<LumineEmotionIntent> & { primary?: string; source?: string };
         };
-        if (event.type !== "lumine.emotion" || !event.payload) {
+        if (topic === "lumine.tool") {
+          const toolEvent = parseToolStatus(decoded, session.id);
+          if (toolEvent) {
+            this.callbacks.onToolEvent(toolEvent);
+          }
           return;
         }
-        const emotion = resolveEmotionIntent(event.payload);
+        if (decoded.type !== "lumine.emotion" || !decoded.payload) {
+          return;
+        }
+        const emotion = resolveEmotionIntent(decoded.payload);
         if (EMOTION_DEBUG) console.info("[Emotion] parsed", emotion);
         this.callbacks.onEmotion(emotion);
       } catch (error) {
-        console.warn("[Voice] Ignoring malformed emotion event", error);
+        console.warn("[Voice] Ignoring malformed data event", error);
       }
     };
 
@@ -392,6 +498,7 @@ export class LumineVoiceManager {
 
     try {
       console.info("[Voice] Creating session", { sessionId, room: roomName, identity });
+      markLatency("creating_session");
 
       if (!LIVEKIT_URL) {
         throw new Error("LiveKit is not configured. Set VITE_LIVEKIT_URL and try again.");
@@ -401,17 +508,20 @@ export class LumineVoiceManager {
       // Do not wait on the Tauri-side worker readiness gate here; the live agent is
       // already registered through `lk agent dev` and can join a fresh session room.
       const token = await withTimeout(getLiveKitToken(roomName, identity), TOKEN_TIMEOUT_MS, "Couldn't create a secure voice session token.");
+      markLatency("token_ready");
       if (!ownsSession()) {
         return;
       }
 
       console.info("[Voice] Starting session", { sessionId, room: roomName });
       await withTimeout(room.connect(LIVEKIT_URL, token), CONNECT_TIMEOUT_MS, "Couldn't connect to LiveKit.");
+      markLatency("room_connected");
       if (!ownsSession()) {
         return;
       }
 
       await room.localParticipant.setMicrophoneEnabled(true);
+      markLatency("microphone_ready");
       this.muted = false;
       this.setState("initializing");
 
@@ -423,7 +533,8 @@ export class LumineVoiceManager {
         void this.handleFailure("Lumine's voice service did not join the session.");
       }, AGENT_TIMEOUT_MS);
 
-      await withTimeout(invoke<string>("dispatch_agent", { room: roomName }), DISPATCH_TIMEOUT_MS, "Lumine's voice service could not be dispatched.");
+      await withTimeout(invoke<string>("dispatch_agent", { room: roomName, metadata: interruptionMetadata(interruptionMode) }), DISPATCH_TIMEOUT_MS, "Lumine's voice service could not be dispatched.");
+      markLatency("agent_dispatched", { interruptionMode });
       if (!ownsSession()) {
         return;
       }

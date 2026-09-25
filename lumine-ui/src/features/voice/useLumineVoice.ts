@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { ConversationMessage } from "../../pages/home/conversation/types";
-import { LumineVoiceManager, type LumineVoiceStatus } from "./voice-manager";
+import type { ConversationMessage, ConversationToolEvent } from "../../pages/home/conversation/types";
+import { LumineVoiceManager, type LumineVoiceStatus, type VoiceToolEvent } from "./voice-manager";
 import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
+import { DEFAULT_INTERRUPTION_MODE, type InterruptionMode } from "./interruption";
 
 export type LumineVoiceConnectionState = LumineVoiceStatus | "online" | "waiting" | "reconnecting";
 
@@ -9,11 +10,17 @@ export type UseLumineVoiceOptions = {
   onMessage: (message: Omit<ConversationMessage, "id"> & { id?: string }) => void;
   onUpdateMessage: (id: string, changes: Partial<Omit<ConversationMessage, "id">>) => void;
   onEmotion?: (emotion: LumineEmotionIntent) => void;
+  onToolEvent?: (event: ConversationToolEvent) => void;
+  interruptionMode?: InterruptionMode;
   onError: (message: string) => void;
 };
 
-export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onError }: UseLumineVoiceOptions) {
+export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEvent, interruptionMode = DEFAULT_INTERRUPTION_MODE, onError }: UseLumineVoiceOptions) {
   const managerRef = useRef<LumineVoiceManager | null>(null);
+  const interruptionModeRef = useRef(interruptionMode);
+  useEffect(() => {
+    interruptionModeRef.current = interruptionMode;
+  }, [interruptionMode]);
   const [snapshot, setSnapshot] = useState({
     state: "idle" as LumineVoiceStatus,
     muted: false,
@@ -31,6 +38,19 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onError 
         onMessage: (message) => onMessage(message as Omit<ConversationMessage, "id"> & { id?: string }),
         onUpdateMessage: (id, changes) => onUpdateMessage(id, changes as Partial<Omit<ConversationMessage, "id">>),
         onEmotion: (nextEmotion) => { setEmotion(nextEmotion); onEmotion?.(nextEmotion); },
+        onToolEvent: (event: VoiceToolEvent) => {
+          const conversationEvent: ConversationToolEvent = {
+            id: `${event.sessionId}:${event.id}`,
+            type: "tool",
+            name: event.name,
+            status: event.status,
+            timestamp: event.timestamp,
+            sessionId: event.sessionId,
+            summary: event.message,
+            durationMs: event.durationMs,
+          };
+          onToolEvent?.(conversationEvent);
+        },
         onError,
       },
       (next) => setSnapshot(next),
@@ -78,9 +98,9 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onError 
     isActive: snapshot.isActive,
     muted: snapshot.muted,
     session: snapshot.sessionId ? { sessionId: snapshot.sessionId, roomName: snapshot.roomName ?? "", participantIdentity: "", agentIdentity: "Lumine" } : null,
-    connect: () => managerRef.current!.start(),
+    connect: () => managerRef.current!.start(interruptionModeRef.current),
     disconnect: () => managerRef.current!.stop(),
-    start: () => managerRef.current!.start(),
+    start: () => managerRef.current!.start(interruptionModeRef.current),
     stop: () => managerRef.current!.stop(),
     setMuted: (muted: boolean) => managerRef.current!.setMuted(muted),
     toggleMute: () => managerRef.current!.setMuted(!snapshot.muted),

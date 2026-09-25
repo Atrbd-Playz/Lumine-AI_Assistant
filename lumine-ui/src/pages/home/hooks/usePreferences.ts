@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { DEFAULT_APPEARANCE, DEFAULT_DARK_PALETTE, DEFAULT_LIGHT_PALETTE, DEFAULT_THEME_PALETTES, DEFAULT_THEME_PRESETS } from "../constants";
+import { DEFAULT_INTERRUPTION_MODE, normalizeInterruptionMode, type InterruptionMode } from "../../../features/voice/interruption";
 import type { Appearance, AppearancePreset, ThemeMode, ThemePalettes, ThemePresetCollection } from "../types";
 
 const STORAGE_KEY = "lumine.preferences.v1";
@@ -7,6 +8,7 @@ const STORAGE_KEY = "lumine.preferences.v1";
 type StoredPreferences = {
   mode: ThemeMode;
   cursorGaze: boolean;
+  interruptionMode: InterruptionMode;
   appearance: Appearance;
   presets: Record<string, AppearancePreset>;
   palettes: ThemePalettes;
@@ -16,6 +18,7 @@ type StoredPreferences = {
 const DEFAULT_PREFERENCES: StoredPreferences = {
   mode: "dark",
   cursorGaze: true,
+  interruptionMode: DEFAULT_INTERRUPTION_MODE,
   appearance: DEFAULT_APPEARANCE,
   presets: {},
   palettes: DEFAULT_THEME_PALETTES,
@@ -38,6 +41,7 @@ function readPreferences(): StoredPreferences {
       presets: parsed.presets ?? {},
       palettes: { ...DEFAULT_THEME_PALETTES, ...palettes },
       themePresets: parsed.themePresets ?? DEFAULT_THEME_PRESETS,
+      interruptionMode: normalizeInterruptionMode(parsed.interruptionMode),
     };
   } catch {
     return DEFAULT_PREFERENCES;
@@ -58,6 +62,8 @@ export function usePreferences() {
     setMode: (mode: ThemeMode) => setPreferences((current) => ({ ...current, mode, appearance: { ...current.appearance, ...current.palettes[mode] } })),
     cursorGaze: preferences.cursorGaze,
     setCursorGaze: (cursorGaze: boolean) => setPreferences((current) => ({ ...current, cursorGaze })),
+    interruptionMode: preferences.interruptionMode,
+    setInterruptionMode: (interruptionMode: InterruptionMode) => setPreferences((current) => ({ ...current, interruptionMode })),
     appearance,
     setAppearance: (nextAppearance: Appearance) => setPreferences((current) => ({ ...current, appearance: nextAppearance, palettes: { ...current.palettes, [current.mode]: toPalette(nextAppearance) } })),
     resetAppearance: () => setPreferences((current) => ({ ...current, appearance: { ...current.appearance, ...(current.mode === "light" ? DEFAULT_LIGHT_PALETTE : DEFAULT_DARK_PALETTE) }, palettes: { ...current.palettes, [current.mode]: current.mode === "light" ? DEFAULT_LIGHT_PALETTE : DEFAULT_DARK_PALETTE } })),

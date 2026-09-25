@@ -2,11 +2,11 @@
 
 ## Flow
 
-The microphone control creates a unique session UUID, `lumine-session-<uuid>` room, and matching `user-<uuid>` identity. Tauri starts the persistent worker once during application setup and waits for its installed Agents 1.8.1 `worker_registered` event before sessions begin. The worker executable is resolved from the repository `.venv` before PATH, and `agent.py` loads `agent/.env` by file location rather than process working directory. This matches the verified manual worker environment and avoids Tauri starting a Python installation without the Cartesia plugin.
+The microphone control creates a unique session UUID, `lumine-session-<uuid>` room, and matching `user-<uuid>` identity. Tauri starts the persistent worker once during application setup and waits for its installed Agents `worker_registered` event before sessions begin. The worker executable is resolved from the repository `.venv` before PATH, and `agent.py` loads `agent/.env` by file location rather than process working directory. This matches the verified manual worker environment.
 
 After the browser connects to the fresh room, Tauri invokes `agent/livekit_dispatch.py`, which calls the installed `LiveKitAPI.agent_dispatch.create_dispatch` service with agent name `lumine` and that exact room. The signing and dispatch scripts load `agent/.env`; secrets are never exposed through Vite or logged.
 
-The React `useLumineSession` hook connects `livekit-client@2.22.3`, publishes the microphone, waits for a remote participant whose LiveKit kind is `AGENT`, and attaches that participant's audio tracks. Runtime verification on this machine uses the installed `livekit-agents==1.8.1` with Silero VAD, Groq STT/LLM, and Cartesia TTS. Its `generate_reply` greeting uses the same TTS pipeline as normal replies.
+The React voice manager connects `livekit-client@2.22.3`, publishes the microphone, waits for a remote participant whose LiveKit kind is `AGENT`, and attaches that participant's audio tracks. The default worker profile is native Gemini Live (`gemini-3.1-flash-live-preview`); setting `LUMINE_PIPELINE=legacy_cascade` retains the Silero VAD, Groq STT/LLM, and Cartesia TTS pipeline. The settings dialog persists the interruption choice and sends it as dispatch metadata (`barge_in` or `finish_response`); the choice is applied when the next voice room is created. Tool lifecycle records are published on the reliable `lumine.tool` data topic and are also emitted as `LUMINE_EVENT` records for the desktop runtime.
 
 LiveKit transcription events populate the existing conversation panel. Stable segment IDs update interim messages instead of creating duplicate rows. Audio and listeners are detached on disconnect, unmount, timeout, or failed connection.
 
@@ -24,10 +24,15 @@ Backend-only `agent/.env`:
 LIVEKIT_URL=wss://your-project.livekit.cloud
 LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
-GROQ_API_KEY=...
-CARTESIA_API_KEY=...
-GROQ_MODEL=openai/gpt-oss-20b
+LUMINE_PIPELINE=gemini_live
+GOOGLE_API_KEY=...
+GEMINI_MODEL=gemini-3.1-flash-live-preview
+GEMINI_MAX_OUTPUT_TOKENS=1024
+# Used only when dispatch metadata is absent (for example, manual dispatches).
+LUMINE_INTERRUPTION_MODE=barge_in
 ```
+
+For the preserved legacy profile, also set `GROQ_API_KEY`, `CARTESIA_API_KEY`, and `GROQ_MODEL`, then use `LUMINE_PIPELINE=legacy_cascade`.
 
 Never use `VITE_` for a secret. Rotate any credentials that have been exposed outside the local environment.
 
@@ -69,9 +74,12 @@ Set `LUMINE_PYTHON_BIN` when Tauri should use a specific Python executable. Othe
 
 ## Common failures
 
+- **Gemini startup fails:** check `GOOGLE_API_KEY`, `GEMINI_MODEL`, and that `livekit-plugins-google>=1.8.2` is installed.
+- **Tool result missing from the UI:** confirm the worker publishes `tool_status` records on `lumine.tool`; tool failures should not disconnect the voice session.
 - **Token generation fails:** check backend-only variables and that the selected Python environment has `livekit-agents` installed.
 - **LiveKit URL missing:** set `VITE_LIVEKIT_URL` in `lumine-ui/.env` and restart Vite.
 - **Agent timeout:** confirm the worker is registered with the same LiveKit project and that the microphone participant can join the generated room.
+- **Replies stop mid-sentence:** compare the active interruption mode in the worker log with the settings dialog. `finish_response` uses Gemini `NO_INTERRUPTION` (or disables legacy interruption); `barge_in` permits provider VAD to cancel a response. The worker also emits `speech_finished`, `false_interruption`, `session_usage`, and `response_token_limit` diagnostics. Check those `LUMINE_EVENT` records and the browser console for `Audio attached`, `ended`, and `play_rejected` events before changing the token limit.
 - **No audio:** grant microphone permission to the browser/Tauri WebView and allow playback from the microphone click gesture.
 - **Tauri build issues:** run the browser flow with `npm run dev` first, then test `npm run tauri dev`; WebView permissions and autoplay behavior can differ.
 

@@ -28,6 +28,7 @@ export type ConversationToolEvent = {
   timestamp: Date | string;
   sessionId?: string;
   summary?: string;
+  durationMs?: number;
 };
 
 export type ConversationSystemEvent = {

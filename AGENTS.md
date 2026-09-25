@@ -1,272 +1,74 @@
-# Lumine Architecture
+# Lumine repository instructions
 
-## What is Lumine?
+## Scope and source of truth
 
-Lumine is a cross-platform personal AI companion desktop application intended to feel like a quiet, always-available desktop presence rather than a generic chatbot.
+- This repository has two independently runnable parts: `agent/` is the Python LiveKit worker; `lumine-ui/` is the React/Vite UI inside a Tauri/Rust shell. There is no root workspace or task runner.
+- The root `package.json` has no app scripts. Run frontend/Tauri commands from `lumine-ui/`; the app entry is `src/main.tsx` → `src/App.tsx` → `src/pages/Home.tsx`.
+- Treat manifests, environment examples, and current source as authoritative when prose conflicts. The root README is empty, and some checked-in `docs/`/nested `AGENTS.md` notes describe earlier scaffold states.
 
-The current repository is an early prototype of that vision:
+## Runtime shape
 
-- a Python LiveKit agent is configured and running as a voice AI service,
-- a React/Vite app is scaffolded inside Tauri,
-- the visual direction is a desktop companion UI with an animated avatar, focus-style panels, and theme presets,
-- the full desktop orchestration model is not yet implemented.
+- `agent/agent.py` is the worker entrypoint. It loads the persona and `agent/.env` by file path, runs a persistent LiveKit `AgentServer` named `lumine`, and creates a new `AgentSession` for each dispatched room.
+- The current React voice flow is in `lumine-ui/src/features/voice/voice-manager.ts`: create a fresh room, request a token through Tauri, connect, enable the microphone, dispatch `lumine`, consume agent audio/transcripts/emotion events, then remove listeners, stop media, disconnect, and delete the room.
+- `lumine-ui/src-tauri/src/agent_manager.rs` implements child-process start/stop/restart and worker-readiness commands, but the current React voice path never invokes those commands. For this checkout, run the Python worker separately before testing voice; do not assume the Tauri app auto-starts it.
+- Python worker stdout uses `LUMINE_EVENT <json>` records. Rust re-emits them as Tauri events; current event names use underscores (`agent_started`, `agent_state_changed`, `agent_stopped`, `agent_error`, `agent_runtime`), not dotted names.
+- `ConversationPanel` stays backend-agnostic. `useConversation` has a `ConversationService` seam and currently defaults to the empty mock service; live voice messages enter through the callbacks wired in `Home.tsx`.
 
-The product goal is a local desktop experience in which Lumine can sit in the system tray, wake on a local wake phrase, open its UI, and then engage in voice-first interaction while remaining lightweight and responsive.
+## Agent tools
 
-## How is Lumine architected?
+- `agent/agent.py` passes `get_tools()` to the `Lumine` agent. The registry in `agent/tools/tools_registry.py` is the source of truth for registered tools; tool docstrings are the model-facing schema.
+- Current tool IDs are `get_weather`, `search_web`, `get_news`, and `open_app`. `LUMINE_DISABLED_TOOLS` accepts a comma-separated list of exact IDs; `LUMINE_ENABLE_APP_LAUNCH=false` disables the desktop-launch tool. Toggles are read after `agent/.env` loads.
+- Keep network tools bounded to short, user-facing results and keep `open_app` shell-free and restricted to validated names. Tool tests exercise parsing/formatting/permissions locally; do not make the test suite depend on live external services.
 
-The repository currently reflects a split between an AI backend and a desktop frontend, but the runtime boundary is not yet fully connected.
+## Setup and local commands
 
-```text
-LUMINE DESKTOP (target architecture)
-┌──────────────────────────────────────────────┐
-a│                                              │
-│  Tauri desktop app                           │
-│  ├─ React UI                                 │
-│  ├─ Rust orchestration layer                 │
-│  ├─ tray / window / lifecycle management     │
-│  └─ wake-word + IPC bridge                  │
-└───────────────────────┬──────────────────────┘
-                        │
-                        ▼
-            Python AI agent sidecar / service
-            ├─ VAD (Silero)
-            ├─ STT (Groq)
-            ├─ LLM (Groq)
-            ├─ TTS (Cartesia)
-            └─ LiveKit Cloud realtime channel
+Use an existing repository `.venv` when possible. From the repository root:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r agent\requirements.txt
 ```
 
-### Current repository reality
+Create ignored local config files from `agent/.env.example` and `lumine-ui/.env.example`, then fill in real values. The backend file needs the LiveKit URL/key/secret plus Groq and Cartesia credentials; `GROQ_MODEL` is optional and defaults to `openai/gpt-oss-20b`.
 
-```text
-CURRENT REPO (verified)
-├─ Python agent: agent/agent.py
-│  └─ LiveKit worker with VAD + STT + LLM + TTS
-├─ Persona: agent/prompts/persona.md
-├─ UI shell: lumine-ui/src/
-│  └─ React app with desktop companion design
-├─ Tauri shell: lumine-ui/src-tauri/
-│  └─ scaffolded app with default Rust entrypoint
-└─ Integration: not yet implemented end-to-end
+```powershell
+# terminal 1: persistent LiveKit worker
+.\.venv\Scripts\python.exe agent\agent.py dev
+
+# terminal 2: Tauri plus its Vite dev server
+Push-Location lumine-ui
+npm ci                 # first checkout or dependency reset
+npm run tauri dev
+Pop-Location
 ```
 
-## Local versus cloud boundary
+`npm run tauri dev` starts Vite itself on strict port `1420`; do not start a second Vite server on that port. `npm run dev` is useful for the UI only, but Tauri `invoke`/microphone flows require the Tauri app. Tauri resolves Python in this order: `LUMINE_PYTHON_BIN`, `VIRTUAL_ENV`, the repository `.venv`, then `python`/`python3`. `LUMINE_AGENT_PATH` and `LUMINE_AGENT_ARGS` affect the Rust worker manager.
 
-The preferred architecture is local-first desktop orchestration with cloud AI services used as dependencies.
+For focused LiveKit helper debugging, run `agent/livekit_token.py <room> <identity>`, `agent/livekit_dispatch.py <room> <agent_name>`, or `agent/livekit_room.py <room>` with the repository Python environment. These helpers load `agent/.env` themselves.
 
-### Local responsibilities (desired)
+## Verification
 
-- Tauri application lifecycle
-- system tray behavior
-- window show/hide management
-- local microphone access and wake-word listening
-- agent process management
-- local IPC between UI and Rust core
-- user-facing state and avatar animation
+- Run the Python suite from the repository root (the test imports `agent.emotion_contract` as a package):
+  ```powershell
+  .\.venv\Scripts\python.exe -m unittest discover -s agent\tests -p "test_*.py"
+  ```
+- Run one test with, for example:
+  ```powershell
+  .\.venv\Scripts\python.exe -m unittest agent.tests.test_emotion_contract.EmotionContractTests.test_normalize_emotion_keeps_canonical_values
+  ```
+- Build/typecheck the frontend with `npm run build` from `lumine-ui/` (`tsc && vite build`). There are no configured frontend test, lint, or standalone typecheck scripts.
+- Check Rust with `cargo check` from `lumine-ui/src-tauri/`. `npm run tauri build` from `lumine-ui/` runs the frontend build first; `tauri.conf.json` currently has `bundle.active: false`, so do not assume an installer is produced.
 
-### Cloud responsibilities (current / intended)
+## Environment and security boundaries
 
-- LiveKit Cloud realtime communication
-- Groq STT and LLM APIs
-- Cartesia TTS APIs
-- optional future account sync or cloud memory services
+- The only frontend-safe LiveKit variable is `VITE_LIVEKIT_URL`; `VITE_LUMINE_DEBUG_EMOTION=true` enables frontend emotion diagnostics, while backend `LUMINE_DEBUG_EMOTION=true` enables agent-side emotion logging. Never put LiveKit, Groq, or Cartesia secrets in a `VITE_*` variable or commit `.env` files; Tauri invokes the Python helpers so credentials stay out of the browser bundle.
+- Keep LiveKit/provider details behind the Tauri/`features/voice` integration boundary and presentation components backend-agnostic. Preserve the local-first goal and the persistent Python worker; do not replace the desktop app with a cloud-only service.
+- Preserve the persona in `agent/prompts/persona.md`, the light/dark `AppearancePreset` contract in `lumine-ui/src/pages/home/constants.ts`, and the existing SVG-based avatar engine; these are product contracts, not incidental styling.
 
-### Explicit design rule
+## Where to look next
 
-Lumine should not be replaced by a cloud-only backend. The desktop app remains useful as a locally running companion even when AI processing relies on cloud APIs.
-
-## Cross-platform requirements
-
-Lumine is intended to be a cross-platform desktop application.
-
-- Primary target: Windows
-- Future targets: macOS, Linux
-- Potential future targets: Android, iOS
-
-Platform-specific responsibilities such as tray icons, startup integration, microphone permissions, audio devices, wake-word detection, and native notifications should be abstracted behind platform-aware boundaries rather than hardcoded into the UI or agent logic.
-
-## Repository map
-
-- [README.md](README.md) — root repository overview; currently minimal placeholder
-- [agent/](agent/) — Python AI backend and persona assets
-- [agent/agent.py](agent/agent.py) — LiveKit-based agent entrypoint
-- [agent/requirements.txt](agent/requirements.txt) — backend Python dependencies
-- [agent/prompts/persona.md](agent/prompts/persona.md) — Lumine persona
-- [lumine-ui/](lumine-ui/) — Tauri + React desktop frontend
-- [lumine-ui/src-tauri/](lumine-ui/src-tauri/) — Rust/Tauri desktop shell and package config
-- [lumine-ui/src/](lumine-ui/src/) — React source and UI implementation
-- [lumine-ui/package.json](lumine-ui/package.json) — frontend scripts and dependencies
-
-## Major technologies in use
-
-Current verified technologies:
-
-- Python
-- LiveKit Agents
-- LiveKit Cloud
-- Groq STT
-- Groq LLM
-- Silero VAD
-- Cartesia TTS
-- Tauri 2
-- React 19
-- Vite
-- TypeScript
-
-## Current project phase
-
-Current project phase: PHASE 1 — Current AI Agent
-
-This means the backend voice agent is the most mature implemented piece. The desktop shell exists but is not yet a true orchestrator or production companion app.
-
-The next required milestone is Phase 2: Tauri ↔ Agent Integration.
-
-## Roadmap and status
-
-### PHASE 0 — Foundation
-
-- [x] Define repository architecture
-- [x] Establish architecture documentation
-- [~] Establish frontend/backend boundaries
-- [~] Establish development commands
-
-### PHASE 1 — Current AI Agent
-
-- [x] Python agent
-- [x] LiveKit integration
-- [x] Groq STT
-- [x] Groq LLM
-- [x] Cartesia TTS
-- [x] Silero VAD
-- [x] Persona
-- [~] Environment configuration
-- [~] Error handling
-
-### PHASE 2 — Tauri ↔ Agent Integration
-
-- [~] Agent manager
-- [~] Start agent
-- [~] Stop agent
-- [~] Restart agent
-- [~] Agent health/status
-- [~] IPC protocol
-- [~] Agent lifecycle events
-- [~] Graceful shutdown
-
-Current verified status: the Tauri side has a Rust agent manager and IPC command contract in place, but the application is still blocked from a clean build by a Tauri Windows resource issue in the bundle configuration.
-
-### PHASE 3 — Desktop Experience
-
-- [ ] System tray
-- [ ] Hide/show main window
-- [ ] Minimize to tray
-- [ ] Tray context menu
-- [ ] Sleep state
-- [ ] Wake state
-- [ ] Startup behavior
-
-### PHASE 4 — Wake Word
-
-- [ ] Select wake-word technology
-- [ ] Local microphone listener
-- [ ] "Hey Lumine"
-- [ ] Wake-word → Tauri event
-- [ ] Wake-word → UI
-- [ ] Wake-word → agent
-- [ ] False-positive handling
-- [ ] Cross-platform audio compatibility
-
-### PHASE 5 — Agent State / Avatar
-
-- [ ] Unified Lumine state machine
-- [ ] UI state synchronization
-- [ ] Avatar state synchronization
-- [ ] Wake animation
-- [ ] Listening animation
-- [ ] Thinking animation
-- [ ] Speaking animation
-- [ ] Sleeping animation
-- [ ] Error animation/state
-
-### PHASE 6 — Packaging
-
-- [ ] Package Python agent
-- [ ] Create platform-specific agent binaries
-- [ ] Configure Tauri sidecar/resources
-- [ ] Windows build
-- [ ] macOS build
-- [ ] Linux build
-- [ ] Installer
-- [ ] Environment/configuration strategy
-- [ ] Logging
-- [ ] Crash recovery
-- [ ] Agent auto-restart
-
-### PHASE 7 — Production Desktop Application
-
-- [ ] Start with OS
-- [ ] Settings
-- [ ] Permissions
-- [ ] Update mechanism
-- [ ] Diagnostics
-- [ ] Logging
-- [ ] Secure configuration
-- [ ] Versioning
-- [ ] Release pipeline
-
-### PHASE 8 — Optional Cloud Platform
-
-- [ ] Authentication
-- [ ] Cloud memory
-- [ ] Sync
-- [ ] Remote configuration
-- [ ] Multi-device support
-- [ ] Optional web/mobile companion
-
-## Build and packaging philosophy
-
-- Keep the Python agent as a managed service rather than as the application controller.
-- Treat Tauri as the desktop orchestration layer.
-- Keep the desktop application locally useful even when it depends on cloud AI APIs.
-- Do not bundle a full LiveKit server unless there is an explicit future need.
-- Prefer a sidecar/bundled Python executable model for the agent over a cloud-only solution.
-- Do not require an end user to manually install Python.
-
-## Security principles
-
-- Never hardcode API keys, LiveKit secrets, Groq keys, Cartesia keys, or auth tokens.
-- Keep secrets in environment variables or OS-secured configuration only.
-- Do not expose private credentials to the React frontend.
-- Distinguish clearly between public config and user secrets.
-- If a third-party API cannot be safely embedded in a desktop app, document that limitation instead of pretending it is secure.
-
-## Development rules for AI coding agents
-
-- Do not rewrite working code just to improve architecture in isolation.
-- Do not replace the existing LiveKit architecture.
-- Do not replace the current React/Vite/Tauri stack.
-- Do not replace the Python agent unless there is a clear reason.
-- Do not assume Windows-only behavior is required unless unavoidable.
-- Do not add cloud backend layers unless there is a specific architectural reason.
-- Do not implement major feature work without first checking the actual repo state.
-- Keep the UI and backend responsibilities separated.
-- Preserve the theme preset schema and existing UI contract where it already exists.
-
-## References
-
-- Backend architecture: [agent/AGENTS.md](agent/AGENTS.md)
-- Frontend architecture: [lumine-ui/AGENTS.md](lumine-ui/AGENTS.md)
-
-## What should an AI coding agent not break?
-
-- The LiveKit worker entrypoint in [agent/agent.py](agent/agent.py)
-- The persona file and its tone in [agent/prompts/persona.md](agent/prompts/persona.md)
-- The Tauri + React layout in [lumine-ui/](lumine-ui/)
-- The existing light/dark preset schema in [lumine-ui/src/pages/home/constants.ts](lumine-ui/src/pages/home/constants.ts)
-- The desktop companion UI intent, even though it is still mock-driven today
-- The product requirement that Lumine remains local-first and cross-platform
-
-## Current verified reality
-
-This repository is not yet a full companion desktop product. It is a strong backend prototype plus a styled UI prototype. The most important missing architectural step is the desktop orchestration layer that connects Tauri to the Python agent and eventually handles tray, wake words, lifecycle management, and state synchronization.
+- Agent/runtime contract: `agent/agent.py`, `agent/emotion_contract.py`, `agent/livekit_{token,dispatch,room}.py`.
+- Desktop process/IPC contract: `lumine-ui/src-tauri/src/lib.rs` and `agent_manager.rs`.
+- Voice/session lifecycle: `lumine-ui/src/features/voice/voice-manager.ts` and `useLumineVoice.ts`.
+- Conversation integration seam: `lumine-ui/src/pages/home/conversation/`.
+- `opencode.json` enables the LiveKit documentation MCP; consult current LiveKit docs when changing SDK integration. The nested `agent/AGENTS.md` and `lumine-ui/AGENTS.md` contain area-specific background but are not a substitute for the executable source.

@@ -15,7 +15,7 @@ Request LiveKit token
 Connect room
  │
  ▼
-Dispatch agent = lumine
+Dispatch agent = lumine (with interruption-mode metadata)
  │
  ▼
 Python AgentServer
@@ -24,7 +24,7 @@ Python AgentServer
 Agent job starts
  │
  ▼
-AgentSession + VAD/STT/LLM/TTS
+AgentSession + selected pipeline (Gemini Live or VAD/STT/LLM/TTS cascade)
  │
  ▼
 Conversation
