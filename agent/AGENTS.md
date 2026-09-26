@@ -16,6 +16,22 @@ This is a voice-first agent prototype, not yet a full desktop orchestrator.
 
 ## Verified current architecture
 
+The session components are no longer a single hardcoded block in `agent.py`. They
+are built per job by `agent/pipeline_factory.py`, driven by a **voice profile**:
+the saved `lumine.config.json` if one exists, otherwise the environment-derived
+profile. The two stacks look like this.
+
+Native-audio realtime (the environment default):
+
+```python
+llm = google.RealtimeModel(
+    model="gemini-3.8-live",
+    voice="Sulafat",
+)
+```
+
+Separate-stage pipeline (the legacy cascade, still selectable):
+
 ```python
 session = AgentSession(
     vad=silero.VAD.load(min_speech_duration=0.4),
@@ -25,7 +41,7 @@ session = AgentSession(
         temperature=0.7,
     ),
     tts=cartesia.TTS(
-        model="sonic-2",
+        model="sonic-3",
         voice="002622d8-19d0-4567-a16a-f99c7397c062",
         language="en",
         speed=0.95,
@@ -58,21 +74,35 @@ This is a minimal worker lifecycle. It is not yet a desktop-sidecar lifecycle wi
 
 ### STT
 
-- Verified dependency: `livekit-plugins-groq`
-- Verified runtime use: `groq.STT()`
-- Status: implemented and active
+- Verified dependency: `livekit-plugins-groq`, `livekit-plugins-google`
+- Verified runtime use: `groq.STT()`, or `google.STT()` — which is non-streaming and
+  therefore requires a VAD
+- Status: implemented and active, selectable per profile
 
 ### LLM
 
-- Verified dependency: `livekit-plugins-groq`
-- Verified runtime use: `groq.LLM(model="llama-3.3-70b-versatile", temperature=0.7)`
-- Status: implemented and active
+- Verified dependencies: `livekit-plugins-groq`, `livekit-plugins-google`, `livekit-plugins-openai`
+- Verified runtime use: `groq.LLM(model="openai/gpt-oss-20b", temperature=0.7)`, or
+  `google.RealtimeModel(model="gemini-3.8-live", ...)` for a realtime stack
+- Status: implemented and active, selectable per profile
+
+### Realtime
+
+- Verified dependency: `livekit-plugins-google`
+- Verified runtime use: `google.RealtimeModel(...)` with `gemini-3.8-live`,
+  `gemini-3.8-live-extended-thinking`, or a deprecated `gemini-3.1-flash-live-preview`
+- Status: implemented and active. All Gemini Live models are native-audio, so a
+  realtime profile cannot also use a separate TTS; validation blocks that pairing.
+- The catalog in `agent/providers.py` is checked against the plugin's own
+  `KNOWN_GEMINI_API_MODELS` by a test, because the plugin rejects a model id it
+  does not recognise.
 
 ### TTS
 
 - Verified dependency: `livekit.plugins.cartesia` via `cartesia.TTS`
-- Verified runtime use: `model="sonic-2"`, `voice="002622d8-19d0-4567-a16a-f99c7397c062"`, `language="en"`, `speed=0.95`
-- Status: implemented and active
+- Verified runtime use: `model="sonic-3"`, `voice="002622d8-19d0-4567-a16a-f99c7397c062"`, `language="en"`, `speed=0.95`
+- Status: implemented and active. `sonic-2` retires 2026-10-20 and is no longer the
+  default; the model is overridable per stage.
 
 ## Persona
 

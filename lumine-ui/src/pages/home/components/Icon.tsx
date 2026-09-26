@@ -1,5 +1,6 @@
 import {
   ArrowCounterClockwise,
+  Copy,
   Eye,
   Bell,
   ChatCircle,
@@ -11,6 +12,7 @@ import {
   Microphone,
   MicrophoneSlash,
   MusicNotes,
+  Plus,
   Toolbox,
   PaperPlaneTilt,
   Pulse,
@@ -45,6 +47,8 @@ const iconMap: Record<IconName, PhosphorIcon> = {
   memory: Brain,
   waveform: Waveform,
   trash: Trash,
+  plus: Plus,
+  copy: Copy,
   reset: ArrowCounterClockwise,
   close: X,
   presentation: StackSimple,

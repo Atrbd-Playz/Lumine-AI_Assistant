@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "check:profile-ops": "node --experimental-strip-types --no-warnings scripts/verify-profile-ops.mts",
+    "check:conversion": "node --experimental-strip-types --no-warnings scripts/verify-conversion.mts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

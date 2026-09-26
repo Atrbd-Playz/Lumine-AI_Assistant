@@ -9,25 +9,24 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 try:
+    from .config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
     from .emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
-except ImportError:
-    from emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
-
-try:
     from .latency import LatencyTracker
-    from .pipeline_factory import build_pipeline
+    from .pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
     from .pipeline_config import pipeline_name
     from .runtime_events import RuntimeEventPublisher, ToolEventBridge
-    from .session_preferences import interruption_mode_from_metadata
+    from .session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
     from .tools.http_client import acquire as acquire_http_client, release as release_http_client
     from .tools.tools_policy import compose_instructions
     from .tools.tools_registry import get_tools, tool_ids
 except ImportError:
+    from config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
+    from emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
     from latency import LatencyTracker
-    from pipeline_factory import build_pipeline
+    from pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
     from pipeline_config import pipeline_name
     from runtime_events import RuntimeEventPublisher, ToolEventBridge
-    from session_preferences import interruption_mode_from_metadata
+    from session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
     from tools.http_client import acquire as acquire_http_client, release as release_http_client
     from tools.tools_policy import compose_instructions
     from tools.tools_registry import get_tools, tool_ids
@@ -147,6 +146,81 @@ class Lumine(Agent):
         )
 
 
+async def build_session_components(publisher, room_name: str, interruption_mode: str):
+    """Resolve the configuration for this job and build the session components.
+
+    Precedence is the rule from ``config_store``: a saved document wins over
+    ``agent/.env``, which wins over the built-in defaults. A saved profile is only
+    used when it resolves *and* validates; anything unexpected falls back to the
+    environment rather than failing the job, because losing a voice session to a
+    bad settings file would be a far worse outcome than ignoring it.
+    """
+    document, source, diagnostics = effective_document()
+
+    # Named on every outcome, so "I saved it and nothing changed" is answerable
+    # from the log instead of requiring a guess about who started the worker.
+    config_path_label = config_search_summary()
+
+    if source == SOURCE_UI:
+        profile = active_profile(document)
+        if profile is not None:
+            resolved = resolve_profile(profile, interruption_mode=interruption_mode)
+            try:
+                components, build_diagnostics = await build_resolved(resolved, validate=True)
+            except ConfigurationRejected as exc:
+                publisher.emit(
+                    "config_rejected",
+                    room=room_name,
+                    profile=resolved.profile_id,
+                    config_path=config_path_label,
+                    diagnostics=[d.to_dict() for d in exc.diagnostics],
+                )
+                logger.warning(
+                    "[Config] saved profile %r was rejected; using the environment instead",
+                    resolved.profile_id,
+                )
+            else:
+                publisher.emit(
+                    "config_applied",
+                    room=room_name,
+                    profile=resolved.profile_id,
+                    source="ui",
+                    kind=resolved.kind,
+                    providers=list(resolved.providers()),
+                    config_path=config_path_label,
+                    diagnostics=[d.to_dict() for d in build_diagnostics],
+                )
+                return components
+        else:
+            publisher.emit(
+                "config_rejected",
+                room=room_name,
+                reason="the active profile reference does not resolve",
+                config_path=config_path_label,
+            )
+            logger.warning("[Config] active profile reference does not resolve; using the environment")
+
+    for diagnostic in diagnostics:
+        if diagnostic.severity == "error":
+            logger.warning("[Config] ignoring saved configuration: %s", diagnostic.message)
+
+    components = await build_pipeline(pipeline_name(), interruption_mode=interruption_mode)
+    publisher.emit(
+        "config_applied",
+        room=room_name,
+        profile=components.profile,
+        source="env",
+        kind="realtime" if components.profile == "gemini_live" else "pipeline",
+        config_path=config_path_label,
+    )
+    if source != SOURCE_UI:
+        logger.info(
+            "[Config] agent/.env is governing. Saved settings are read from: %s",
+            config_path_label,
+        )
+    return components
+
+
 async def entrypoint(ctx: JobContext):
     publisher = RuntimeEventPublisher(ctx.room, room_name=ctx.room.name)
     latency = LatencyTracker(publisher.emit)
@@ -154,8 +228,12 @@ async def entrypoint(ctx: JobContext):
 
     logger.info("Connecting to room: %s", ctx.room.name)
     tools = get_tools()
-    interruption_mode = interruption_mode_from_metadata(getattr(getattr(ctx, "job", None), "metadata", None))
+    metadata = getattr(getattr(ctx, "job", None), "metadata", None)
+    preferences = job_preferences_from_metadata(metadata)
+    interruption_mode = preferences.interruption_mode
     logger.info("Voice interruption mode: %s", interruption_mode)
+    if preferences.profile_id:
+        logger.info("Requested configuration profile: %s", preferences.profile_id)
     logger.info("Enabled tools: %s", ", ".join(tool_ids(tools)) or "none")
 
     await ctx.connect()
@@ -163,9 +241,7 @@ async def entrypoint(ctx: JobContext):
 
     profile = "unknown"
     try:
-        profile = pipeline_name()
-        logger.info("Building voice pipeline: %s (%s)", profile, interruption_mode)
-        components = await build_pipeline(profile, interruption_mode=interruption_mode)
+        components = await build_session_components(publisher, ctx.room.name, interruption_mode)
     except Exception as exc:
         publisher.emit("error", message=str(exc), source="pipeline")
         latency.mark("pipeline_error", profile=profile)

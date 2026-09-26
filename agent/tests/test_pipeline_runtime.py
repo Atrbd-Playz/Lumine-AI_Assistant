@@ -41,7 +41,7 @@ class PipelineConfigTests(unittest.TestCase):
     def test_gemini_defaults_prioritize_low_latency(self):
         with patch.dict(os.environ, {}, clear=True):
             settings = gemini_settings()
-        self.assertEqual(settings["model"], "gemini-3.1-flash-live-preview")
+        self.assertEqual(settings["model"], "gemini-3.8-live")
         self.assertEqual(settings["max_output_tokens"], 1024)
         self.assertEqual(settings["thinking_config"]["thinking_level"], "minimal")
         self.assertFalse(settings["thinking_config"]["include_thoughts"])
@@ -50,7 +50,7 @@ class PipelineConfigTests(unittest.TestCase):
 
     def test_gemini_environment_overrides_are_bounded(self):
         env = {
-            "GEMINI_MODEL": "gemini-3.1-flash-live-preview",
+            "GEMINI_MODEL": "gemini-3.8-live",
             "GEMINI_MAX_OUTPUT_TOKENS": "200",
             "GEMINI_CONNECT_MAX_RETRY": "99",
             "GEMINI_CONNECT_TIMEOUT": "0.1",
@@ -93,7 +93,7 @@ class GeminiFactoryTests(unittest.TestCase):
             components = asyncio.run(build_pipeline("gemini_live"))
         try:
             self.assertEqual(components.profile, "gemini_live")
-            self.assertEqual(components.model_name, "gemini-3.1-flash-live-preview")
+            self.assertEqual(components.model_name, "gemini-3.8-live")
             self.assertEqual(components.interruption_mode, "barge_in")
             self.assertEqual(components.response_token_limit, 1024)
             from google.genai import types
@@ -135,17 +135,29 @@ class GeminiFactoryTests(unittest.TestCase):
 
 class LegacyFactoryTests(unittest.TestCase):
     def test_interruption_mode_is_applied_without_provider_network_calls(self):
+        recorded: dict[str, dict] = {}
+
         class FakeSilero:
             class VAD:
                 @staticmethod
-                def load(**_kwargs):
+                def load(**kwargs):
+                    recorded["vad"] = kwargs
                     return object()
 
-        fake_groq = SimpleNamespace(
-            STT=lambda: object(),
-            LLM=lambda **_kwargs: object(),
-        )
-        fake_cartesia = SimpleNamespace(TTS=lambda **_kwargs: object())
+        def fake_stt(**kwargs):
+            recorded["stt"] = kwargs
+            return object()
+
+        def fake_llm(**kwargs):
+            recorded["llm"] = kwargs
+            return object()
+
+        def fake_tts(**kwargs):
+            recorded["tts"] = kwargs
+            return object()
+
+        fake_groq = SimpleNamespace(STT=fake_stt, LLM=fake_llm)
+        fake_cartesia = SimpleNamespace(TTS=fake_tts)
 
         for mode, enabled in (("finish_response", False), ("barge_in", True)):
             with patch.object(pipeline_factory, "_silero", FakeSilero), patch.object(
@@ -157,6 +169,17 @@ class LegacyFactoryTests(unittest.TestCase):
                 components.session_kwargs["turn_handling"]["interruption"]["enabled"],
                 enabled,
             )
+
+        # Stage builders now forward the resolved model instead of relying on
+        # each plugin's own default, so the picks are explicit and assertable.
+        self.assertEqual(recorded["stt"]["model"], "whisper-large-v3-turbo")
+        self.assertEqual(recorded["tts"]["model"], "sonic-3")
+        self.assertEqual(recorded["tts"]["voice"], "002622d8-19d0-4567-a16a-f99c7397c062")
+        # The VAD threshold is part of the existing turn-taking behaviour.
+        self.assertEqual(recorded["vad"]["min_speech_duration"], 0.4)
+        # The Groq budget guards must survive the refactor.
+        self.assertIn("max_completion_tokens", recorded["llm"])
+        self.assertFalse(recorded["llm"]["parallel_tool_calls"])
 
 
 class ToolEventBridgeTests(unittest.TestCase):

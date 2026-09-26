@@ -13,16 +13,30 @@ import { ConversationPanel } from "./home/components/ConversationPanel";
 import type { Appearance } from "./home/types";
 import { useLumineVoice } from "../features/voice/useLumineVoice";
 import { DEFAULT_INTERRUPTION_MODE } from "../features/voice/interruption";
+import { SettingsDialog } from "./settings/SettingsDialog";
+import { ProvidersPage } from "./settings/ai/ProvidersPage";
+import { VoiceModelsPage } from "./settings/ai/VoiceModelsPage";
+import { DiagnosticsPage } from "./settings/system/DiagnosticsPage";
+import { CONFIG_VERSION } from "../features/settings/aiConfigTypes";
+import { useAiConfig } from "../features/settings/useAiConfig";
 import AvatarLabPage from "./AvatarLabPage";
 
 export default function Home() {
   const [nav, setNav] = useState(() => window.location.pathname === "/avatar" ? "avatar" : "home");
   const [glassMode, setGlassMode] = useState(() => localStorage.getItem("lumine.presentation-mode") === "glass");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<"appearance" | "voice" | "providers" | "diagnostics">("voice");
   const [conversationOpen, setConversationOpen] = useState(false);
   const [toast, setToast] = useState<{ tone: "success" | "error" | "info"; message: string } | null>(null);
   const conversation = useConversation();
-  const { mode, setMode, cursorGaze, setCursorGaze, interruptionMode, setInterruptionMode, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
+  const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
+  const aiConfig = useAiConfig();
+  // The active voice profile is authoritative once one is saved; until then the
+  // environment default is what the worker will use, so the UI mirrors that.
+  const interruptionMode =
+    aiConfig.activeProfile?.kind === "realtime"
+      ? (aiConfig.activeProfile.realtime?.turnHandling?.interruptionMode ?? DEFAULT_INTERRUPTION_MODE)
+      : (aiConfig.activeProfile?.pipeline?.turnHandling?.interruptionMode ?? DEFAULT_INTERRUPTION_MODE);
   const handleToolEvent = (event: Parameters<typeof conversation.upsertToolEvent>[0]) => {
     conversation.upsertToolEvent(event);
     const tone = event.status === "completed" ? "success" : event.status === "failed" ? "error" : "info";
@@ -103,9 +117,53 @@ export default function Home() {
       onMuteToggle={() => { void session.toggleMute(); }}
       emotion={session.emotion}
       showEmotionDebug={import.meta.env.VITE_LUMINE_DEBUG_EMOTION === "true"}
-    /> : nav === "avatar" ? <AvatarLabPage /> : <WorkspaceView kind={nav as "tools" | "memory" | "activity"} onSettings={() => setSettingsOpen(true)} />}
+    /> : nav === "avatar" ? <AvatarLabPage /> : <WorkspaceView kind={nav as "tools" | "memory" | "activity"} onSettings={() => { setSettingsSection("voice"); setSettingsOpen(true); }} />}
     {conversationOpen && nav === "home" && <ConversationPanel messages={conversation.messages} items={conversation.items} agentStatus={conversationStatus} bubbleVariant={appearance.chatBubbleVariant} onClose={() => setConversationOpen(false)} onClear={conversation.clearMessages} onReset={conversation.resetMessages} onAddMessage={conversation.addMessage} />}
-    {settingsOpen && <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} interruptionMode={interruptionMode} setInterruptionMode={setInterruptionMode} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={() => { setMode("dark"); setCursorGaze(true); setInterruptionMode(DEFAULT_INTERRUPTION_MODE); resetAppearance(); }} onClose={() => setSettingsOpen(false)} />}
+    {settingsOpen && <SettingsDialog initialSection={settingsSection} onClose={() => setSettingsOpen(false)}>
+      {(section) => {
+        if (section === "appearance") {
+          return <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={() => { setMode("dark"); setCursorGaze(true); resetAppearance(); }} onClose={() => setSettingsOpen(false)} />;
+        }
+        if (aiConfig.state === "loading") {
+          return <div className="settings-page"><p className="validation is-pending">Loading the AI configuration…</p></div>;
+        }
+        if (aiConfig.state === "error" || !aiConfig.catalog) {
+          return (
+            <div className="settings-page">
+              <header className="settings-page-head"><div><p className="eyebrow">AI</p><h1>Voice &amp; Models</h1></div></header>
+              <p className="validation is-error">{aiConfig.error ?? "The provider catalog is unavailable."}</p>
+            </div>
+          );
+        }
+        if (section === "providers") {
+          return <ProvidersPage catalog={aiConfig.catalog} isEnvironmentBacked={aiConfig.isEnvironmentBacked} />;
+        }
+        if (section === "diagnostics") {
+          return <DiagnosticsPage catalog={aiConfig.catalog} isEnvironmentBacked={aiConfig.isEnvironmentBacked} validating={aiConfig.validating} diagnostics={aiConfig.diagnostics} />;
+        }
+        if (!aiConfig.activeProfile) {
+          return <div className="settings-page"><p className="validation is-error">No active profile. Check Diagnostics.</p></div>;
+        }
+        return (
+          <VoiceModelsPage
+            catalog={aiConfig.catalog}
+            profile={aiConfig.activeProfile}
+            document={aiConfig.draft ?? { version: CONFIG_VERSION, activeProfileId: "", providers: {}, profiles: [] }}
+            isEnvironmentBacked={aiConfig.isEnvironmentBacked}
+            diagnostics={aiConfig.diagnostics}
+            validating={aiConfig.validating}
+            onChange={(next) => aiConfig.updateActiveProfile(() => next)}
+            onMutateDocument={aiConfig.mutateDocument}
+            onSave={async () => { const ok = await aiConfig.save(); setToast(ok ? { tone: "success", message: "AI configuration saved." } : { tone: "error", message: "Could not save the AI configuration." }); }}
+            onDiscard={aiConfig.discard}
+            canSave={aiConfig.canSave}
+            saving={aiConfig.saving}
+            hasUnsavedChanges={aiConfig.hasUnsavedChanges}
+            saveError={aiConfig.saveError}
+          />
+        );
+      }}
+    </SettingsDialog>}
   </div>;
 }
 

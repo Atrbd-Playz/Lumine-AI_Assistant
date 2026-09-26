@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "activeProfileId": "gemini-live",
+  "providers": {
+    "livekit": { "enabled": true, "keyRef": "env:LIVEKIT_API_KEY" },
+    "google": { "enabled": true, "keyRef": "env:GOOGLE_API_KEY" },
+    "groq": { "enabled": true, "keyRef": "env:GROQ_API_KEY" },
+    "cartesia": { "enabled": true, "keyRef": "env:CARTESIA_API_KEY" },
+    "silero": { "enabled": true, "keyRef": null }
+  },
+  "profiles": [
+    {
+      "id": "gemini-live",
+      "name": "Gemini Live",
+      "kind": "realtime",
+      "realtime": {
+        "provider": "google",
+        "model": "gemini-3.8-live",
+        "voice": "Sulafat",
+        "output": { "mode": "model_voice" },
+        "turnHandling": { "interruptionMode": "barge_in" }
+      }
+    },
+    {
+      "id": "lumine-default",
+      "name": "Lumine Default",
+      "kind": "pipeline",
+      "pipeline": {
+        "stt": { "provider": "groq", "model": "whisper-large-v3-turbo", "language": "en" },
+        "llm": { "provider": "groq", "model": "openai/gpt-oss-20b" },
+        "tts": {
+          "provider": "cartesia",
+          "model": "sonic-3",
+          "voice": "002622d8-19d0-4567-a16a-f99c7397c062",
+          "language": "en"
+        },
+        "vad": { "provider": "silero", "model": "silero" },
+        "turnHandling": { "interruptionMode": "barge_in" }
+      }
+    }
+  ],
+  "agent": {
+    "disabledTools": [],
+    "enableAppLaunch": true
+  }
+}

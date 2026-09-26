@@ -57,6 +57,8 @@ export type IconName =
   | "activity"
   | "waveform"
   | "trash"
+  | "plus"
+  | "copy"
   | "reset"
   | "close"
   | "presentation";

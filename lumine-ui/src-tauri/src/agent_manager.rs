@@ -6,7 +6,12 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{AppHandle, Emitter};
+
+use crate::credential_injection;
+use crate::credentials;
+use crate::python_env;
 
 const RUNTIME_EVENT_PREFIX: &str = "LUMINE_EVENT ";
 
@@ -87,6 +92,25 @@ impl AgentManager {
             .current_dir(&project_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+
+        // Point the worker at the same configuration file this app writes.
+        // Without this the two runtimes would silently read different files: Rust
+        // defaults to the app data directory, the worker to the agent directory.
+        if let Some(config_path) = resolve_config_path(app) {
+            command.env("LUMINE_CONFIG_PATH", &config_path);
+        }
+
+        // Hand over the keys held in the OS keyring. A provider with no stored
+        // key is left to `agent/.env`, which remains a supported way to
+        // configure the worker.
+        if let Some(catalog) = read_provider_catalog() {
+            let store = credentials::OsCredentialStore;
+            let injected = credential_injection::inject_credentials(&mut command, &catalog, &store);
+            if !injected.is_empty() {
+                // Provider ids only. A key value must never reach a log.
+                println!("[LUMINE][WORKER] injected stored credentials for: {}", injected.join(", "));
+            }
+        }
 
         let child = command.spawn().map_err(|err| {
             let message = format!("Failed to launch the Lumine Python agent: {err}");
@@ -247,8 +271,28 @@ impl AgentManager {
     }
 }
 
-fn resolve_project_root() -> Result<PathBuf, String> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// Where the app's configuration file lives, if it can be resolved.
+///
+/// Best-effort: a failure here is not worth refusing to start the worker, because
+/// the worker then falls back to `agent/.env`, which is the pre-existing path.
+fn resolve_config_path(app: &AppHandle) -> Option<PathBuf> {
+    use tauri::Manager;
+    let dir = app.path().app_local_data_dir().ok()?;
+    Some(crate::settings_store::config_path(&dir))
+}
+
+/// The provider catalog, or `None` if it cannot be read.
+///
+/// The catalog is the only description of which environment variable belongs to
+/// which provider. Failing to read it is not worth refusing to start the worker
+/// over: the credentials then stay in `agent/.env`, which is how this worked
+/// before, and a later `start` can try again.
+fn read_provider_catalog() -> Option<Value> {
+    let stdout = python_env::run_agent_script("provider_catalog.py", &[]).ok()?;
+    serde_json::from_str(&stdout).ok()
+}
+
+fn resolve_project_root() -> Result<PathBuf, String> {    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
         .canonicalize()

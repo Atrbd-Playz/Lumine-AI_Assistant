@@ -13,7 +13,7 @@ from typing import Any
 
 DEFAULT_PIPELINE = "gemini_live"
 LEGACY_PIPELINE = "legacy_cascade"
-DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-live-preview"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-live"
 DEFAULT_GEMINI_VOICE = "Sulafat"
 DEFAULT_GEMINI_LANGUAGE = "en"
 DEFAULT_GEMINI_THINKING_LEVEL = "minimal"
@@ -21,6 +21,17 @@ DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 1024
 DEFAULT_GEMINI_CONNECT_MAX_RETRY = 0
 DEFAULT_GEMINI_CONNECT_TIMEOUT = 10.0
 DEFAULT_GEMINI_MAX_TOOL_STEPS = 1
+
+# The legacy cascade used to hardcode "sonic-2". Cartesia retires that model on
+# 2026-10-20, so the default is now the plugin's own stable default instead.
+# Override with CARTESIA_TTS_MODEL. The provider catalog marks deprecated and
+# retired models, and test_config_store fails if a runtime default lands on one.
+DEFAULT_CARTESIA_TTS_MODEL = "sonic-3"
+# Unchanged: this is the voice Lumine has always spoken with. A Cartesia voice id
+# is separate from a model id, so the same voice carries across Sonic models.
+DEFAULT_CARTESIA_VOICE = "002622d8-19d0-4567-a16a-f99c7397c062"
+DEFAULT_CARTESIA_LANGUAGE = "en"
+DEFAULT_CARTESIA_SPEED = 0.95
 
 _PIPELINE_ALIASES = {
     "gemini": "gemini_live",
@@ -124,3 +135,17 @@ def gemini_settings() -> dict[str, Any]:
             pass
 
     return settings
+
+
+def cartesia_tts_settings() -> dict[str, Any]:
+    """Return the Cartesia TTS settings without importing the Cartesia plugin.
+
+    Mirrors :func:`gemini_settings` so the legacy cascade's speech synthesis is
+    resolved from the environment rather than hardcoded in the factory.
+    """
+    return {
+        "model": _raw("CARTESIA_TTS_MODEL") or DEFAULT_CARTESIA_TTS_MODEL,
+        "voice": _raw("CARTESIA_TTS_VOICE") or DEFAULT_CARTESIA_VOICE,
+        "language": _raw("CARTESIA_TTS_LANGUAGE") or DEFAULT_CARTESIA_LANGUAGE,
+        "speed": _float_env("CARTESIA_TTS_SPEED", DEFAULT_CARTESIA_SPEED, 0.5, 2.0),
+    }

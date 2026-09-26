@@ -6,7 +6,7 @@ The microphone control creates a unique session UUID, `lumine-session-<uuid>` ro
 
 After the browser connects to the fresh room, Tauri invokes `agent/livekit_dispatch.py`, which calls the installed `LiveKitAPI.agent_dispatch.create_dispatch` service with agent name `lumine` and that exact room. The signing and dispatch scripts load `agent/.env`; secrets are never exposed through Vite or logged.
 
-The React voice manager connects `livekit-client@2.22.3`, publishes the microphone, waits for a remote participant whose LiveKit kind is `AGENT`, and attaches that participant's audio tracks. The default worker profile is native Gemini Live (`gemini-3.1-flash-live-preview`); setting `LUMINE_PIPELINE=legacy_cascade` retains the Silero VAD, Groq STT/LLM, and Cartesia TTS pipeline. The settings dialog persists the interruption choice and sends it as dispatch metadata (`barge_in` or `finish_response`); the choice is applied when the next voice room is created. Tool lifecycle records are published on the reliable `lumine.tool` data topic and are also emitted as `LUMINE_EVENT` records for the desktop runtime.
+The React voice manager connects `livekit-client@2.22.3`, publishes the microphone, waits for a remote participant whose LiveKit kind is `AGENT`, and attaches that participant's audio tracks. The default worker profile is native Gemini Live (`gemini-3.8-live`); setting `LUMINE_PIPELINE=legacy_cascade` retains the Silero VAD, Groq STT/LLM, and Cartesia TTS pipeline. The settings dialog persists the interruption choice and sends it as dispatch metadata (`barge_in` or `finish_response`); the choice is applied when the next voice room is created. Tool lifecycle records are published on the reliable `lumine.tool` data topic and are also emitted as `LUMINE_EVENT` records for the desktop runtime.
 
 LiveKit transcription events populate the existing conversation panel. Stable segment IDs update interim messages instead of creating duplicate rows. Audio and listeners are detached on disconnect, unmount, timeout, or failed connection.
 
@@ -26,7 +26,7 @@ LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=...
 LUMINE_PIPELINE=gemini_live
 GOOGLE_API_KEY=...
-GEMINI_MODEL=gemini-3.1-flash-live-preview
+GEMINI_MODEL=gemini-3.8-live
 GEMINI_MAX_OUTPUT_TOKENS=1024
 # Used only when dispatch metadata is absent (for example, manual dispatches).
 LUMINE_INTERRUPTION_MODE=barge_in

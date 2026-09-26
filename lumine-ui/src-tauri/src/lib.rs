@@ -1,10 +1,18 @@
 mod agent_manager;
+// Hands the worker the keys held in the OS keyring, so a key stored in Settings
+// actually reaches the runtime instead of only being reported as stored.
+mod credential_injection;
+mod credentials;
+mod python_env;
+mod settings_store;
 
 use std::env;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 use agent_manager::{AgentManager, AgentStatus};
+use credentials::CredentialStore;
+use serde_json::Value;
 use tauri::Manager;
 
 #[tauri::command]
@@ -157,12 +165,140 @@ fn delete_livekit_room(room: String) -> Result<(), String> {
     if output.status.success() { Ok(()) } else { Err("Could not delete the LiveKit room.".to_string()) }
 }
 
+// ---------------------------------------------------------------------------
+// AI Control Center (Phase 1)
+//
+// The command surface is deliberately write-only for credentials: there is no
+// command that returns key material to the webview. Configuration and catalog
+// reads are non-secret and may be returned freely.
+//
+// None of these commands touch the running worker yet. `agent/.env` remains
+// authoritative until the worker-wiring step, so a user's voice session behaves
+// exactly as it does today.
+// ---------------------------------------------------------------------------
+
+fn config_file_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|err| format!("Could not resolve the app data directory: {err}"))?;
+    Ok(settings_store::config_path(&dir))
+}
+
+/// The provider catalog, straight from the worker side so there is exactly one
+/// list of providers and models in the product.
+#[tauri::command]
+fn get_provider_catalog() -> Result<Value, String> {
+    let stdout = python_env::run_agent_script("provider_catalog.py", &[])?;
+    serde_json::from_str(&stdout).map_err(|err| format!("The provider catalog was not valid JSON: {err}"))
+}
+
+/// The effective configuration and where it came from.
+///
+/// `source` is `"ui"` when a saved document governs and `"env"` when the profile
+/// is derived from `agent/.env` and read-only. The settings screen needs that
+/// distinction to know whether it is editing a real configuration or looking at
+/// a report of the current one.
+#[tauri::command]
+fn get_config() -> Result<Value, String> {
+    let stdout = python_env::run_agent_script("validate_config.py", &["--describe"])?;
+    serde_json::from_str(&stdout)
+        .map_err(|err| format!("The configuration could not be read: {err}"))
+}
+
+/// Persist the configuration atomically, then read it back to prove it is usable.
+///
+/// The read-back is not ceremony: `save` can succeed and still leave something
+/// `load` refuses (a truncated file, an unexpected encoding). Verifying here means
+/// the app never reports a successful save it cannot read on the next launch.
+#[tauri::command]
+fn save_config(app: tauri::AppHandle, document: Value) -> Result<(), String> {
+    let path = config_file_path(&app)?;
+    settings_store::save(&path, &document).map_err(|err| err.to_string())?;
+    settings_store::load(&path)
+        .map_err(|err| format!("The configuration was written but could not be read back: {err}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_credential(provider: String, secret: String) -> Result<credentials::CredentialStatus, String> {
+    credentials::OsCredentialStore
+        .set(&provider, &secret)
+        .and_then(|()| credentials::OsCredentialStore.status(&provider))
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn delete_credential(provider: String) -> Result<(), String> {
+    credentials::OsCredentialStore.delete(&provider).map_err(|err| err.to_string())
+}
+
+/// Redacted status only. There is deliberately no command that returns the value.
+#[tauri::command]
+fn get_credential_status(provider: String) -> Result<credentials::CredentialStatus, String> {
+    credentials::OsCredentialStore.status(&provider).map_err(|err| err.to_string())
+}
+
+/// Validate a configuration document without saving it.
+///
+/// The rules live in the worker so the settings screen and the runtime cannot
+/// disagree. Takes the document as a JSON string because it arrives from the
+/// webview as an untyped value and may legitimately be malformed.
+#[tauri::command]
+fn validate_config(document: String) -> Result<Value, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(python_env::python_bin()?)
+        .arg(python_env::agent_dir()?.join("validate_config.py"))
+        .arg("-")
+        .current_dir(python_env::project_root()?)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("Could not start validation: {err}"))?;
+
+    child
+        .stdin
+        .as_mut()
+        .ok_or("Validation stdin was unavailable.")?
+        .write_all(document.as_bytes())
+        .map_err(|err| format!("Could not send the configuration for validation: {err}"))?;
+
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("Validation did not finish: {err}"))?;
+    if !output.status.success() {
+        return Err("Validation failed to run.".to_string());
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|err| format!("Validation returned unreadable output: {err}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(Mutex::new(AgentManager::default()))
-        .invoke_handler(tauri::generate_handler![start_agent, stop_agent, restart_agent, get_agent_status, get_agent_worker_status, wait_for_agent_worker, get_livekit_token, dispatch_agent, delete_livekit_room])
+        .invoke_handler(tauri::generate_handler![
+            start_agent,
+            stop_agent,
+            restart_agent,
+            get_agent_status,
+            get_agent_worker_status,
+            wait_for_agent_worker,
+            get_livekit_token,
+            dispatch_agent,
+            delete_livekit_room,
+            get_provider_catalog,
+            get_config,
+            save_config,
+            validate_config,
+            set_credential,
+            delete_credential,
+            get_credential_status
+        ])
         .setup(|_app| {
             Ok(())
         })
