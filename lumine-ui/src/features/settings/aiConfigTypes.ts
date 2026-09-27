@@ -102,6 +102,22 @@ export type CatalogProvider = {
    * already runs rather than on whichever provider sorts first.
    */
   preferredFor: Capability[];
+  /**
+   * How to prove this provider's credential works, or `null` when there is no
+   * cheap authenticated request. Absent is honest: the page then says the key is
+   * stored without claiming it works.
+   */
+  probe: {
+    method: string;
+    url: string;
+    authHeader: string;
+    authPrefix: string;
+    /** Fixed headers the provider needs, such as an API version. */
+    headers: Record<string, string>;
+    /** Statuses that mean the credential itself is not usable. */
+    invalidStatus: number[];
+    costs: string;
+  } | null;
   models: CatalogModel[];
   voices: CatalogVoice[];
 };

@@ -42,7 +42,8 @@ CAPABILITIES: tuple[Capability, ...] = ("stt", "llm", "tts", "realtime", "vad", 
 # models deprecated in favour of it. Version 4 added ``thinkingLevels`` and
 # ``options``, the per-model description of what a stage accepts and which values
 # are legal, so the settings screen can offer a model its own settings.
-CATALOG_VERSION = 5
+# Version 6 added ``probe``, how each provider's credential can be tested.
+CATALOG_VERSION = 7
 
 ModelStatus = Literal["available", "deprecated", "retired"]
 
@@ -62,6 +63,50 @@ class VoiceDefinition:
     languages: tuple[str, ...] = ("en",)
     default: bool = False
     notes: str = ""
+
+
+@dataclass(frozen=True)
+class ProbeDefinition:
+    """How to make one cheap authenticated request to prove a credential works.
+
+    Declared here so a provider's connectivity check is a catalog entry rather
+    than a branch in the desktop layer, and so the status codes that mean "this
+    key is not usable" are stated by the provider rather than guessed.
+
+    The endpoints below were verified against live keys, not read out of docs.
+    Two findings shaped this:
+
+    * **A key in a URL is a leak.** It lands in access logs and proxy logs, so
+      the secret always travels in a header.
+    * **4xx does not mean "bad key".** Google answers an invalid key with **400**
+      and a message, while a wrong path answers 405 and an outage answers 5xx.
+      Treating any 4xx as a bad credential would tell a user their key was wrong
+      when the truth was that our request was. `invalid_status` lists only the
+      codes that really do mean the credential is at fault; everything else is
+      reported as inconclusive.
+    """
+
+    url: str
+    method: str = "GET"
+    #: Header the secret is placed in. Cartesia wants a version header too, which
+    #: is why extra headers exist.
+    auth_header: str = "Authorization"
+    auth_prefix: str = "Bearer "
+    extra_headers: tuple[tuple[str, str], ...] = ()
+    #: Statuses that mean the credential itself is not usable.
+    invalid_status: tuple[int, ...] = (401, 403)
+    #: Whether the request costs anything. A TTS probe synthesises a word, so it
+    #: is worth saying so out loud.
+    costs: str = ""
+
+    def headers_for(self, secret: str) -> dict[str, str]:
+        headers = {name: value for name, value in self.extra_headers}
+        headers[self.auth_header] = f"{self.auth_prefix}{secret}"
+        return headers
+
+    def request_body(self) -> str:
+        """The body to send, as JSON. Empty for the GET probes that are used."""
+        return ""
 
 
 @dataclass(frozen=True)
@@ -257,6 +302,10 @@ class ProviderDefinition:
     #: would put Google in front of Groq for speech recognition and quietly move
     #: the conversation onto a different vendor.
     preferred_for: tuple[Capability, ...] = ()
+    #: The connectivity check for this provider, or `None` when it has no cheap
+    #: authenticated request. Being absent is honest: the page then says the key is
+    #: stored, not that it works.
+    probe: ProbeDefinition | None = None
     models: tuple[ModelDefinition, ...] = field(default_factory=tuple)
     voices: tuple[VoiceDefinition, ...] = field(default_factory=tuple)
 
@@ -434,6 +483,15 @@ _OPTION_SETS: dict[tuple[str, Capability], tuple[OptionDefinition, ...]] = {
         OptionDefinition(name="max_completion_tokens", notes="A hard cap on the reply."),
         OptionDefinition(name="top_p"),
         OptionDefinition(name="parallel_tool_calls"),
+        OptionDefinition(
+            name="reasoning_effort",
+            values=("low", "medium", "high"),
+            notes=(
+                "How much the model thinks before answering. GPT-OSS is a reasoning "
+                "model and its thinking counts against the token cap, so 'low' is "
+                "what a voice turn wants."
+            ),
+        ),
     ),
     ("groq", "stt"): (
         OptionDefinition(name="language", notes="Spoken language, as a locale code."),
@@ -460,6 +518,43 @@ SESSION_OPTIONS: frozenset[str] = frozenset(
         "max_tool_steps",
     }
 )
+
+# Connectivity checks. Verified against live keys rather than taken from docs,
+# because the interesting part is the failure shape and documentation rarely
+# states it. See `ProbeDefinition` for why 4xx is not treated as "bad key".
+#
+# `invalid_status` is the part worth reading. Google's list-of-models answers an
+# invalid key with 400 and a message, and answers a wrong path with 405 -- so a
+# blanket "any 4xx means bad key" would have blamed the user's key for our own
+# mistake. Everything not listed is reported as inconclusive, not as a failure.
+_PROBES: dict[str, ProbeDefinition] = {
+    "google": ProbeDefinition(
+        url="https://generativelanguage.googleapis.com/v1beta/models",
+        auth_header="x-goog-api-key",
+        auth_prefix="",
+        # Verified: a valid key gives 200; an invalid one gives 400 with
+        # "API key not valid", not 401.
+        invalid_status=(400, 401, 403),
+    ),
+    "groq": ProbeDefinition(
+        url="https://api.groq.com/openai/v1/models",
+        # Verified: 200 with a valid key, 401 "Invalid API Key" with a bad one.
+        invalid_status=(401, 403),
+    ),
+    "cartesia": ProbeDefinition(
+        # There is no /v2 prefix on the path: the version travels in a header,
+        # and asking for /v2/... returns 404 before authentication even happens.
+        # Taken from the installed plugin's own constants rather than guessed.
+        url="https://api.cartesia.ai/voices",
+        extra_headers=(("Cartesia-Version", "2025-04-16"),),
+        # Verified: 200 with a valid key, 401 "must be logged in" with a bad one.
+        invalid_status=(401, 403),
+    ),
+    "openai": ProbeDefinition(
+        url="https://api.openai.com/v1/models",
+        invalid_status=(401, 403),
+    ),
+}
 
 _OPENAI_TTS_VOICES = (
     VoiceDefinition(id="ash", label="Ash", default=True),
@@ -709,13 +804,41 @@ PROVIDERS: dict[str, ProviderDefinition] = {
                 label="GPT-OSS 20B",
                 capability="llm",
                 default=True,
-                notes="Lumine's current legacy-cascade LLM default.",
+                notes=(
+                    "Fastest and cheapest text model on Groq, and one of the two that "
+                    "remain on the free tier. Supports prompt caching, so the system "
+                    "prompt is exempt from the token allowance once it is warm."
+                ),
+            ),
+            ModelDefinition(
+                id="openai/gpt-oss-120b",
+                label="GPT-OSS 120B",
+                capability="llm",
+                notes=(
+                    "The same free-tier allowance as the 20B with better answers, at "
+                    "roughly half the speed. Worth it for a harder question, not for "
+                    "ordinary chat."
+                ),
             ),
             ModelDefinition(
                 id="llama-3.3-70b-versatile",
                 label="Llama 3.3 70B Versatile",
                 capability="llm",
-                notes="Groq's LLM plugin default.",
+                status="deprecated",
+                replaces="openai/gpt-oss-20b",
+                notes=(
+                    "Groq withdrew this from the free and developer tiers in August "
+                    "2026; it is now Enterprise only, so a free key is refused. Kept "
+                    "so an existing profile explains itself."
+                ),
+            ),
+            ModelDefinition(
+                id="llama-3.1-8b-instant",
+                label="Llama 3.1 8B Instant",
+                capability="llm",
+                status="deprecated",
+                replaces="openai/gpt-oss-20b",
+                notes="Also Enterprise only since August 2026.",
             ),
         ),
     ),
@@ -815,7 +938,7 @@ PROVIDERS: dict[str, ProviderDefinition] = {
 
 
 def _bind_option_schemas() -> None:
-    """Give every model the option set declared for its provider and capability.
+    """Give every model its option set, and every provider its connectivity check.
 
     Done as one pass rather than by repeating ``options=`` on every model, so
     adding a model cannot forget to declare what it accepts. Two things are
@@ -840,7 +963,9 @@ def _bind_option_schemas() -> None:
                     definition = replace(definition, values=model.thinking_levels)
                 resolved.append(definition)
             models.append(replace(model, options=model.options or tuple(resolved)))
-        PROVIDERS[provider.id] = replace(provider, models=tuple(models))
+        updated = replace(provider, models=tuple(models))
+        probe = provider.probe if provider.probe is not None else _PROBES.get(provider.id)
+        PROVIDERS[provider.id] = replace(updated, probe=probe)
 
 
 _bind_option_schemas()
@@ -941,6 +1066,26 @@ def _voice_public(voice: VoiceDefinition) -> dict[str, Any]:
     }
 
 
+def _probe_public(probe: ProbeDefinition | None) -> dict[str, Any] | None:
+    """The connectivity check, with no secret in it.
+
+    The header *name* and the fixed headers are public: they say which API is
+    being called, not anything about the caller. The secret is only ever placed
+    into the header at request time, in the process that holds it.
+    """
+    if probe is None:
+        return None
+    return {
+        "method": probe.method,
+        "url": probe.url,
+        "authHeader": probe.auth_header,
+        "authPrefix": probe.auth_prefix,
+        "headers": {name: value for name, value in probe.extra_headers},
+        "invalidStatus": list(probe.invalid_status),
+        "costs": probe.costs,
+    }
+
+
 def _provider_public(provider: ProviderDefinition) -> dict[str, Any]:
     return {
         "id": provider.id,
@@ -953,6 +1098,7 @@ def _provider_public(provider: ProviderDefinition) -> dict[str, Any]:
         "notes": provider.notes,
         "capabilities": list(provider.capabilities()),
         "preferredFor": list(provider.preferred_for),
+        "probe": _probe_public(provider.probe),
         "models": [_model_public(m) for m in provider.models],
         "voices": [_voice_public(v) for v in provider.voices],
     }
@@ -1003,6 +1149,24 @@ def catalog_issues(
             issues.append(f"{provider.id}: declares key_env but does not require a key")
         if not provider.setup_url:
             issues.append(f"{provider.id}: missing setup_url")
+
+        probe = provider.probe
+        if probe is not None:
+            if not provider.requires_key:
+                issues.append(f"{provider.id}: has a probe but needs no credential")
+            if not probe.url.startswith("https://"):
+                # A probe sends the user's credential to this address. Plain HTTP
+                # would put it on the wire in the clear.
+                issues.append(f"{provider.id}: probe url must be https")
+            if not probe.auth_header:
+                issues.append(f"{provider.id}: probe names no auth header")
+            if not probe.invalid_status:
+                issues.append(
+                    f"{provider.id}: probe lists no invalid status, so a wrong key "
+                    "could not be told from an outage"
+                )
+            if 200 in probe.invalid_status:
+                issues.append(f"{provider.id}: probe lists 200 as an invalid status")
 
         if not provider.models:
             issues.append(f"{provider.id}: has no models")

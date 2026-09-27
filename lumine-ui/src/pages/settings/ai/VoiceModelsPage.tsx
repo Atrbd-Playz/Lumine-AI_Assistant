@@ -14,6 +14,7 @@ import {
 } from "../../../features/settings/aiConfigTypes";
 import { convertProfileKind, defaultModelRef } from "../../../features/settings/profileOps";
 import { Icon } from "../../home/components/Icon";
+import { SettingsPageHeader } from "../components/SettingsPageHeader";
 import { ModelOptions } from "./ModelOptions";
 import { ProfileList } from "./ProfileList";
 
@@ -337,13 +338,10 @@ export function VoiceModelsPage(props: VoiceModelsPageProps) {
 
   return (
     <div className="settings-page">
-      <header className="settings-page-head">
-        <div>
-          <p className="eyebrow">AI</p>
-          <h1>Voice &amp; Models</h1>
-          <p>Choose the speech stack Lumine uses. Changes apply to the next voice session.</p>
-        </div>
-      </header>
+      <SettingsPageHeader
+        section="voice"
+        description="Choose the speech stack Lumine uses. Changes apply to the next voice session."
+      />
 
       <ProfileList
         catalog={catalog}

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Appearance, AppearancePreset, ConversationBubbleVariant, InterfaceFont, ThemeMode, ThemePresetCollection } from "../types";
+import { SettingsPageHeader } from "../../settings/components/SettingsPageHeader";
 
 type ColorKey = "accent" | "icon" | "canvas" | "surface" | "stage" | "text" | "avatar";
 type PresetColorKey = ColorKey | "chatSurface" | "chatUser" | "chatAssistant" | "chatText" | "chatAccent";
@@ -61,7 +62,7 @@ export function AppearanceDialog({ mode, setMode, cursorGaze, setCursorGaze, app
     }
   };
   const importFile = (event: React.ChangeEvent<HTMLInputElement>) => { const file = event.target.files?.[0]; if (!file) return; file.text().then(parseImport).catch(() => setImportMessage("Could not read this file.")); event.target.value = ""; };
-  return <div className="settings-page"><header className="settings-page-head"><div><p className="eyebrow">General</p><h1>Appearance</h1><p>Color mode, palette, and how Lumine's presence reads.</p></div></header><div className="appearance-body">
+  return <div className="settings-page"><SettingsPageHeader section="appearance" description="Color mode, palette, and how Lumine's presence reads." /><div className="appearance-body">
     <section className="setting-group"><div className="setting-title"><div><strong>Color mode</strong><p>Change Lumine’s ambient ground.</p></div><div className="segmented"><button className={mode === "light" ? "active" : ""} onClick={() => setMode("light")}>Light</button><button className={mode === "dark" ? "active" : ""} onClick={() => setMode("dark")}>Dark</button></div></div></section>
     <section className="setting-group"><div className="setting-title"><div><strong>Cursor-aware gaze</strong><p>Let Lumine’s eyes follow your cursor.</p></div><Switch checked={cursorGaze} onChange={() => setCursorGaze(!cursorGaze)} label="Toggle cursor-aware gaze" /></div></section>
     <section className="setting-group"><div className="setting-title"><div><strong>Avatar color</strong><p>Show the warm color around Lumine’s face.</p></div><Switch checked={appearance.showAvatarColor} onChange={() => update("showAvatarColor", !appearance.showAvatarColor)} label="Toggle avatar color" /></div></section>

@@ -27,11 +27,39 @@ export type VoiceMessage = {
   status: "complete" | "processing";
 };
 
+/**
+ * Something the user needs to be told about, from the agent's own runtime.
+ *
+ * Distinct from `VoiceToolEvent` because the reaction differs: a tool finishing
+ * is a status line, while a rate limit is a warning the user has to act on. The
+ * `kind` is the whole point -- `limit` means a wait, and everything else means
+ * something went wrong.
+ */
+export type VoiceNotice = {
+  kind: "limit" | "agent_failure";
+  /** Written for a person, not a log. */
+  message: string;
+  /** Named failure, so the UI can be specific without parsing prose. */
+  failureKind: string;
+  retryable: boolean;
+  retryAfter?: number;
+  sessionId: string;
+};
+
 export type VoiceToolEvent = {
   id: string;
   name: string;
   status: "started" | "completed" | "failed";
+  /** A short status for the transcript. Never the tool's payload. */
   message: string;
+  /**
+   * The tool's actual output, for a transient toast.
+   *
+   * Separate from `message` on purpose: the transcript accumulates and the toast
+   * does not, and the payload is the model's input rather than something said
+   * out loud. This is the one surface where showing it costs nothing and helps.
+   */
+  payload?: string;
   timestamp: Date;
   sessionId: string;
   durationMs?: number;
@@ -68,6 +96,17 @@ const TOKEN_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const DISPATCH_TIMEOUT_MS = 10_000;
 const AGENT_TIMEOUT_MS = 15_000;
+/**
+ * Past this, a held operation lock is treated as stuck rather than in-flight.
+ *
+ * Comfortably longer than the longest thing a connect waits for: a 20s worker
+ * spawn, a 30s readiness wait, and a 15s agent-join timeout, in sequence.
+ */
+const OPERATION_LOCK_TIMEOUT_MS = 90_000;
+/** Spawning Python and importing the LiveKit SDK is the slow part of a cold start. */
+const WORKER_START_TIMEOUT_MS = 20_000;
+/** Longer than the spawn: readiness is the worker reporting it registered. */
+const WORKER_READY_TIMEOUT_MS = 30_000;
 const EMOTION_DEBUG = import.meta.env.VITE_LUMINE_DEBUG_EMOTION === "true";
 
 type ToolStatusPayload = {
@@ -78,9 +117,42 @@ type ToolStatusPayload = {
   status?: string;
   message?: string;
   summary?: string;
+  /** The payload, kept separate from `summary` so the transcript never shows it. */
+  result?: string;
   duration_ms?: number;
   timestamp?: number;
 };
+
+type NoticePayload = {
+  type?: string;
+  kind?: string;
+  message?: string;
+  failureKind?: string;
+  retryable?: boolean;
+  retryAfter?: number;
+};
+
+const NOTICE_KINDS = new Set(["limit", "agent_failure"]);
+
+function parseNotice(payload: unknown, sessionId: string): VoiceNotice | null {
+  if (!payload || typeof payload !== "object") return null;
+  const event = payload as NoticePayload;
+  // `type` and `kind` are both accepted because the record is emitted once and
+  // forwarded; being strict about which name is "correct" would only make a
+  // notice silently vanish on a rename.
+  const kind = (event.kind ?? event.type ?? "").trim();
+  if (!NOTICE_KINDS.has(kind)) return null;
+  const message = (event.message ?? "").trim();
+  if (!message) return null;
+  return {
+    kind: kind as VoiceNotice["kind"],
+    message,
+    failureKind: (event.failureKind ?? "").trim() || "unknown",
+    retryable: event.retryable !== false,
+    retryAfter: typeof event.retryAfter === "number" ? event.retryAfter : undefined,
+    sessionId,
+  };
+}
 
 function parseToolStatus(payload: unknown, sessionId: string): VoiceToolEvent | null {
   if (!payload || typeof payload !== "object") return null;
@@ -95,7 +167,12 @@ function parseToolStatus(payload: unknown, sessionId: string): VoiceToolEvent | 
     id: event.id,
     name,
     status,
-    message: event.message || event.summary || "",
+    // `summary` first, and never `result`. A transcript records what was *said*,
+    // and a tool payload is not something anyone said -- it is the model's input,
+    // compressed and (for web data) wrapped in an injection guard. Showing it
+    // inline would read as though the model had been handed it by the user.
+    message: (event.summary || event.message || "").trim(),
+    payload: typeof event.result === "string" && event.result.trim() ? event.result : undefined,
     timestamp: typeof event.timestamp === "number" ? new Date(event.timestamp * 1000) : new Date(),
     sessionId,
     durationMs: typeof event.duration_ms === "number" ? event.duration_ms : undefined,
@@ -147,6 +224,7 @@ export type VoiceLifecycleCallbacks = {
   onUpdateMessage: (id: string, changes: Partial<Record<string, unknown>>) => void;
   onEmotion: (emotion: LumineEmotionIntent) => void;
   onToolEvent: (event: VoiceToolEvent) => void;
+  onNotice: (notice: VoiceNotice) => void;
   onError: (message: string) => void;
 };
 
@@ -158,6 +236,8 @@ export class LumineVoiceManager {
   private activeSession: SessionContext | null = null;
   private generation = 0;
   private operationLock = false;
+  /** When the lock was taken, so a lock that outlives its connect can be spotted. */
+  private lockHeldAt: number | null = null;
   private readonly onStateChange: (snapshot: VoiceManagerSnapshot) => void;
   private readonly callbacks: VoiceLifecycleCallbacks;
 
@@ -251,9 +331,68 @@ export class LumineVoiceManager {
     console.info("[Voice] Cleanup complete", { sessionId: session.id, room: session.roomName });
   }
 
+  /**
+   * Make sure a Python worker is running before a room is dispatched.
+   *
+   * Readiness is a separate step from starting: the process has to finish
+   * importing the LiveKit SDK and register with the server before a dispatch
+   * finds it, and dispatching into a room nobody is listening for produces a room
+   * that sits silently connected. So the wait is explicit, and bounded, rather
+   * than hoping the spawn has settled by the time the room exists.
+   *
+   * Failure is not fatal. A worker already started outside Tauri is invisible to
+   * Rust and can serve the room fine, so a timeout is reported and then tolerated
+   * -- the agent-join timeout further down is the real backstop, and its error
+   * message is the one the user will actually need.
+   */
+  /**
+   * Whether the operation lock has outlived any plausible connect.
+   *
+   * The lock is normally released in a `finally`, so this should never be true.
+   * It exists because "the mic button does nothing and only a restart fixes it"
+   * is indistinguishable from a hung await, and a stuck lock is cheap to detect
+   * and cheap to clear. Generous on purpose: exceeding it means something is
+   * genuinely wrong, not that a slow connect was interrupted.
+   */
+  private lockIsStuck(): boolean {
+    return this.lockHeldAt !== null && performance.now() - this.lockHeldAt > OPERATION_LOCK_TIMEOUT_MS;
+  }
+
+  private async ensureWorker(sessionId: string, markLatency: (stage: string, details?: Record<string, unknown>) => void): Promise<void> {
+    try {
+      await withTimeout(invoke("start_agent"), WORKER_START_TIMEOUT_MS, "Couldn't start Lumine's voice worker.");
+      markLatency("worker_started", { sessionId });
+    } catch (error) {
+      console.warn("[Voice] start_agent failed; a worker may already be running elsewhere", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    try {
+      await withTimeout(invoke("wait_for_agent_worker"), WORKER_READY_TIMEOUT_MS, "Lumine's voice worker did not become ready.");
+      markLatency("worker_ready", { sessionId });
+    } catch (error) {
+      console.warn("[Voice] Worker readiness timed out; continuing to dispatch", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   async start(interruptionMode: InterruptionMode = "barge_in"): Promise<void> {
     if (this.operationLock && this.activeSession) {
-      return;
+      // A second click while the first connect is still in flight. Legitimate, and
+      // the right thing to ignore -- but silently, because a stuck lock is
+      // indistinguishable from a dead button and the only cure a user finds is
+      // restarting the app.
+      if (!this.lockIsStuck()) {
+        return;
+      }
+      console.warn("[Voice] Releasing a stuck operation lock; the previous connect never finished");
+      this.operationLock = false;
+      this.lockHeldAt = null;
     }
 
     if (this.activeSession) {
@@ -261,6 +400,7 @@ export class LumineVoiceManager {
     }
 
     this.operationLock = true;
+    this.lockHeldAt = performance.now();
     const sessionId = crypto.randomUUID();
     const roomName = createRoomName();
     const identity = `user-${sessionId.slice(0, 12)}`;
@@ -457,7 +597,12 @@ export class LumineVoiceManager {
     };
 
     const handleDataReceived = (payload: Uint8Array, participant?: RemoteParticipant, _kind?: unknown, topic?: string) => {
-      if (!ownsSession() || !participant || !isAgent(participant) || (topic !== "lumine.emotion" && topic !== "lumine.tool")) {
+      if (
+        !ownsSession() ||
+        !participant ||
+        !isAgent(participant) ||
+        (topic !== "lumine.emotion" && topic !== "lumine.tool" && topic !== "lumine.notice")
+      ) {
         return;
       }
 
@@ -472,6 +617,13 @@ export class LumineVoiceManager {
           const toolEvent = parseToolStatus(decoded, session.id);
           if (toolEvent) {
             this.callbacks.onToolEvent(toolEvent);
+          }
+          return;
+        }
+        if (topic === "lumine.notice") {
+          const notice = parseNotice(decoded, session.id);
+          if (notice) {
+            this.callbacks.onNotice(notice);
           }
           return;
         }
@@ -504,9 +656,18 @@ export class LumineVoiceManager {
         throw new Error("LiveKit is not configured. Set VITE_LIVEKIT_URL and try again.");
       }
 
-      // Development mode intentionally keeps the Python worker separate from Tauri.
-      // Do not wait on the Tauri-side worker readiness gate here; the live agent is
-      // already registered through `lk agent dev` and can join a fresh session room.
+      // The app owns the worker's lifecycle. Without this, voice silently depends
+      // on a Python process someone remembered to start by hand, and a saved
+      // settings change does nothing until it is restarted by hand too.
+      //
+      // `start_agent` is idempotent (it returns the existing status if the managed
+      // child is alive) and it hands the child the app's config path plus any
+      // keyring credentials, so the worker reads the settings the UI shows. A
+      // worker already running from `lk agent dev` is not visible to Rust and will
+      // briefly coexist with this one; LiveKit dispatches a room to a single agent,
+      // so the second simply idles.
+      await this.ensureWorker(sessionId, markLatency);
+
       const token = await withTimeout(getLiveKitToken(roomName, identity), TOKEN_TIMEOUT_MS, "Couldn't create a secure voice session token.");
       markLatency("token_ready");
       if (!ownsSession()) {
@@ -548,6 +709,7 @@ export class LumineVoiceManager {
       }
     } finally {
       this.operationLock = false;
+    this.lockHeldAt = null;
     }
   }
 
@@ -558,6 +720,7 @@ export class LumineVoiceManager {
     }
 
     this.operationLock = true;
+    this.lockHeldAt = performance.now();
     this.state = "ending";
     this.error = null;
     this.publish();
@@ -575,6 +738,7 @@ export class LumineVoiceManager {
     }
 
     this.operationLock = false;
+    this.lockHeldAt = null;
     this.generation = Math.max(this.generation, generation + 1);
   }
 
@@ -607,6 +771,7 @@ export class LumineVoiceManager {
     this.callbacks.onError(message);
     await this.cleanupSession(session, message);
     this.operationLock = false;
+    this.lockHeldAt = null;
     this.state = "disconnected";
   }
 }

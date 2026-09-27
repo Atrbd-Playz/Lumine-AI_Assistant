@@ -1,8 +1,50 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ProviderCatalog } from "../../../features/settings/aiConfigTypes";
-import { deleteCredential, getCredentialStatus, setCredential } from "../../../features/settings/aiConfigClient";
+import {
+  deleteCredential,
+  getCredentialStatus,
+  setCredential,
+  testProviderCredential,
+  type ProbeOutcome,
+} from "../../../features/settings/aiConfigClient";
 import { Icon } from "../../home/components/Icon";
+import { useNotify } from "../../../features/toast/useNotify";
 import { SecretField } from "../components/SecretField";
+import { SettingsPageHeader } from "../components/SettingsPageHeader";
+
+/** How each verdict reads, and how much to trust it. */
+const VERDICT: Record<ProbeOutcome["verdict"], { label: string; tone: string; help: string }> = {
+  valid: {
+    label: "Works",
+    tone: "ok",
+    help: "The provider accepted this key.",
+  },
+  rejected: {
+    label: "Rejected",
+    tone: "missing",
+    help: "The provider refused this key. It may be wrong, revoked, or expired.",
+  },
+  inconclusive: {
+    label: "Could not tell",
+    tone: "unknown",
+    help: "The provider could not be asked, or answered something that says nothing about the key. This is not a sign the key is bad.",
+  },
+  no_secret: {
+    label: "No key to test",
+    tone: "missing",
+    help: "Nothing is set for this provider yet.",
+  },
+  no_probe: {
+    label: "Not testable",
+    tone: "unknown",
+    help: "No cheap authenticated request is known for this provider, so its key cannot be checked from here.",
+  },
+};
+
+function omit(record: Record<string, ProbeOutcome>, key: string): Record<string, ProbeOutcome> {
+  const { [key]: _removed, ...rest } = record;
+  return rest;
+}
 
 type ProvidersPageProps = {
   catalog: ProviderCatalog;
@@ -47,10 +89,18 @@ const STATUS_TONE: Record<ProviderStatus["kind"], string> = {
 export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPageProps) {
   const [statuses, setStatuses] = useState<Record<string, ProviderStatus>>({});
   const [pending, setPending] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ tone: "success" | "error"; text: string } | null>(null);
-  // Which provider's secret field is open. At most one, so two masked fields
-  // never sit on screen together with the user unsure which is which.
+  // Only the open secret field's failure lives here, because it has to sit next
+  // to the input that caused it. Everything else is a transient outcome and goes
+  // to the toast queue, where one result cannot overwrite another.
+  const [fieldError, setFieldError] = useState<string | null>(null);
+  const notify = useNotify();
+  // At most one provider's secret field is open, so two masked fields never sit
+  // on screen together with the user unsure which is which.
   const [editing, setEditing] = useState<string | null>(null);
+  const [probing, setProbing] = useState<string | null>(null);
+  // Connectivity results, kept per provider so a verdict stays visible next to
+  // the key it is about.
+  const [results, setResults] = useState<Record<string, ProbeOutcome>>({});
 
   const refresh = useCallback(async () => {
     const entries = await Promise.all(
@@ -73,14 +123,15 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
 
   const store = async (providerId: string, secret: string) => {
     setPending(providerId);
-    setMessage(null);
+    setFieldError(null);
     try {
       await setCredential(providerId, secret);
-      setMessage({ tone: "success", text: "Key stored in the system credential store." });
+      notify({ tone: "success", message: "Key stored in the system credential store." });
       setEditing(null);
       await refresh();
     } catch (cause) {
-      setMessage({ tone: "error", text: cause instanceof Error ? cause.message : "Could not store the key." });
+      const text = cause instanceof Error ? cause.message : "Could not store the key.";
+      setFieldError(text);
     } finally {
       setPending(null);
     }
@@ -88,39 +139,55 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
 
   const remove = async (providerId: string) => {
     setPending(providerId);
-    setMessage(null);
     try {
       await deleteCredential(providerId);
-      setMessage({ tone: "success", text: "Key removed." });
+      notify({ tone: "success", message: "Key removed." });
+      setResults((current) => omit(current, providerId));
       await refresh();
     } catch (cause) {
-      setMessage({ tone: "error", text: cause instanceof Error ? cause.message : "Could not remove the key." });
+      notify({
+        tone: "error",
+        message: cause instanceof Error ? cause.message : "Could not remove the key.",
+      });
     } finally {
       setPending(null);
     }
   };
 
+  /**
+   * Make one authenticated request to see whether a key works.
+   *
+   * "Stored" comes from the OS keyring and says nothing about validity, which is
+   * why this exists. The result is kept per provider so it survives a re-render,
+   * and a re-test replaces rather than appends.
+   */
+  const test = async (providerId: string) => {
+    setProbing(providerId);
+    try {
+      const outcome = await testProviderCredential(providerId);
+      setResults((current) => ({ ...current, [providerId]: outcome }));
+    } catch (cause) {
+      notify({
+        tone: "error",
+        message: cause instanceof Error ? cause.message : "Could not run the check.",
+      });
+    } finally {
+      setProbing(null);
+    }
+  };
+
   return (
     <div className="settings-page">
-      <header className="settings-page-head">
-        <div>
-          <p className="eyebrow">AI</p>
-          <h1>Providers</h1>
-          <p>Each service Lumine can speak through has its own credential, stored once and referenced by every profile.</p>
-        </div>
-      </header>
+      <SettingsPageHeader
+        section="providers"
+        description="Each service Lumine can speak through has its own credential, stored once and referenced by every profile."
+      />
 
       {isEnvironmentBacked && (
         <p className="notice">
           Keys set in <code>agent/.env</code> still apply. A key stored here is handed to the worker when it
           starts, and takes over from <code>agent/.env</code> for that provider. Restart the worker after
           changing a key.
-        </p>
-      )}
-
-      {message && (
-        <p className={message.tone === "error" ? "validation is-error" : "validation is-ok"}>
-          {message.text}
         </p>
       )}
 
@@ -172,6 +239,17 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                     >
                       {editing === provider.id ? "Close" : stored ? "Replace key" : "Add key"}
                     </button>
+                    {provider.probe && (
+                      <button
+                        type="button"
+                        className="settings-secondary"
+                        onClick={() => void test(provider.id)}
+                        disabled={probing === provider.id}
+                        title="Make one authenticated request to check this key works"
+                      >
+                        {probing === provider.id ? "Testing…" : "Test"}
+                      </button>
+                    )}
                     {stored && (
                       <button
                         type="button"
@@ -189,6 +267,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                       </a>
                     )}
                   </div>
+                  {results[provider.id] && <ProbeResult outcome={results[provider.id]} />}
                 </footer>
               ) : (
                 <footer>
@@ -205,15 +284,33 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                       : "Paste the key. It is stored in your system credential store and never shown again."
                   }
                   onSubmit={(secret) => store(provider.id, secret)}
-                  onCancel={() => setEditing(null)}
+                  onCancel={() => {
+                    setEditing(null);
+                    setFieldError(null);
+                  }}
                   busy={pending === provider.id}
-                  error={pending === provider.id ? null : (message?.tone === "error" ? message.text : null)}
+                  error={pending === provider.id ? null : fieldError}
                 />
               )}
             </article>
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/** One connectivity verdict, next to the key it is about. */
+function ProbeResult({ outcome }: { outcome: ProbeOutcome }) {
+  const verdict = VERDICT[outcome.verdict] ?? VERDICT.inconclusive;
+  return (
+    <div className={`probe-result is-${verdict.tone}`}>
+      <span className="probe-verdict">{verdict.label}</span>
+      <span className="field-hint">
+        {outcome.detail ? `${verdict.help} ${outcome.detail}` : verdict.help}
+        {outcome.latencyMs !== undefined && ` (${outcome.latencyMs} ms)`}
+        {outcome.status !== undefined && ` · HTTP ${outcome.status}`}
+      </span>
     </div>
   );
 }

@@ -100,6 +100,19 @@ impl AgentManager {
             command.env("LUMINE_CONFIG_PATH", &config_path);
         }
 
+        // `agent.py dev` is a development command, and LiveKit's dev mode turns the
+        // root logger up to DEBUG. That is a lot of records for a desktop app to
+        // consume over a pipe: the child's stdout is a fixed-size OS buffer, and a
+        // producer that outruns the reader either blocks or -- once the read end is
+        // gone -- fails every write with `OSError: [Errno 22] Invalid argument`.
+        //
+        // Set through the environment rather than the argument list, so it composes
+        // with a caller who has set `LUMINE_AGENT_ARGS`. An explicit setting always
+        // wins, because someone who asked for DEBUG wants DEBUG.
+        if std::env::var_os("LIVEKIT_LOG_LEVEL").is_none() {
+            command.env("LIVEKIT_LOG_LEVEL", "info");
+        }
+
         // Hand over the keys held in the OS keyring. A provider with no stored
         // key is left to `agent/.env`, which remains a supported way to
         // configure the worker.
@@ -381,7 +394,17 @@ where
 {
     std::thread::spawn(move || {
         for line in BufReader::new(reader).lines().map_while(Result::ok) {
-            println!("[agent:{stream}] {line}");
+            // Only the event stream is echoed. A worker is noisy, and a `println!`
+            // per line means a lock held per line on the one thread responsible for
+            // keeping the child's pipe drained. Echoing to the console is also
+            // redundant: Tauri's own terminal already shows the child's output in
+            // development, and this reader is the second consumer, not the first.
+            //
+            // `LUMINE_EVENT` records are still parsed in full below -- they are
+            // structured, low-volume, and the readiness gate depends on them.
+            if line.starts_with(RUNTIME_EVENT_PREFIX) {
+                println!("[agent:{stream}] {line}");
+            }
             if let Some(payload) = line.strip_prefix(RUNTIME_EVENT_PREFIX) {
                 if let Ok(event) = serde_json::from_str::<serde_json::Value>(payload) {
                     if let Some(readiness) = &readiness {

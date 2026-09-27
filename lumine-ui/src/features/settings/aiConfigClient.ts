@@ -22,7 +22,7 @@ export class DesktopUnavailableError extends Error {
 }
 
 /** The catalog shape this screen was written against. See `agent/providers.py`. */
-const CATALOG_VERSION = 5;
+const CATALOG_VERSION = 7;
 
 export class CatalogTooNewError extends Error {
   constructor(received: number) {
@@ -107,6 +107,29 @@ export function deleteCredential(provider: string): Promise<void> {
 
 export function getCredentialStatus(provider: string): Promise<CredentialStatus> {
   return call<CredentialStatus>("get_credential_status", { provider });
+}
+
+/**
+ * What a connectivity test concluded.
+ *
+ * Three values, not two. `rejected` is the only one that means the credential is
+ * at fault: `inconclusive` covers a provider outage and a malformed request of
+ * ours, and telling a user their key is broken in either case would send them to
+ * re-enter a working credential.
+ */
+export type ProbeVerdict = "valid" | "rejected" | "inconclusive" | "no_probe" | "no_secret";
+
+export type ProbeOutcome = {
+  provider: string;
+  verdict: ProbeVerdict;
+  status?: number;
+  latencyMs?: number;
+  /** A short provider message, or why nothing could be concluded. Never a secret. */
+  detail?: string;
+};
+
+export function testProviderCredential(provider: string): Promise<ProbeOutcome> {
+  return call<ProbeOutcome>("test_provider_credential", { provider });
 }
 
 export type AgentStatus = {

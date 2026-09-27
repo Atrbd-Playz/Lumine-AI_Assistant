@@ -44,7 +44,13 @@ class DescribeTests(unittest.TestCase):
             self.assertNotIn(marker, blob)
 
     def test_describe_reports_the_selected_pipeline(self):
-        with mock.patch.dict("os.environ", {"LUMINE_PIPELINE": "legacy_cascade"}, clear=False):
+        # Point the lookup at a path that does not exist, so this exercises the
+        # environment profile it is about. Without it the command reads whatever
+        # the developer has saved, which is exactly the behaviour fixed by the
+        # desktop-directory lookup -- and made this test depend on the machine.
+        with mock.patch.dict("os.environ", {"LUMINE_PIPELINE": "legacy_cascade"}, clear=False), mock.patch.dict(
+            "os.environ", {"LUMINE_CONFIG_PATH": str(FIXTURES / "does-not-exist.json")}, clear=False
+        ):
             payload = describe()
         kinds = {profile["kind"] for profile in payload["document"]["profiles"]}
         self.assertEqual(kinds, {"pipeline"})

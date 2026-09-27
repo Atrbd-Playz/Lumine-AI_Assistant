@@ -5,13 +5,13 @@ from __future__ import annotations
 import httpx
 
 from .http_client import shared_client
+from . import tool_results
 from .tools_compat import RunContext, ToolError, function_tool
 from .tools_text import clip
 
 GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 TIMEOUT = httpx.Timeout(8.0)
-MAX_OUTPUT_CHARS = 400
 
 # WMO weather interpretation codes, worded so they read naturally aloud.
 WEATHER_CODES: dict[int, str] = {
@@ -86,11 +86,17 @@ def _place_label(place: dict) -> str:
 
 
 def format_weather(place: dict, forecast: dict) -> str:
-    """Render an Open-Meteo payload as one short, spoken-friendly summary.
+    """Render an Open-Meteo payload as a compact record for the model.
 
-    Only the fields a person would say out loud are kept: current conditions,
-    humidity, wind, and the next two days. The raw payload never reaches the
-    model's context window.
+    Only what a reply would actually say: current conditions, and the next two
+    days. Everything else the API returns is dropped at the door -- the raw
+    payload never reaches the model's context, and a tool result is re-sent on
+    every later turn of the conversation, so each field here is paid for again
+    and again.
+
+    Keyed JSON rather than prose: the model can pick the one number it needs
+    without reading a sentence, and it costs fewer tokens than the filler words
+    that make prose readable to a person.
     """
     current = forecast.get("current") or {}
     daily = forecast.get("daily") or {}
@@ -100,50 +106,42 @@ def format_weather(place: dict, forecast: dict) -> str:
     condition = WEATHER_CODES.get(_as_code(current.get("weather_code")))
 
     if not temp and not condition:
-        return f"{_place_label(place)}: current conditions unavailable."
+        return tool_results.as_payload({"place": _place_label(place), "now": "unavailable"})
 
-    head = _place_label(place) + ":"
-    if temp:
-        head += f" {temp}"
-        if feels and feels != temp:
-            head += f", feels like {feels}"
-        if condition:
-            head += f", {condition}"
-    elif condition:
-        head += f" {condition}"
-    parts = [head + "."]
+    now = temp or ""
+    if feels and feels != temp:
+        now += f", feels {feels}"
+    if condition:
+        now += f", {condition}"
 
-    details = []
     humidity = _as_int(current.get("relative_humidity_2m"))
     wind = _as_int(current.get("wind_speed_10m"))
+    details = []
     if humidity is not None:
         details.append(f"humidity {humidity}%")
     if wind is not None:
         details.append(f"wind {wind} km/h")
-    if details:
-        parts.append(", ".join(details).capitalize() + ".")
 
-    outlook = []
+    record: dict[str, object] = {"place": _place_label(place), "now": now}
+    if details:
+        record["details"] = ", ".join(details)
+
     times = daily.get("time") or []
-    for index, label in enumerate(("Today", "Tomorrow")):
+    for index, label in enumerate(("today", "tomorrow")):
         if index >= len(times):
             break
         high = _number(_at(daily.get("temperature_2m_max"), index))
         low = _number(_at(daily.get("temperature_2m_min"), index))
         if not high and not low:
             continue
-        # Read as a range, not as two units: "28-33°C", never "28°C-33°C".
-        temperatures = f"{low}-{high}\u00b0C" if low and high else f"{high or low}\u00b0C"
-        entry = f"{label} {temperatures}"
+        # A range, not two units: "28-33", never "28-33C-C".
+        entry = f"{low}-{high}" if low and high else f"{high or low}"
         chance = _at(daily.get("precipitation_probability_max"), index)
         if isinstance(chance, (int, float)):
-            entry += f", {round(chance)}% chance of rain"
-        outlook.append(entry)
-    if outlook:
-        parts.append(". ".join(outlook) + ".")
+            entry += f", {round(chance)}% rain"
+        record[label] = entry
 
-    return clip(" ".join(parts), 400)
-
+    return tool_results.as_payload(record)
 
 async def _geocode(client: httpx.AsyncClient, location: str) -> dict:
     response = await client.get(
@@ -202,4 +200,4 @@ async def get_weather(context: RunContext, location: str) -> str:
     except ValueError as exc:
         raise ToolError("The weather service returned an unexpected response.") from exc
 
-    return clip(format_weather(place, forecast), MAX_OUTPUT_CHARS)
+    return format_weather(place, forecast)

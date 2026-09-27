@@ -2541,30 +2541,39 @@ input {
 }
 
 .settings-shell {
-  width: min(1080px, 100%);
-  height: min(760px, calc(100vh - 36px));
+  width: min(1160px, 100%);
+  height: min(800px, calc(100vh - 36px));
   display: grid;
-  grid-template-columns: 244px minmax(0, 1fr);
+  grid-template-columns: 268px minmax(0, 1fr);
   overflow: hidden;
   color: var(--color-text);
   background: var(--color-surface);
-  border: 1px solid color-mix(in srgb, var(--color-border) 85%, white);
-  border-radius: 22px;
-  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.3);
-  animation: settings-in 0.2s ease-out;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, white);
+  border-radius: 24px;
+  box-shadow:
+    0 40px 110px -20px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+  animation: settings-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  outline: none;
+}
+
+.settings-shell:focus-visible {
+  box-shadow:
+    0 40px 110px -20px rgba(0, 0, 0, 0.55),
+    0 0 0 2px color-mix(in srgb, var(--color-accent) 60%, transparent);
 }
 
 .settings-rail {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 24px 14px 16px;
-  background: color-mix(in srgb, var(--color-canvas) 62%, var(--color-surface));
+  padding: 22px 12px 14px;
+  background: color-mix(in srgb, var(--color-canvas) 68%, var(--color-surface));
   border-right: 1px solid var(--color-border);
 }
 
 .settings-rail header {
-  padding: 0 10px 18px;
+  padding: 0 10px 16px;
 }
 
 .settings-rail h2 {
@@ -2573,19 +2582,35 @@ input {
   letter-spacing: -0.05em;
 }
 
-.settings-rail nav {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
+/* The rail is the only place that lists every section, so it also explains the
+   one currently open. */
+.settings-rail-summary {
+  margin: 10px 0 0;
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+  text-wrap: balance;
+}
+
+.settings-rail-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.settings-rail nav {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 4px;
 }
 
 .settings-rail-group {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 
 .settings-rail-label {
@@ -2597,16 +2622,65 @@ input {
 }
 
 .settings-rail-group button {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 11px;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
   padding: 9px 11px;
-  border-radius: 10px;
+  border: 1px solid transparent;
+  border-radius: 12px;
   color: var(--color-text-soft);
   background: transparent;
+  font-family: var(--font-ui);
   font-size: 13px;
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease,
+    border-color 140ms ease;
+}
+
+.settings-rail-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
+  border-radius: 7px;
+  color: var(--color-text-faint);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
+}
+
+.settings-rail-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.settings-rail-name {
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+/* Only on the active row: a resting rail carrying four explanations reads as
+   noise, and the open one is already in the header above. */
+.settings-rail-note {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-faint);
+  opacity: 0;
+  max-height: 0;
+  overflow: hidden;
+  transition:
+    opacity 160ms ease,
+    max-height 200ms ease;
 }
 
 .settings-rail-group button:hover {
@@ -2614,10 +2688,34 @@ input {
   background: var(--color-surface-muted);
 }
 
+.settings-rail-group button:hover .settings-rail-icon {
+  color: var(--color-text-soft);
+}
+
+.settings-rail-group button:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
 .settings-rail-group button.is-active {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+  border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+}
+
+.settings-rail-group button.is-active .settings-rail-icon {
   color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.settings-rail-group button.is-active .settings-rail-name {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.settings-rail-group button.is-active .settings-rail-note {
+  opacity: 1;
+  max-height: 4rem;
 }
 
 .settings-rail footer {
@@ -2625,32 +2723,81 @@ input {
 }
 
 .settings-rail-close {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
-  padding: 9px;
+  padding: 9px 11px;
   border: 1px solid var(--color-border);
-  border-radius: 10px;
+  border-radius: 11px;
   color: var(--color-text-soft);
   background: transparent;
+  font-family: var(--font-ui);
   font-size: 12px;
   cursor: pointer;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background-color 140ms ease;
 }
 
 .settings-rail-close:hover {
   color: var(--color-text);
   border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  background: var(--color-surface-muted);
+}
+
+/* Shows the shortcut rather than describing it. */
+.settings-rail-close kbd {
+  padding: 1px 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  color: var(--color-text-faint);
+  background: var(--color-surface);
+  font: 500 10px var(--font-mono);
 }
 
 .settings-content {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+/* The animated wrapper. A plain inner element keeps the slide on one node
+   instead of fighting the scroll container's own overflow. */
+.settings-content-inner {
+  min-height: 100%;
 }
 
 .settings-page {
   display: flex;
   flex-direction: column;
   gap: 22px;
-  padding: 30px 34px 34px;
+  max-width: 780px;
+  padding: 34px 40px 40px;
+}
+
+.settings-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.settings-page-head-text {
+  min-width: 0;
+}
+
+.settings-page-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding-top: 4px;
 }
 
 .settings-page-head h1 {
@@ -2665,6 +2812,21 @@ input {
   color: var(--color-text-soft);
   font-size: 13px;
   line-height: 1.6;
+  text-wrap: pretty;
+}
+
+/* Stands in for a page whose data never arrived. Quiet and contained, so it
+   reads as "nothing to show" rather than as a broken screen. */
+.settings-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 26px 24px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-canvas) 55%, transparent);
 }
 
 .settings-block {
@@ -3002,6 +3164,31 @@ input {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
   margin-top: 4px;
+}
+
+.probe-result {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+
+.probe-verdict {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+.probe-result.is-ok .probe-verdict {
+  color: var(--color-accent);
+}
+
+.probe-result.is-missing .probe-verdict {
+  color: var(--color-danger, #c0392b);
 }
 
 .secret-field {
@@ -3367,36 +3554,54 @@ input {
   .settings-shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
+    height: calc(100dvh - 24px);
   }
 
+  /* The rail becomes a horizontal tab strip: no room for a two-column list, and
+     no room for the descriptions, so they collapse entirely. */
   .settings-rail {
     flex-direction: row;
     align-items: center;
-    gap: 10px;
-    overflow-x: auto;
-    padding: 12px;
+    padding: 10px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--color-border);
   }
 
   .settings-rail header,
   .settings-rail-label,
-  .settings-rail footer {
+  .settings-rail footer,
+  .settings-rail-note {
     display: none;
+  }
+
+  .settings-rail-scroll {
+    overflow-x: auto;
+    overflow-y: hidden;
   }
 
   .settings-rail nav {
     flex-direction: row;
     gap: 6px;
-    overflow: visible;
+    padding-bottom: 0;
   }
 
   .settings-rail-group {
     flex-direction: row;
   }
 
+  .settings-rail-group button {
+    width: auto;
+    align-items: center;
+    padding: 7px 12px;
+  }
+
   .settings-page {
-    padding: 22px 18px 28px;
+    padding: 24px 18px 30px;
+  }
+
+  .settings-page-head {
+    flex-direction: column;
+    gap: 12px;
   }
 }
 
@@ -3605,26 +3810,6 @@ input {
   }
 }
 
-.runtime-toast {
-  position: fixed;
-  top: 24px;
-  right: 24px;
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  max-width: min(420px, calc(100vw - 32px));
-  padding: 12px 14px;
-  border: 1px solid var(--color-line, rgba(255, 255, 255, 0.14));
-  border-radius: 8px;
-  background: var(--color-surface, #211f1d);
-  color: var(--color-text, #f1ece5);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
-  font-size: 12px;
-  line-height: 1.4;
-  animation: runtime-toast-in 180ms ease-out both;
-}
-
 /* Presentation layer only. The classic shell remains the default and unchanged. */
 .visual-glass {
   --glass-border: color-mix(in srgb, var(--color-text) 12%, transparent);
@@ -3701,45 +3886,6 @@ input {
     margin: 8px;
     border-radius: 18px;
   }
-}
-
-.runtime-toast.is-error {
-  border-color: rgba(190, 87, 72, 0.6);
-}
-
-.runtime-toast.is-success {
-  border-color: rgba(86, 149, 111, 0.6);
-}
-
-.runtime-toast-dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: #c49a5a;
-}
-
-.runtime-toast.is-error .runtime-toast-dot {
-  background: #c45d4d;
-}
-
-.runtime-toast.is-success .runtime-toast-dot {
-  background: #68ae82;
-}
-
-.runtime-toast button {
-  margin-left: 6px;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
-}
-
-@keyframes runtime-toast-in {
-  from { opacity: 0; transform: translateY(-8px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 /* Final mobile shell overrides: the companion rail becomes thumb-friendly navigation. */

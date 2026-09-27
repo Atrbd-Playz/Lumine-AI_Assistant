@@ -110,13 +110,32 @@ fn resolve_python(env: &PythonEnv) -> Result<String, String> {
 /// Used by the settings commands to ask the worker side for data it owns, such as
 /// the provider catalog, instead of duplicating that knowledge in Rust.
 pub fn run_agent_script(script: &str, args: &[&str]) -> Result<String, String> {
+    run_agent_script_with_env(script, args, &[])
+}
+
+/// The same, with extra environment variables for the child only.
+///
+/// Used by the credential test: the secret is placed in the child's environment
+/// so it reaches the script that needs it without ever being passed as an
+/// argument, where it would appear in the process list.
+pub fn run_agent_script_with_env(
+    script: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Result<String, String> {
     let python = python_bin()?;
     let path = agent_dir()?.join(script);
 
-    let output = Command::new(python)
+    let mut command = Command::new(python);
+    command
         .arg(&path)
         .args(args)
-        .current_dir(project_root()?)
+        .current_dir(project_root()?);
+    for (name, value) in env {
+        command.env(name, value);
+    }
+
+    let output = command
         .output()
         .map_err(|err| format!("Could not run {script}: {err}"))?;
 

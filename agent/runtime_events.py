@@ -3,6 +3,12 @@
 The worker already exposes structured records as ``LUMINE_EVENT <json>`` on
 stdout. This module adds a reliable LiveKit data channel for the same records so
 the React voice boundary can receive tool status without depending on Tauri.
+
+It also decides what a tool result is *allowed to show*. The result is the model's
+input: it is compressed, and for anything from the internet it is wrapped in a
+delimiter that marks it as data. Putting that text in the conversation transcript
+would read as though the model had been told it, so the transcript gets a status
+and the payload goes to the toast instead.
 """
 
 from __future__ import annotations
@@ -10,10 +16,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
 from typing import Any
 
 logger = logging.getLogger("lumine")
+
+#: Cap on the result handed to the UI for display. Bounded because a toast is a
+#: fixed-size surface and an unbounded payload would be pasted into the DOM.
+MAX_TOOL_RESULT_CHARS = 400
+
+#: Set once the first stdout write fails. See ``_write_line``: the point is to
+#: report a broken pipe exactly once rather than on every event, which would bury
+#: the real error under thousands of identical tracebacks.
+_STDOUT_FAILED = False
 
 
 class RuntimeEventPublisher:
@@ -29,8 +45,15 @@ class RuntimeEventPublisher:
             encoded = json.dumps(safe_record, default=str, separators=(",", ":"))
         except (TypeError, ValueError):
             encoded = json.dumps({"type": "runtime", "error": "event serialization failed"})
-        print(f"LUMINE_EVENT {encoded}", flush=True)
+        self._write_line(encoded)
         return safe_record
+
+    @staticmethod
+    def _write_line(encoded: str) -> None:
+        """See :func:`write_event_line`."""
+        write_event_line(encoded)
+
+
 
     def emit(self, event_type: str, **payload: object) -> dict[str, object]:
         record: dict[str, object] = {"type": event_type}
@@ -106,9 +129,51 @@ class ToolEventBridge:
         text = " ".join(str(value or "").split())
         return (text or fallback)[:240]
 
+    @staticmethod
+    def _describe(name: str, result: str) -> str:
+        """A one-line status for the conversation, with no result text in it.
+
+        The transcript shows *that* a tool ran and what it produced, not the
+        payload. Two reasons: a result is the model's input rather than something
+        anyone said, and a `LUMINE_TOOL_DATA` block sitting in the middle of a
+        conversation reads as though the model had been told it.
+
+        The payload is not lost. It goes to the toast, which is transient, asked
+        for, and does not accumulate -- and it is not rendered, so the injection
+        defence around untrusted text stays intact in the transcript.
+        """
+        if not result:
+            return ""
+        try:
+            data = json.loads(result)
+        except (TypeError, ValueError):
+            # Not structured. A count of words is still an honest summary.
+            words = len(result.split())
+            return f"Got {words} words of text" if words else ""
+
+        if isinstance(data, dict):
+            # Report the shape the tool documented, so a count means something.
+            for key, label in (
+                ("headlines", "headline"),
+                ("results", "result"),
+                ("sections", "section"),
+            ):
+                value = data.get(key)
+                if isinstance(value, list) and value:
+                    noun = label if len(value) == 1 else f"{label}s"
+                    return f"Got {len(value)} {noun}"
+            if data.get("now") == "unavailable":
+                return "No current conditions for that place"
+            if isinstance(data.get("place"), str):
+                return f"Weather for {data['place']}"
+            if data.get("sections"):
+                return "Loaded the persona sections"
+        return "Got a result"
+
     def _publish(self, record: dict[str, object]) -> None:
         record.setdefault("timestamp", time.time())
         self.publisher.emit_and_publish("lumine.tool", record)
+
 
     def _start(self, call: Any) -> str:
         call_id = str(getattr(call, "call_id", "") or getattr(call, "id", "") or "")
@@ -162,6 +227,8 @@ class ToolEventBridge:
             status = "failed"
             fallback = f"Could not run {display_name}."
         message = self._message(getattr(update, "message", ""), fallback)
+        raw_result = " ".join(str(getattr(update, "message", "") or "").split())
+        described = self._describe(name, raw_result)
         record: dict[str, object] = {
             "type": "tool_status",
             "id": call_id,
@@ -169,8 +236,13 @@ class ToolEventBridge:
             "tool": name,
             "status": status,
             "message": message,
-            "summary": message,
+            # Status for the transcript, and the payload for the toast. The two
+            # are separate fields precisely because they are for different
+            # surfaces: one accumulates, the other does not.
+            "summary": described or fallback,
         }
+        if status == "completed" and raw_result:
+            record["result"] = raw_result[:MAX_TOOL_RESULT_CHARS]
         if duration_ms is not None:
             record["duration_ms"] = duration_ms
         self._finished.add(call_id)
@@ -205,3 +277,37 @@ class ToolEventBridge:
                     },
                 )()
             )
+
+
+def write_event_line(encoded: str) -> None:
+    """Write one ``LUMINE_EVENT`` record to stdout, and never raise.
+
+    This is a telemetry channel, and it used to be able to end a voice session.
+    Observed on Windows: the desktop app pipes the worker's stdout, and a write to
+    a pipe whose read end has gone away raises ``OSError: [Errno 22] Invalid
+    argument``. Because the first thing a job does is emit a latency record, the
+    session died on its opening line -- the agent appeared to join and then
+    produced nothing, and the only recovery was restarting the whole desktop app.
+
+    Losing an event is acceptable. Losing the session is not, and the two are not
+    worth trading. The failure is reported once so a genuinely broken pipe stays
+    diagnosable instead of being silently ignored.
+    """
+    global _STDOUT_FAILED
+    try:
+        sys.stdout.write(f"LUMINE_EVENT {encoded}\n")
+        sys.stdout.flush()
+    except (OSError, ValueError):
+        # ValueError covers a stream closed underneath us: the same problem with a
+        # different exception type.
+        if not _STDOUT_FAILED:
+            _STDOUT_FAILED = True
+            try:
+                # stderr may be broken too, so this is allowed to fail.
+                sys.stderr.write(
+                    "[LUMINE] stdout is unavailable; runtime events are being dropped. "
+                    "The session will continue.\n"
+                )
+                sys.stderr.flush()
+            except (OSError, ValueError):
+                pass

@@ -10,22 +10,26 @@ from dotenv import load_dotenv
 
 try:
     from .config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
+    from .context_trim import max_context_items, trim_context
     from .emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
+    from .failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
     from .latency import LatencyTracker
     from .pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
     from .pipeline_config import pipeline_name
-    from .runtime_events import RuntimeEventPublisher, ToolEventBridge
+    from .runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
     from .session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
     from .tools.http_client import acquire as acquire_http_client, release as release_http_client
     from .tools.tools_policy import compose_instructions
     from .tools.tools_registry import get_tools, tool_ids
 except ImportError:
     from config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
+    from context_trim import max_context_items, trim_context
     from emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
+    from failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
     from latency import LatencyTracker
     from pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
     from pipeline_config import pipeline_name
-    from runtime_events import RuntimeEventPublisher, ToolEventBridge
+    from runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
     from session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
     from tools.http_client import acquire as acquire_http_client, release as release_http_client
     from tools.tools_policy import compose_instructions
@@ -85,13 +89,31 @@ except ImportError:
 
 
 AGENT_DIR = Path(__file__).resolve().parent
-PERSONA = (AGENT_DIR / "prompts" / "persona.md").read_text(encoding="utf-8")
+
+#: The persona, split in two for token reasons rather than editorial ones.
+#:
+#: `persona_core.md` is what every request carries. `persona.md` is the whole
+#: thing, unchanged, and the `recall_persona` tool reads it on demand. The full
+#: text was ~2,700 tokens and was being re-sent and re-charged on every single
+#: turn, which on a per-minute token allowance is a large fixed cost for
+#: material most turns never need.
+PERSONA_CORE = (AGENT_DIR / "prompts" / "persona_core.md").read_text(encoding="utf-8")
 
 # Tauri launches this script with the repository root as cwd; keep worker
 # configuration anchored to the agent directory like manual `python agent.py`.
 load_dotenv(AGENT_DIR / ".env")
 
 logging.basicConfig(level=logging.INFO)
+
+# A broken stderr pipe must not turn every log line into a traceback.
+#
+# The desktop app pipes the worker's output, and if that pipe's read end goes away
+# then `StreamHandler.emit` fails on `self.stream.flush()`. Left alone, logging
+# prints a "--- Logging error ---" block with a full traceback *for every single
+# record* -- which is how a real one-line failure ended up buried under thousands
+# of identical ones. The record is still lost either way; only the noise goes.
+logging.raiseExceptions = False
+
 logger = logging.getLogger("lumine")
 WORKER_STARTED_AT = time.monotonic()
 EMOTION_DEBUG = os.getenv("LUMINE_DEBUG_EMOTION", "false").lower() == "true"
@@ -101,7 +123,10 @@ def emit_runtime_event(event_type: str, **payload):
     """Keep the worker bootstrap event contract for Tauri readiness handling."""
     record = {"type": event_type}
     record.update({key: value for key, value in payload.items() if key != "type"})
-    print(f"LUMINE_EVENT {json.dumps(record, default=str, separators=(',', ':'))}", flush=True)
+    # Routed through the publisher's writer rather than printing directly: a write
+    # to a broken stdout pipe raises OSError, and an event about the worker failing
+    # to start must not be the thing that stops it starting.
+    write_event_line(json.dumps(record, default=str, separators=(",", ":")))
     return record
 
 
@@ -128,7 +153,7 @@ async def publish_emotion_event(room: rtc.Room, event: dict[str, object]) -> Non
 
 
 def build_instructions(profile: str) -> str:
-    instructions = compose_instructions(PERSONA)
+    instructions = compose_instructions(PERSONA_CORE)
     if profile == "gemini_live":
         instructions += """
 
@@ -136,6 +161,26 @@ def build_instructions(profile: str) -> str:
 Finish the current response before yielding, unless the user clearly interrupts.
 """
     return instructions
+
+
+def speak_now(session, text: str, publisher) -> None:
+    """Say something immediately, on a best-effort basis.
+
+    Used for the apology after a failure. It is scheduled rather than awaited
+    because the error handler is synchronous, and it deliberately does not go
+    through the LLM: the LLM is what just failed, and asking it to explain its
+    own failure is how a turn turns into silence.
+
+    Failures here are swallowed. A session that cannot speak the apology is still
+    a working session, and raising would replace a quiet failure with a crash.
+    """
+    try:
+        from livekit.agents import speech_handle
+
+        handle = speech_handle.SpeechHandle(text=text, source="lumine_error", allow_interruptions=True)
+        session.say(handle, chunk_size=120)
+    except Exception as exc:  # noqa: BLE001 - never let a courtesy speech break a session
+        logger.debug("[LLM] could not speak the failure notice: %s", exc)
 
 
 class Lumine(Agent):
@@ -262,10 +307,24 @@ async def entrypoint(ctx: JobContext):
 
     session = AgentSession(**components.session_kwargs)
     tool_events = ToolEventBridge(publisher)
+    # Counts consecutive LLM failures and opens a circuit on a run of them, so a
+    # rate-limited session stops trying instead of spending what is left.
+    gate = FailureGate()
 
     @session.on("conversation_item_added")
     def on_conversation_item_added(event):
         item = event.item
+        # Trim as the conversation grows rather than when something breaks. A
+        # context-length error is the provider's 400, and by then the turn has
+        # already failed silently from the user's side.
+        outcome = trim_context(session)
+        if outcome.trimmed:
+            publisher.emit(
+                "context_trimmed",
+                items_before=outcome.items_before,
+                items_after=outcome.items_after,
+                limit=max_context_items(),
+            )
         content = getattr(item, "content", [])
         text = " ".join(
             part if isinstance(part, str) else getattr(part, "text", "")
@@ -396,11 +455,33 @@ async def entrypoint(ctx: JobContext):
 
     @session.on("error")
     def on_session_error(event):
-        publisher.emit(
-            "error",
-            message=str(getattr(event, "error", event)),
-            source=str(getattr(event, "source", "session")),
+        raw = getattr(event, "error", event)
+        failure = handle_llm_error(gate, raw)
+        payload = describe(failure)
+        publisher.emit("error", message=failure.message, source=str(getattr(event, "source", "session")))
+        # A separate event, because "something went wrong" and "you have hit a
+        # limit" call for different reactions from the app: one is a bug report,
+        # the other is a wait. Published on the data channel as well as stdout,
+        # because stdout only reaches the app when Tauri is the one running the
+        # worker -- and a notice that depends on how the process was started is a
+        # notice that silently does not arrive.
+        notice = {"type": "limit" if failure.is_limit else "agent_failure", **payload}
+        publisher.emit_and_publish("lumine.notice", notice)
+        if failure.retry_after:
+            publisher.emit("retry_after", seconds=failure.retry_after)
+        logger.warning(
+            "[LLM] %s (%s)%s",
+            failure.kind,
+            failure.message,
+            f" retry after {failure.retry_after}s" if failure.retry_after else "",
         )
+
+        if gate.should_speak_apology:
+            gate.mark_spoken()
+            # Speaking is the point. Silence after a failure is
+            # indistinguishable from a broken microphone, so the user is told
+            # something went wrong even when there is nothing to tell them yet.
+            speak_now(session, APOLOGY, publisher)
 
     async def close_session(reason: str = "room ended"):
         publisher.emit("session_ending", room=ctx.room.name, reason=reason)

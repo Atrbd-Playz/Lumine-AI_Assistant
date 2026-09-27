@@ -12,10 +12,22 @@ import os
 from typing import Any
 
 DEFAULT_MODEL = "openai/gpt-oss-20b"
-DEFAULT_MAX_COMPLETION_TOKENS = 300
+
+#: A voice reply is one or two sentences, but GPT-OSS is a *reasoning* model: its
+#: thinking is drawn from the same budget, and a cap that is generous enough to
+#: think with leaves nothing to say with. That is how a turn produces a perfect
+#: internal monologue and no audio at all. 900 leaves room to think briefly and
+#: still speak.
+DEFAULT_MAX_COMPLETION_TOKENS = 900
+
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_MAX_RETRIES = 2
 DEFAULT_CONNECT_MAX_RETRY = 1
+
+#: How hard the model thinks. "low" is deliberate: a voice turn pays latency for
+#: reasoning the user will never hear, and reasoning is billed.
+DEFAULT_REASONING_EFFORT = "low"
+REASONING_EFFORTS = ("low", "medium", "high")
 
 # A voice turn needs at most one provider retry; anything higher turns a rate
 # limit into a retry storm that spends the remaining quota.
@@ -76,6 +88,19 @@ def connect_max_retry() -> int:
     return _int_env("GROQ_CONNECT_MAX_RETRY", DEFAULT_CONNECT_MAX_RETRY, 0, MAX_ALLOWED_RETRIES)
 
 
+def reasoning_effort() -> str:
+    """How much the model thinks before answering.
+
+    Only sent for a model that takes it. Sending it to one that does not is a
+    400, which is the same silent-no-audio failure this whole module exists to
+    avoid.
+    """
+    value = (os.getenv("GROQ_REASONING_EFFORT") or "").strip().lower()
+    if value in REASONING_EFFORTS:
+        return value
+    return DEFAULT_REASONING_EFFORT
+
+
 def llm_config() -> dict[str, Any]:
     """Keyword arguments for ``livekit.plugins.groq.LLM``."""
     return {
@@ -85,4 +110,5 @@ def llm_config() -> dict[str, Any]:
         # One tool per turn keeps a reply to a single extra completion round.
         "parallel_tool_calls": False,
         "max_retries": max_retries(),
+        "reasoning_effort": reasoning_effort(),
     }

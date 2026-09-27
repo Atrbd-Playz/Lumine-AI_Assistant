@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ProviderCatalog } from "../../../features/settings/aiConfigTypes";
 import { getAgentStatus, type AgentStatus } from "../../../features/settings/aiConfigClient";
 import { Icon } from "../../home/components/Icon";
+import { SettingsPageHeader } from "../components/SettingsPageHeader";
 
 type DiagnosticsPageProps = {
   catalog: ProviderCatalog;
@@ -64,13 +65,10 @@ export function DiagnosticsPage({ catalog, isEnvironmentBacked, validating, diag
 
   return (
     <div className="settings-page">
-      <header className="settings-page-head">
-        <div>
-          <p className="eyebrow">System</p>
-          <h1>Diagnostics</h1>
-          <p>What Lumine currently knows about its own configuration and runtime.</p>
-        </div>
-      </header>
+      <SettingsPageHeader
+        section="diagnostics"
+        description="What Lumine currently knows about its own configuration and runtime."
+      />
 
       <section className="settings-block">
         <div className="settings-block-head">

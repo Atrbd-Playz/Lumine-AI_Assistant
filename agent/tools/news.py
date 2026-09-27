@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 from .http_client import shared_client
+from . import tool_results
 from .tools_compat import RunContext, ToolError, function_tool
 from .tools_text import clip
 
@@ -16,9 +17,9 @@ SEARCH_URL = "https://news.google.com/rss/search"
 TOP_STORIES_URL = "https://news.google.com/rss"
 LOCALE = {"hl": "en-US", "gl": "US", "ceid": "US:en"}
 TIMEOUT = httpx.Timeout(10.0)
-MAX_HEADLINES = 6
+#: Read from the feed, so a busy news day does not cost the model more context.
+MAX_HEADLINES = 8
 HEADLINE_LIMIT = 110
-MAX_OUTPUT_CHARS = 1200
 
 
 def _age(published: str) -> str:
@@ -69,14 +70,15 @@ def parse_headlines(feed: str) -> list[dict[str, str]]:
 
 
 def format_headlines(headlines: list[dict[str, str]]) -> str:
-    lines = []
-    for index, headline in enumerate(headlines, start=1):
-        details = ", ".join(
-            part for part in (headline.get("source"), headline.get("age")) if part
-        )
-        suffix = f" ({details})" if details else ""
-        lines.append(f"{index}. {headline['title']}{suffix}")
-    return "\n".join(lines)
+    """The compact record the model receives.
+
+    Titles only, and only the first few. The source and the age were formatted
+    into every line before, which is roughly a doubling of the payload for detail
+    that changes no reply -- and it is paid on every later turn, because a tool
+    result stays in the conversation. The full feed is still available in the
+    desktop app, where reading it costs nothing.
+    """
+    return tool_results.headlines([headline["title"] for headline in headlines])
 
 
 @function_tool()
@@ -115,4 +117,4 @@ async def get_news(context: RunContext, topic: str = "") -> str:
             raise ToolError(f"I couldn't find recent news about '{clip(subject, 60)}'.")
         raise ToolError("I couldn't fetch the top stories right now.")
 
-    return clip(format_headlines(headlines), MAX_OUTPUT_CHARS)
+    return tool_results.wrap_untrusted(format_headlines(headlines))

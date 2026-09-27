@@ -34,6 +34,9 @@ export function useLumineSession({ onMessage, onUpdateMessage, onToolEvent, inte
         onMessage: (message) => onMessage(message as Omit<ConversationMessage, "id"> & { id?: string }),
         onUpdateMessage: (id, changes) => onUpdateMessage(id, changes as Partial<Omit<ConversationMessage, "id">>),
         onEmotion: () => undefined,
+        // This duplicate hook has no notice consumer; the live one is
+        // `useLumineVoice`. Present so the manager's contract stays satisfied.
+        onNotice: () => undefined,
         onToolEvent: (event: VoiceToolEvent) => {
           onToolEvent?.({
             id: `${event.sessionId}:${event.id}`,

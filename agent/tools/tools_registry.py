@@ -16,11 +16,14 @@ from typing import Any, Iterable
 
 from .apps import open_app
 from .news import get_news
+from .persona import recall_persona
 from .tools_permission import filter_permissions, tool_id
 from .weather import get_weather
 from .web_search import search_web
 
-ALL_TOOLS: tuple[Any, ...] = (get_weather, search_web, get_news, open_app)
+#: Ordered cheapest-first. The order is a nudge: on a tight token budget the
+#: model should reach for the tool that returns the least.
+ALL_TOOLS: tuple[Any, ...] = (get_weather, get_news, search_web, recall_persona, open_app)
 
 
 def get_tools() -> list[Any]:

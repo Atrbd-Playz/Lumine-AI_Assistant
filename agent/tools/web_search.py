@@ -8,16 +8,15 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .http_client import shared_client
+from . import tool_results
 from .tools_compat import RunContext, ToolError, function_tool
 from .tools_text import clip
 
 SEARCH_URL = "https://html.duckduckgo.com/html/"
 TIMEOUT = httpx.Timeout(10.0)
-MAX_RESULTS = 5
-SNIPPET_LIMIT = 160
+MAX_RESULTS = 4
 TITLE_LIMIT = 100
 URL_LIMIT = 110
-MAX_OUTPUT_CHARS = 1600
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -64,9 +63,25 @@ def parse_results(html: str) -> list[tuple[str, str, str]]:
     return results
 
 
+def format_results(results: list[tuple[str, str, str]]) -> str:
+    """The compact record the model receives: titles and where they came from.
+
+    Snippets are the expensive part -- a DuckDuckGo snippet is a paragraph of
+    scraped page text, and it is the part most likely to be carrying an
+    instruction rather than a fact. The titles answer "what exists on this
+    topic", which is what lets the model decide whether to say more or offer to
+    look. The full snippets are shown in the desktop app.
+    """
+    payload = [
+        {"title": clip(title, TITLE_LIMIT), "url": short_url(url)}
+        for title, _snippet, url in results
+    ]
+    return tool_results.wrap_untrusted(tool_results.as_payload({"results": payload}))
+
+
 @function_tool()
 async def search_web(context: RunContext, query: str) -> str:
-    """Search the internet and return a few short results.
+    """Search the internet and return a few result titles.
 
     Use this whenever you need current facts, prices, versions, dates, or
     anything you are not certain about. Summarise the findings in your own
@@ -98,8 +113,5 @@ async def search_web(context: RunContext, query: str) -> str:
     if not results:
         raise ToolError(f"I couldn't find results for '{clip(search, 60)}'.")
 
-    lines = []
-    for index, (title, snippet, url) in enumerate(results, start=1):
-        body = f" - {clip(snippet, SNIPPET_LIMIT)}" if snippet else ""
-        lines.append(f"{index}. {clip(title, TITLE_LIMIT)}{body} ({short_url(url)})")
-    return clip("\n".join(lines), MAX_OUTPUT_CHARS)
+    return format_results(results)
+

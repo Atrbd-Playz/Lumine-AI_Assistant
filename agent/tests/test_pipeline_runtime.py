@@ -224,6 +224,79 @@ class ToolEventBridgeTests(unittest.TestCase):
         self.assertIn("couldn't find", str(publisher.records[-1]["message"]))
 
 
+class ToolResultDisclosureTests(unittest.TestCase):
+    """What a tool result is allowed to show, and where.
+
+    The transcript accumulates and the toast does not, so the two need different
+    content. These tests exist because the failure is invisible: a payload shown
+    inline still *looks* like it works, it just quietly puts retrieved text into
+    the middle of a conversation, which is the shape a prompt injection wants.
+    """
+
+    @staticmethod
+    def _run(name: str, result: str, status: str = "done") -> dict:
+        publisher = RecordingPublisher()
+        bridge = ToolEventBridge(publisher)  # type: ignore[arg-type]
+        bridge.handle(
+            SimpleNamespace(
+                update=SimpleNamespace(
+                    type="tool_call_started",
+                    function_call=SimpleNamespace(call_id="c1", name=name, arguments="{}"),
+                )
+            )
+        )
+        bridge.handle(
+            SimpleNamespace(
+                update=SimpleNamespace(type="tool_call_ended", call_id="c1", status=status, message=result)
+            )
+        )
+        return publisher.records[-1]
+
+    def test_the_transcript_summary_contains_no_result_text(self):
+        record = self._run("get_news", '{"headlines":["Big story lands","Second story"]}')
+        summary = str(record["summary"])
+        self.assertNotIn("Big story lands", summary)
+        self.assertIn("headline", summary)
+
+    def test_the_result_is_still_delivered_for_the_toast(self):
+        record = self._run("get_news", '{"headlines":["Big story lands","Second story"]}')
+        self.assertIn("Big story lands", str(record["result"]))
+
+    def test_a_count_is_reported_rather_than_the_content(self):
+        record = self._run("get_news", '{"headlines":["a","b","c"]}')
+        self.assertIn("3 headlines", str(record["summary"]))
+
+    def test_a_single_item_is_not_pluralised(self):
+        record = self._run("get_news", '{"headlines":["only one"]}')
+        self.assertIn("1 headline", str(record["summary"]))
+        self.assertNotIn("1 headlines", str(record["summary"]))
+
+    def test_weather_is_summarised_by_place(self):
+        record = self._run("get_weather", '{"place":"Dhaka","now":"28C","today":"28-33"}')
+        self.assertIn("Dhaka", str(record["summary"]))
+        self.assertNotIn("28-33", str(record["summary"]))
+
+    def test_unavailable_conditions_are_stated_plainly(self):
+        record = self._run("get_weather", '{"place":"Nowhere","now":"unavailable"}')
+        self.assertIn("No current conditions", str(record["summary"]))
+
+    def test_unstructured_output_is_described_by_size_not_content(self):
+        record = self._run("open_app", "a plain sentence of prose here")
+        self.assertIn("words", str(record["summary"]))
+        self.assertNotIn("prose", str(record["summary"]))
+
+    def test_a_failed_call_carries_no_result(self):
+        # A failure message is the tool explaining itself, which is worth
+        # showing; it is not a payload.
+        record = self._run("search_web", "Web search is unavailable right now.", status="error")
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("unavailable", str(record["message"]))
+
+    def test_an_empty_result_does_not_produce_a_silly_summary(self):
+        record = self._run("search_web", "")
+        self.assertTrue(str(record["summary"]).strip())
+
+
 class AppLauncherTests(unittest.TestCase):
     def test_path_launch_reports_success_without_waiting(self):
         with patch.object(apps.shutil, "which", return_value="C:/apps/notepad.exe"), patch.object(apps, "spawn") as spawn:

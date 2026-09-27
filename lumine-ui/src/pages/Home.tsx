@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import "./index.css";
 import { DEFAULT_APPEARANCE } from "./home/constants";
 import { AppearanceDialog } from "./home/components/AppearanceDialog";
@@ -8,6 +8,9 @@ import { WorkspaceView } from "./home/components/WorkspaceView";
 import type { LumineState } from "./home/types";
 import { getReadableForeground, getReadableTextColor } from "./home/utils";
 import { usePreferences } from "./home/hooks/usePreferences";
+import { useDocumentTheme } from "./home/hooks/useDocumentTheme";
+import { useNotify } from "../features/toast/useNotify";
+import { SETTINGS_SECTIONS } from "./settings/SettingsNav";
 import { useConversation } from "./home/conversation/useConversation";
 import { ConversationPanel } from "./home/components/ConversationPanel";
 import type { Appearance } from "./home/types";
@@ -27,7 +30,7 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<"appearance" | "voice" | "providers" | "diagnostics">("voice");
   const [conversationOpen, setConversationOpen] = useState(false);
-  const [toast, setToast] = useState<{ tone: "success" | "error" | "info"; message: string } | null>(null);
+  const notify = useNotify();
   const conversation = useConversation();
   const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
   const aiConfig = useAiConfig();
@@ -38,12 +41,62 @@ export default function Home() {
       ? (aiConfig.activeProfile.realtime?.turnHandling?.interruptionMode ?? DEFAULT_INTERRUPTION_MODE)
       : (aiConfig.activeProfile?.pipeline?.turnHandling?.interruptionMode ?? DEFAULT_INTERRUPTION_MODE);
   const handleToolEvent = (event: Parameters<typeof conversation.upsertToolEvent>[0]) => {
+    // Status only, and only a toast for the fact of running. The transcript
+    // accumulates; a payload shown there would accumulate too, and a retrieved
+    // page sitting inline in a conversation reads as though the model had been
+    // handed it by the user -- which is the shape a prompt injection wants.
     conversation.upsertToolEvent(event);
-    const tone = event.status === "completed" ? "success" : event.status === "failed" ? "error" : "info";
-    const message = event.summary || `${event.name} ${event.status}`;
-    setToast({ tone, message });
+    if (event.status === "started") return;
+    const timing = event.durationMs ? ` · ${event.durationMs}ms` : "";
+    notify({
+      tone: event.status === "completed" ? "success" : "error",
+      message: `${event.name}${event.status === "completed" ? " done" : " failed"}${timing}`,
+    });
   };
-  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onToolEvent: handleToolEvent, interruptionMode, onError: (message) => setToast({ tone: "error", message }) });
+
+  /**
+   * A tool's actual output, as a toast.
+   *
+   * The one surface where showing the payload is free: transient, asked for, and
+   * gone before it can accumulate. Capped again here so a long payload cannot
+   * turn into a wall of text that covers the UI.
+   */
+  const handleToolResult = (result: { name: string; status: string; payload: string; durationMs?: number }) => {
+    const detail = result.payload.length > 320 ? `${result.payload.slice(0, 320)}…` : result.payload;
+    notify({
+      tone: result.status === "completed" ? "info" : "error",
+      title: result.name,
+      message: detail,
+      timeout: 6000,
+    });
+  };
+
+  /**
+   * A limit or failure from the agent's own runtime.
+   *
+   * Titled and toned differently on purpose. A rate limit is a wait, and a failed
+   * turn is a problem; showing both as a red error would train the user to ignore
+   * the one that matters. The message is Lumine's own words, already written for
+   * a person -- the provider's raw error stays in the log.
+   *
+   * Deduplicated by kind, because a circuit that stays open would otherwise emit
+   * one identical toast per failed turn.
+   */
+  const noticeRef = useRef<{ kind: string; at: number } | null>(null);
+  const handleNotice = (notice: { kind: string; message: string; retryAfter?: number }) => {
+    const now = Date.now();
+    const previous = noticeRef.current;
+    if (previous && previous.kind === notice.kind && now - previous.at < 15_000) return;
+    noticeRef.current = { kind: notice.kind, at: now };
+    if (notice.kind === "limit") {
+      const wait = notice.retryAfter ? ` Try again in ${notice.retryAfter}s.` : " Try again shortly.";
+      notify({ tone: "warning", title: "Request limit reached", message: `${notice.message}${wait}`, timeout: 8000 });
+      return;
+    }
+    notify({ tone: "error", title: "Something went wrong", message: notice.message, timeout: 6000 });
+  };
+
+  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onToolEvent: handleToolEvent, onToolResult: handleToolResult, onNotice: handleNotice, interruptionMode, onError: (message) => notify({ tone: "error", message }) });
 
   const handleNavigation = (next: string) => {
     if (next === "conversation") {
@@ -99,8 +152,10 @@ export default function Home() {
 
   const toggleGlassMode = () => setGlassMode((enabled) => { const next = !enabled; localStorage.setItem("lumine.presentation-mode", next ? "glass" : "classic"); return next; });
 
+  // Portals render outside this subtree, so the palette has to reach <html> too.
+  useDocumentTheme(mode, variables);
+
   return <div className={`lumine-app theme-${mode} route-${nav} ${glassMode ? "visual-glass" : "visual-classic"} ${conversationOpen && nav === "home" ? "conversation-open" : ""}`} style={variables}>
-    {toast && <div className={`runtime-toast is-${toast.tone}`} role="status"><span className="runtime-toast-dot" /><span>{toast.message}</span><button onClick={() => setToast(null)} aria-label="Dismiss notification">×</button></div>}
     <Sidebar active={conversationOpen ? "conversation" : nav} onChange={handleNavigation} onSettings={() => setSettingsOpen(true)} />
     {nav === "home" ? <MainSpace
       state={sessionState}
@@ -128,10 +183,25 @@ export default function Home() {
           return <div className="settings-page"><p className="validation is-pending">Loading the AI configuration…</p></div>;
         }
         if (aiConfig.state === "error" || !aiConfig.catalog) {
+          // One fallback covers every AI section, so the title is read from the
+          // section rather than hardcoded — otherwise Providers and Diagnostics
+          // both announce themselves as "Voice & Models".
+          const definition = SETTINGS_SECTIONS.find((entry) => entry.id === section);
           return (
             <div className="settings-page">
-              <header className="settings-page-head"><div><p className="eyebrow">AI</p><h1>Voice &amp; Models</h1></div></header>
-              <p className="validation is-error">{aiConfig.error ?? "The provider catalog is unavailable."}</p>
+              <header className="settings-page-head">
+                <div className="settings-page-head-text">
+                  <p className="eyebrow">{definition?.group ?? "AI"}</p>
+                  <h1>{definition?.label ?? "Settings"}</h1>
+                </div>
+              </header>
+              <div className="settings-empty">
+                <p className="validation is-error">{aiConfig.error ?? "The provider catalog is unavailable."}</p>
+                <p className="field-hint">
+                  Lumine needs the desktop app to read its configuration. Start it with{" "}
+                  <code>npm run tauri dev</code>, then reopen this screen.
+                </p>
+              </div>
             </div>
           );
         }
@@ -154,7 +224,7 @@ export default function Home() {
             validating={aiConfig.validating}
             onChange={(next) => aiConfig.updateActiveProfile(() => next)}
             onMutateDocument={aiConfig.mutateDocument}
-            onSave={async () => { const ok = await aiConfig.save(); setToast(ok ? { tone: "success", message: "AI configuration saved." } : { tone: "error", message: "Could not save the AI configuration." }); }}
+            onSave={async () => { const ok = await aiConfig.save(); notify(ok ? { tone: "success", message: "AI configuration saved." } : { tone: "error", message: "Could not save the AI configuration." }); }}
             onDiscard={aiConfig.discard}
             canSave={aiConfig.canSave}
             saving={aiConfig.saving}

@@ -251,21 +251,59 @@ class PublicCatalogTests(unittest.TestCase):
         blob = json.dumps(self.catalog)
         providers = self.catalog["providers"]
 
-        # Remove the two categories of string that legitimately contain
-        # secret-shaped words: declared env var names and vendor sign-up links.
-        # Anything secret-looking that remains would be a leak.
+        # Remove the categories of string that legitimately contain secret-shaped
+        # words: declared env var names, vendor sign-up links, and a probe's
+        # connectivity metadata. Anything secret-looking that remains is a leak.
         for provider in providers:
             for name in provider["keyEnv"]:
                 blob = blob.replace(name, "<ENV_NAME>")
             if provider["setupUrl"]:
                 blob = blob.replace(provider["setupUrl"], "<SETUP_URL>")
+            probe = provider.get("probe")
+            if probe:
+                # A probe publishes *where* it calls and *which header* it uses.
+                # The auth scheme is a fixed word, not anyone's credential, and
+                # the header names are the same kind of documentation as keyEnv.
+                blob = blob.replace(probe["url"], "<PROBE_URL>")
+                blob = blob.replace(probe["authHeader"].lower(), "<HEADER_NAME>")
+                blob = blob.replace(probe["authPrefix"].lower(), "<AUTH_SCHEME>")
+                for name in probe["headers"]:
+                    blob = blob.replace(name.lower(), "<HEADER_NAME>")
+                    blob = blob.replace(name, "<HEADER_NAME>")
 
         lowered = blob.lower()
         for marker in ("api_key", "apikey", "secret", "password", "bearer ", "sk-", "eyj"):
             self.assertNotIn(marker, lowered, f"public catalog leaked {marker!r}")
 
+    def test_a_probe_carries_no_credential_shaped_value(self):
+        """The stronger check the blob scan cannot make.
+
+        A probe is the one place the catalog describes how to *send* a secret, so
+        every string in it is classified explicitly rather than pattern-matched.
+        """
+        for provider in self.catalog["providers"]:
+            probe = provider.get("probe")
+            if not probe:
+                continue
+            with self.subTest(provider=provider["id"]):
+                self.assertTrue(probe["url"].startswith("https://"))
+                self.assertIn(probe["method"], ("GET", "POST"))
+                # The header is a name; the prefix is a scheme or empty.
+                self.assertRegex(probe["authHeader"], r"^[A-Za-z0-9-]+$")
+                self.assertIn(probe["authPrefix"], ("", "Bearer "))
+                for name, value in probe["headers"].items():
+                    self.assertRegex(name, r"^[A-Za-z0-9-]+$")
+                    # A fixed header value is a version or a flag, never a key:
+                    # no spaces, no long opaque token, no key-shaped prefix.
+                    self.assertRegex(value, r"^[A-Za-z0-9._-]{1,32}$")
+                self.assertEqual(probe["costs"], "")
+
     def test_no_catalog_field_is_named_like_a_credential(self):
-        """Guards against a future field such as ``apiKey`` sneaking into the view."""
+        """Guards against a future field such as ``apiKey`` sneaking into the view.
+
+        A probe contributes header *names* and an auth scheme, which are
+        documentation rather than credentials, so they are allowed explicitly.
+        """
         allowed = {
             "version", "capabilities", "reservedProviderIds", "providers",
             "id", "label", "requiresKey", "keyEnv", "setupUrl", "local", "notes",
@@ -274,6 +312,10 @@ class PublicCatalogTests(unittest.TestCase):
             "finishResponse", "proactivity", "affectiveDialog",
             "asyncFunctionCalling", "languages", "preferredFor", "thinkingLevels", "options",
             "name", "values", "nest",
+            "probe", "method", "url", "authHeader", "authPrefix", "headers", "invalidStatus", "costs",
+            # Header names and auth schemes inside a probe are documentation, and
+            # are asserted separately to be name-shaped.
+            "Cartesia-Version",
         }
 
         def walk(node):

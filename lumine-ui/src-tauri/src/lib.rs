@@ -1,7 +1,7 @@
 mod agent_manager;
-// Hands the worker the keys held in the OS keyring, so a key stored in Settings
-// actually reaches the runtime instead of only being reported as stored.
+// Proves a stored provider key works, without the key entering the webview.
 mod credential_injection;
+mod credential_probe;
 mod credentials;
 mod python_env;
 mod settings_store;
@@ -297,7 +297,8 @@ pub fn run() {
             validate_config,
             set_credential,
             delete_credential,
-            get_credential_status
+            get_credential_status,
+            credential_probe::test_provider_credential
         ])
         .setup(|_app| {
             Ok(())

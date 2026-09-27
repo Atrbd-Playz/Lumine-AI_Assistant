@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from unittest import IsolatedAsyncioTestCase
@@ -7,16 +8,14 @@ import httpx
 
 from agent.tools import http_client, tools_registry
 from agent.tools.apps import candidates, validate_app_name
-from agent.tools.news import MAX_OUTPUT_CHARS as NEWS_MAX_OUTPUT_CHARS
 from agent.tools.news import SEARCH_URL as NEWS_SEARCH_URL
 from agent.tools.news import format_headlines, get_news, parse_headlines
+from agent.tools.tool_results import MAX_RESULT_CHARS
 from agent.tools.tools_compat import ToolError
 from agent.tools.tools_permission import filter_permissions, tool_id
 from agent.tools.tools_text import clip
 from agent.tools.weather import FORECAST_URL, GEOCODE_URL
-from agent.tools.weather import MAX_OUTPUT_CHARS as WEATHER_MAX_OUTPUT_CHARS
 from agent.tools.weather import WEATHER_CODES, format_weather, get_weather
-from agent.tools.web_search import MAX_OUTPUT_CHARS as SEARCH_MAX_OUTPUT_CHARS
 from agent.tools.web_search import SEARCH_URL, clean_url, parse_results, search_web, short_url
 
 DDG_HTML = """
@@ -110,12 +109,13 @@ class TextHelperTests(unittest.TestCase):
 class WeatherToolTests(unittest.TestCase):
     def test_format_weather_stays_short_and_readable(self):
         summary = format_weather(WEATHER_PLACE, WEATHER_FORECAST)
-        self.assertEqual(
-            summary,
-            "Dhaka, Dhaka Division, Bangladesh: 31\u00b0C, feels like 35\u00b0C, partly cloudy. "
-            "Humidity 74%, wind 12 km/h. Today 28-33\u00b0C, 40% chance of rain. "
-            "Tomorrow 27-31\u00b0C, 60% chance of rain.",
-        )
+        record = json.loads(summary)
+        # A keyed record, not a sentence: the model can take the one field it
+        # needs without reading prose, and it costs fewer tokens.
+        self.assertEqual(record["place"], "Dhaka, Dhaka Division, Bangladesh")
+        self.assertEqual(record["now"], "31\u00b0C, feels 35\u00b0C, partly cloudy")
+        self.assertEqual(record["today"], "28-33, 40% rain")
+        self.assertEqual(record["tomorrow"], "27-31, 60% rain")
         self.assertLess(len(summary), 300)
 
     def test_format_weather_drops_missing_fields(self):
@@ -123,13 +123,13 @@ class WeatherToolTests(unittest.TestCase):
             {"name": "Nowhere"},
             {"current": {"temperature_2m": 10.4, "weather_code": 0}},
         )
-        self.assertEqual(summary, "Nowhere: 10\u00b0C, clear sky.")
+        self.assertEqual(json.loads(summary)["now"], "10\u00b0C, clear sky")
         self.assertNotIn("None", summary)
         self.assertNotIn("chance of rain", summary)
 
     def test_format_weather_degrades_when_payload_is_empty(self):
         summary = format_weather({"name": "Nowhere"}, {})
-        self.assertEqual(summary, "Nowhere: current conditions unavailable.")
+        self.assertEqual(json.loads(summary)["now"], "unavailable")
 
     def test_weather_codes_are_spoken_friendly(self):
         self.assertEqual(WEATHER_CODES[95], "thunderstorm")
@@ -175,11 +175,15 @@ class NewsToolTests(unittest.TestCase):
         for headline in parse_headlines(RSS_FEED):
             self.assertLessEqual(len(headline["title"]), 110)
 
-    def test_format_headlines_numbers_the_list(self):
-        lines = format_headlines(parse_headlines(RSS_FEED)).splitlines()
-        self.assertEqual(len(lines), 2)
-        self.assertTrue(lines[0].startswith("1. Big story lands (Reuters"))
-        self.assertTrue(lines[1].startswith("2. Second story"))
+    def test_format_headlines_sends_titles_only(self):
+        # Titles, and nothing else. Source, age and link were dropped because a
+        # tool result is re-sent on every later turn, and each of them cost tokens
+        # without changing a reply.
+        payload = json.loads(format_headlines(parse_headlines(RSS_FEED)))
+        self.assertEqual(list(payload), ["headlines"])
+        self.assertEqual(payload["headlines"][0], "Big story lands")
+        self.assertEqual(len(payload["headlines"]), 2)
+        self.assertNotIn("Reuters", format_headlines(parse_headlines(RSS_FEED)))
 
     def test_parse_headlines_rejects_broken_feed(self):
         with self.assertRaises(ToolError):
@@ -216,21 +220,21 @@ class PermissionTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
                 tools_registry.tool_ids(tools_registry.get_tools()),
-                ["get_weather", "search_web", "get_news", "open_app"],
+                ["get_weather", "get_news", "search_web", "recall_persona", "open_app"],
             )
 
     def test_disabled_tools_env_hides_individual_tools(self):
         with patch.dict(os.environ, {"LUMINE_DISABLED_TOOLS": "get_news, search_web"}, clear=True):
             self.assertEqual(
                 tools_registry.tool_ids(tools_registry.get_tools()),
-                ["get_weather", "open_app"],
+                ["get_weather", "recall_persona", "open_app"],
             )
 
     def test_app_launch_toggle_hides_only_desktop_tools(self):
         with patch.dict(os.environ, {"LUMINE_ENABLE_APP_LAUNCH": "false"}, clear=True):
             self.assertEqual(
                 tools_registry.tool_ids(tools_registry.get_tools()),
-                ["get_weather", "search_web", "get_news"],
+                ["get_weather", "get_news", "search_web", "recall_persona"],
             )
 
     def test_tool_id_reads_both_function_tools_and_plain_functions(self):
@@ -240,7 +244,7 @@ class PermissionTests(unittest.TestCase):
     def test_filter_permissions_preserves_order(self):
         with patch.dict(os.environ, {"LUMINE_DISABLED_TOOLS": "open_app"}, clear=True):
             kept = filter_permissions(tools_registry.ALL_TOOLS)
-            self.assertEqual([tool_id(tool) for tool in kept], ["get_weather", "search_web", "get_news"])
+            self.assertEqual([tool_id(tool) for tool in kept], ["get_weather", "get_news", "search_web", "recall_persona"])
 
 
 class RegistrationTests(unittest.TestCase):
@@ -264,6 +268,7 @@ class RegistrationTests(unittest.TestCase):
             "get_weather": ["location"],
             "search_web": ["query"],
             "get_news": ["topic"],
+            "recall_persona": ["topic"],
             "open_app": ["app_name"],
         }
         for tool in tools_registry.ALL_TOOLS:
@@ -444,19 +449,19 @@ class SharedHttpClientTests(IsolatedAsyncioTestCase):
         }
         result = await get_weather(None, "Dhaka")
         self.assertIn("Dhaka", result)
-        self.assertLessEqual(len(result), WEATHER_MAX_OUTPUT_CHARS)
+        self.assertLessEqual(len(result), MAX_RESULT_CHARS)
 
     async def test_search_output_stays_within_budget(self):
         FakeClient.routes = {SEARCH_URL: FakeResponse(text=long_results_html())}
         result = await search_web(None, "python release")
         self.assertLessEqual(result.count("\n") + 1, 5)
-        self.assertLessEqual(len(result), SEARCH_MAX_OUTPUT_CHARS)
+        self.assertLessEqual(len(result), MAX_RESULT_CHARS + 200)
 
     async def test_news_output_stays_within_budget(self):
         FakeClient.routes = {NEWS_SEARCH_URL: FakeResponse(text=long_news_feed())}
         result = await get_news(None, "AI")
         self.assertLessEqual(result.count("\n") + 1, 6)
-        self.assertLessEqual(len(result), NEWS_MAX_OUTPUT_CHARS)
+        self.assertLessEqual(len(result), MAX_RESULT_CHARS + 200)
 
 
 if __name__ == "__main__":

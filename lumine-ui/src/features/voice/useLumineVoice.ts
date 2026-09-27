@@ -1,23 +1,48 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConversationMessage, ConversationToolEvent } from "../../pages/home/conversation/types";
-import { LumineVoiceManager, type LumineVoiceStatus, type VoiceToolEvent } from "./voice-manager";
+import { LumineVoiceManager, type LumineVoiceStatus, type VoiceNotice, type VoiceToolEvent } from "./voice-manager";
 import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
 import { DEFAULT_INTERRUPTION_MODE, type InterruptionMode } from "./interruption";
 
 export type LumineVoiceConnectionState = LumineVoiceStatus | "online" | "waiting" | "reconnecting";
+
+export type VoiceToolResult = {
+  name: string;
+  status: "completed" | "failed";
+  /** The tool's actual output. Goes to a toast, never into the transcript. */
+  payload: string;
+  durationMs?: number;
+  sessionId: string;
+};
 
 export type UseLumineVoiceOptions = {
   onMessage: (message: Omit<ConversationMessage, "id"> & { id?: string }) => void;
   onUpdateMessage: (id: string, changes: Partial<Omit<ConversationMessage, "id">>) => void;
   onEmotion?: (emotion: LumineEmotionIntent) => void;
   onToolEvent?: (event: ConversationToolEvent) => void;
+  /**
+   * A tool's output, delivered separately from `onToolEvent`.
+   *
+   * Two callbacks rather than one wider event because the two go to different
+   * places: the transcript accumulates and the toast does not, and the payload is
+   * the model's input rather than something anyone said. Keeping `payload` off
+   * `ConversationToolEvent` leaves no path by which it reaches the transcript by
+   * accident.
+   */
+  onToolResult?: (result: VoiceToolResult) => void;
+  /** A rate limit or failure the user should be shown, not just logged. */
+  onNotice?: (notice: VoiceNotice) => void;
   interruptionMode?: InterruptionMode;
   onError: (message: string) => void;
 };
 
-export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEvent, interruptionMode = DEFAULT_INTERRUPTION_MODE, onError }: UseLumineVoiceOptions) {
+export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEvent, onToolResult, onNotice, interruptionMode = DEFAULT_INTERRUPTION_MODE, onError }: UseLumineVoiceOptions) {
   const managerRef = useRef<LumineVoiceManager | null>(null);
   const interruptionModeRef = useRef(interruptionMode);
+  const onToolResultRef = useRef(onToolResult);
+  useEffect(() => {
+    onToolResultRef.current = onToolResult;
+  }, [onToolResult]);
   useEffect(() => {
     interruptionModeRef.current = interruptionMode;
   }, [interruptionMode]);
@@ -50,7 +75,19 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
             durationMs: event.durationMs,
           };
           onToolEvent?.(conversationEvent);
+          if (event.payload && event.status !== "started") {
+            onToolResultRef.current?.({
+              name: event.name,
+              status: event.status,
+              payload: event.payload,
+              durationMs: event.durationMs,
+              sessionId: event.sessionId,
+            });
+          }
         },
+        // Optional at the call site but required by the manager, so a caller that
+        // does not care about notices is not forced to write a no-op.
+        onNotice: (notice) => onNotice?.(notice),
         onError,
       },
       (next) => setSnapshot(next),

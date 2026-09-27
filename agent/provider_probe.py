@@ -1,0 +1,245 @@
+"""Prove a provider credential works, with one cheap authenticated request.
+
+The Providers screen can say a key is *stored*, because the OS keyring says so.
+It cannot say the key is *good*: that needs a request. This is that request, and
+it is a script rather than desktop-layer code so the provider knowledge stays in
+the catalog.
+
+Why a separate process at all: the secret never has to enter the desktop layer's
+address space or its logs. Rust reads the keyring, passes the secret in this
+process's environment, and reads back a JSON verdict with no key material in it.
+
+Usage::
+
+    python agent/provider_probe.py google
+    python agent/provider_probe.py --list
+
+Output is always one JSON object on stdout::
+
+    {"ok": true,  "verdict": "valid",      "status": 200, "latencyMs": 330}
+    {"ok": false, "verdict": "rejected",   "status": 401, "detail": "Invalid API Key"}
+    {"ok": false, "verdict": "inconclusive", "status": 405, "detail": "..."}
+
+The three-way verdict is the point. A provider that is down, or a request of ours
+that is malformed, must never be reported to the user as "your key is wrong".
+Only the statuses the catalog lists for that provider are allowed to say that.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from typing import Any
+
+try:
+    from .providers import PROVIDERS, ProbeDefinition, get_provider
+except ImportError:  # running as `python agent/provider_probe.py`
+    from providers import PROVIDERS, ProbeDefinition, get_provider
+
+#: Long enough for a cold TLS handshake on a slow link, short enough that a
+#: wedged provider cannot leave the settings screen waiting.
+DEFAULT_TIMEOUT = 12.0
+
+VERDICT_VALID = "valid"
+VERDICT_REJECTED = "rejected"
+VERDICT_INCONCLUSIVE = "inconclusive"
+VERDICT_NO_PROBE = "no_probe"
+VERDICT_NO_SECRET = "no_secret"
+VERDICT_UNKNOWN_PROVIDER = "unknown_provider"
+
+
+def _load_environment() -> None:
+    """Load ``agent/.env`` so a key entered there is testable too.
+
+    An already-set variable wins, which is how the desktop layer passes a
+    keyring secret in ahead of this.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    from pathlib import Path
+
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+
+
+def _read_secret(provider_id: str) -> str:
+    """The credential for a provider, from the variable the catalog names."""
+    provider = get_provider(provider_id)
+    if provider is None or not provider.key_env:
+        return ""
+    for name in provider.key_env:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _detail(response: Any, limit: int = 160) -> str:
+    """A short, safe explanation from the provider's own response.
+
+    Only a message is taken, never the body: a provider that echoes the key back
+    in an error would otherwise put it in a log.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        text = (response.text or "").strip().replace("\n", " ")
+        return text[:limit]
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            for key in ("message", "detail", "type"):
+                if error.get(key):
+                    return str(error[key])[:limit]
+        for key in ("message", "detail", "error"):
+            value = body.get(key)
+            if isinstance(value, str) and value:
+                return value[:limit]
+    return ""
+
+
+def probe(provider_id: str, timeout: float = DEFAULT_TIMEOUT) -> dict[str, Any]:
+    """Make one authenticated request and classify the answer.
+
+    Never raises. Every failure becomes a verdict, because the caller is a
+    settings screen that needs something to show rather than an exception.
+    """
+    provider = get_provider(provider_id)
+    if provider is None:
+        return {"ok": False, "verdict": VERDICT_UNKNOWN_PROVIDER, "provider": provider_id}
+
+    definition: ProbeDefinition | None = provider.probe
+    if definition is None:
+        return {
+            "ok": False,
+            "verdict": VERDICT_NO_PROBE,
+            "provider": provider_id,
+            "detail": (
+                "No cheap authenticated request is known for this provider, so its "
+                "key cannot be tested from here."
+            ),
+        }
+
+    secret = _read_secret(provider_id)
+    if not secret:
+        return {
+            "ok": False,
+            "verdict": VERDICT_NO_SECRET,
+            "provider": provider_id,
+            "detail": f"No credential is set. Expected one of: {', '.join(provider.key_env)}.",
+        }
+
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx ships with the agent
+        return {
+            "ok": False,
+            "verdict": VERDICT_INCONCLUSIVE,
+            "provider": provider_id,
+            "detail": "httpx is not installed, so no request could be made.",
+        }
+
+    started = time.perf_counter()
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.request(
+                definition.method,
+                definition.url,
+                headers=definition.headers_for(secret),
+            )
+    except Exception as exc:  # noqa: BLE001 - any failure is a verdict
+        return {
+            "ok": False,
+            "verdict": VERDICT_INCONCLUSIVE,
+            "provider": provider_id,
+            "latencyMs": int((time.perf_counter() - started) * 1000),
+            # The exception text can echo a URL; the secret is in a header, so
+            # this cannot contain it, but the URL is dropped anyway.
+            "detail": f"{type(exc).__name__}: could not reach {definition.url.split('?')[0]}",
+        }
+
+    latency = int((time.perf_counter() - started) * 1000)
+    detail = _detail(response)
+
+    if 200 <= response.status_code < 300:
+        return {
+            "ok": True,
+            "verdict": VERDICT_VALID,
+            "provider": provider_id,
+            "status": response.status_code,
+            "latencyMs": latency,
+        }
+
+    if response.status_code in definition.invalid_status:
+        return {
+            "ok": False,
+            "verdict": VERDICT_REJECTED,
+            "provider": provider_id,
+            "status": response.status_code,
+            "latencyMs": latency,
+            "detail": detail or f"The provider answered {response.status_code}.",
+        }
+
+    # Anything else is our problem or theirs, not the key's. Saying "invalid"
+    # here would send a user re-entering a working credential, so the reassurance
+    # is part of the message rather than something the caller has to remember:
+    # the provider's own words are kept, but never on their own.
+    reassurance = (
+        f"The provider answered {response.status_code}, which does not indicate a "
+        "credential problem. This test could not conclude either way."
+    )
+    return {
+        "ok": False,
+        "verdict": VERDICT_INCONCLUSIVE,
+        "provider": provider_id,
+        "status": response.status_code,
+        "latencyMs": latency,
+        "detail": f"{detail} {reassurance}" if detail else reassurance,
+    }
+
+
+def _describe_all() -> list[dict[str, Any]]:
+    return [
+        {
+            "provider": provider.id,
+            "label": provider.label,
+            "probeable": provider.probe is not None,
+            "url": provider.probe.url if provider.probe else None,
+        }
+        for provider in sorted(PROVIDERS.values(), key=lambda item: item.id)
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("provider", nargs="?", help="the provider id to test")
+    parser.add_argument(
+        "--list", action="store_true", help="print which providers can be tested"
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=DEFAULT_TIMEOUT, help="seconds to wait"
+    )
+    args = parser.parse_args(argv)
+
+    _load_environment()
+
+    if args.list:
+        print(json.dumps(_describe_all(), indent=2))
+        return 0
+
+    if not args.provider:
+        parser.error("a provider id is required, or --list")
+
+    payload = probe(args.provider, timeout=args.timeout)
+    print(json.dumps(payload, separators=(",", ":")))
+    # Only a rejected credential is a non-zero exit; inconclusive is not, because
+    # a provider outage must not look like a failure to a calling script.
+    return 1 if payload["verdict"] == VERDICT_REJECTED else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
