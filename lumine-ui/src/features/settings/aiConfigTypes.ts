@@ -61,7 +61,60 @@ export type CatalogOption = {
   /** The object the provider takes this inside, when not a plain argument. */
   nest: string;
   notes: string;
+  /**
+   * The widget the backend expects: `slider`, `select`, `combobox`, `switch`,
+   * `number`, `voice`, or `text`. Declared rather than guessed, so a 59-value
+   * list renders as something you can search instead of 59 rows.
+   */
+  control: OptionControl;
+  /**
+   * The provider's own bounds, when it has any. A slider is drawn between these
+   * and stops there: the alternative is a free-text box that only tells you the
+   * value was rejected after you pressed Save, and in a voice session a rejected
+   * setting looks like a muted microphone.
+   */
+  minimum: number | null;
+  maximum: number | null;
+  step: number | null;
+  /**
+   * Whether this sits behind the "Advanced" disclosure rather than on the first
+   * screen of its stage.
+   *
+   * Declared by the backend rather than guessed from the name here, because the
+   * same option is ordinary on one model and meaningless on another. A token cap
+   * is worth showing to somebody who has hit one; it is not worth showing to
+   * somebody who has not, and it is not worth showing at all next to voice and
+   * speed.
+   */
+  advanced: boolean;
+  /**
+   * A value Lumine sends when the profile sets none.
+   *
+   * The provider's own default is not always expressible as an absent argument.
+   * A local model server has no authentication at all, but the OpenAI client
+   * refuses to construct without a key -- so the worker sends a literal string
+   * the server ignores. This is where that comes from, which is why it is
+   * declared in the catalog next to the option instead of being invented in the
+   * factory: one place to read when a provider is added that needs it.
+   */
+  default: string | number | boolean | null;
+  /**
+   * Sent, but not drawn.
+   *
+   * For a default nobody can usefully change. A key field on a provider that has
+   * no key reads as a setup wizard that cannot be completed.
+   */
+  hidden: boolean;
 };
+
+export type OptionControl =
+  | "slider"
+  | "select"
+  | "combobox"
+  | "switch"
+  | "number"
+  | "voice"
+  | "text";
 
 export type CatalogModel = {
   id: string;
@@ -75,6 +128,17 @@ export type CatalogModel = {
   /** The backend transcribes whole segments, so a VAD must delimit them. */
   requiresVad: boolean;
   /**
+   * What Lumine can hand this model, on the path it is reached by.
+   *
+   * Not the same as what the model could accept in principle: Google's Gemini 3
+   * Flash takes images through the Generative API, but the LiveKit LLM stage
+   * sends it a chat history of strings and has nowhere to put a frame. The
+   * capability screen reports these, and the camera control reads them — a button
+   * that turns on a track nothing consumes is the one control in the app that
+   * would be lying.
+   */
+  inputModalities: string[];
+  /**
    * Thinking levels this model accepts. Empty means it is not configured by
    * level and none is sent. The worker must never invent one: Google rejects an
    * unsupported level with a 400, which in a voice session means no audio.
@@ -86,12 +150,44 @@ export type CatalogModel = {
   voices: string[];
 };
 
+/**
+ * One field of a provider's credential.
+ *
+ * Most providers have one. LiveKit has three -- a server address, an API key and
+ * an API secret -- and they are not interchangeable, which is why they are three
+ * fields here rather than one field that received the same value three times.
+ *
+ * `env` is the environment variable the value belongs in, and it doubles as the
+ * keyring slot name, so the field drawn and the variable the worker reads cannot
+ * drift apart. It is documentation, never a value.
+ */
+export type CatalogKeySlot = {
+  env: string;
+  /** A name a person can act on: "Server URL", not "LIVEKIT_URL". */
+  label: string;
+  /**
+   * How to draw the field. `url` holds a hostname and is shown in the clear so a
+   * typo is visible; `secret` is masked; `text` is a public identifier. A value
+   * named like a credential is always `secret` -- the Python catalog refuses to
+   * declare otherwise.
+   */
+  kind: "secret" | "text" | "url";
+  /** Optional one-line guidance specific to this field. */
+  help: string;
+};
+
 export type CatalogProvider = {
   id: string;
   label: string;
   requiresKey: boolean;
   /** Environment variable *names* the worker reads. Never a value. */
   keyEnv: string[];
+  /**
+   * One entry per `keyEnv` variable, in the same order. Empty when the provider
+   * needs no credential. The settings screen renders exactly this list, so it
+   * never has to know which providers have several values.
+   */
+  keySlots: CatalogKeySlot[];
   setupUrl: string;
   local: boolean;
   notes: string;
@@ -110,6 +206,14 @@ export type CatalogProvider = {
   probe: {
     method: string;
     url: string;
+    /**
+     * `"header"` puts one value in one header. `"livekit_token"` mints a JWT from
+     * several values, which is why LiveKit's credential is tested as a unit and
+     * cannot be reduced to a single header.
+     */
+    authKind: string;
+    /** Rooted path appended to the server address, for the token kind only. */
+    tokenPath: string;
     authHeader: string;
     authPrefix: string;
     /** Fixed headers the provider needs, such as an API version. */
@@ -176,6 +280,16 @@ export type RealtimeProfile = {
   model: string;
   /** Only meaningful for `model_voice` output. */
   voice?: string;
+  /**
+   * Settings the realtime model accepts, by option name.
+   *
+   * Present in the type because the worker already reads it — `config_store`
+   * resolves a realtime stage's options and `validation` checks them against the
+   * model — and absent from this file because the screen that edits them was never
+   * written. The thinking level, the one control a realtime profile has, was
+   * therefore unreachable from the settings and had to be set in `agent/.env`.
+   */
+  options?: Record<string, string>;
   output: RealtimeOutput;
   turnHandling?: { interruptionMode?: InterruptionMode };
 };

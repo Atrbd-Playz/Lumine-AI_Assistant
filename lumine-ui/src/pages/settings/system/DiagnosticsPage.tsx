@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
 import type { ProviderCatalog } from "../../../features/settings/aiConfigTypes";
-import { getAgentStatus, type AgentStatus } from "../../../features/settings/aiConfigClient";
+import { getAgentStatus } from "../../../features/settings/aiConfigClient";
+import { useAgentRuntime, type AgentStatus } from "../../../lib/agentRuntime";
 import { Icon } from "../../home/components/Icon";
+import { Hint } from "../../../components/ui/hint";
 import { SettingsPageHeader } from "../components/SettingsPageHeader";
+import { CapabilityMatrix } from "./CapabilityMatrix";
 
 type DiagnosticsPageProps = {
   catalog: ProviderCatalog;
@@ -28,52 +31,54 @@ const STATE_COPY: Record<string, string> = {
  *
  * Deliberately read-only. Anything here that mutates state belongs in the page
  * that owns it, so there is exactly one place a change can be made.
+ *
+ * ## Both a poll and a listener, on purpose
+ *
+ * The worker block reads `get_agent_status` once on open and then follows the
+ * `agent_*` events. That split is not redundancy — a poll is the right tool for
+ * "how is it right now" and useless for "it just broke", because a process that
+ * boots and dies between two two-second reads is simply never seen. The event
+ * is the only thing that reports the transition. The reverse holds too: events
+ * report changes, so a screen opened against a healthy worker would show
+ * nothing at all without the initial read.
  */
 export function DiagnosticsPage({ catalog, isEnvironmentBacked, validating, diagnostics }: DiagnosticsPageProps) {
-  const [agent, setAgent] = useState<AgentStatus | null>(null);
+  const [polled, setPolled] = useState<AgentStatus | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const live = useAgentRuntime();
 
   useEffect(() => {
     let active = true;
-    const poll = async () => {
+    const read = async () => {
       try {
         const status = await getAgentStatus();
         if (active) {
-          setAgent(status);
+          setPolled(status);
           setAgentError(null);
         }
       } catch (cause) {
         if (active) setAgentError(cause instanceof Error ? cause.message : "Could not read worker status.");
       }
     };
-    void poll();
-    const timer = window.setInterval(poll, 2000);
+    void read();
     return () => {
       active = false;
-      window.clearInterval(timer);
     };
   }, []);
 
-  const modelsByCapability = (capability: string) =>
-    catalog.providers.reduce((total, provider) => total + provider.models.filter((model) => model.capability === capability).length, 0);
-
-  const deprecated = catalog.providers.flatMap((provider) =>
-    provider.models
-      .filter((model) => model.status !== "available")
-      .map((model) => ({ provider: provider.label, model: model.label, status: model.status })),
-  );
+  // A live event is newer than anything the read produced, so it wins. Once the
+  // worker is back to normal the poll takes over again, which is what stops a
+  // stale errored reading from sticking to the screen after a restart.
+  const agent = live ?? polled;
 
   return (
     <div className="settings-page">
-      <SettingsPageHeader
-        section="diagnostics"
-        description="What Lumine currently knows about its own configuration and runtime."
-      />
+      <SettingsPageHeader section="diagnostics" />
 
       <section className="settings-block">
-        <div className="settings-block-head">
+        <div className="settings-block-head flex items-center gap-1.5">
           <h2>Voice worker</h2>
-          <p>The Python process that serves voice sessions.</p>
+          <Hint label="The Python process">The process that serves voice sessions. It registers with LiveKit, then waits to be put in a room.</Hint>
         </div>
         {agentError ? (
           <p className="validation is-error">{agentError}</p>
@@ -85,6 +90,16 @@ export function DiagnosticsPage({ catalog, isEnvironmentBacked, validating, diag
               {agent.state}
             </span>
             <p>{STATE_COPY[agent.state] ?? "Unknown state."}</p>
+            {/* Running is not serving. The process can be alive while its LiveKit
+                registration is missing, which is precisely the state that made
+                the original agent bug invisible, so the two are reported apart
+                rather than collapsed into one word. */}
+            <p className={agent.connected ? "validation is-ok" : "validation is-pending"}>
+              <Icon name={agent.connected ? "check" : "clock"} size={14} />
+              {agent.connected
+                ? "Registered with LiveKit. A room dispatched to Lumine will reach her."
+                : "Not registered with LiveKit. Starting a call will launch the worker first."}
+            </p>
             {agent.pid && <small className="field-hint">Process {agent.pid}</small>}
             {agent.error && <p className="validation is-error">{agent.error}</p>}
           </div>
@@ -92,9 +107,12 @@ export function DiagnosticsPage({ catalog, isEnvironmentBacked, validating, diag
       </section>
 
       <section className="settings-block">
-        <div className="settings-block-head">
+        <div className="settings-block-head flex items-center gap-1.5">
           <h2>Configuration source</h2>
-          <p>Which layer decides the active voice stack.</p>
+          <Hint label="Which layer wins">
+            A saved configuration takes precedence. `agent/.env` is read only when
+            nothing has been saved from the desktop app.
+          </Hint>
         </div>
         <p className="validation is-ok">
           <Icon name="check" size={15} />
@@ -105,35 +123,26 @@ export function DiagnosticsPage({ catalog, isEnvironmentBacked, validating, diag
       </section>
 
       <section className="settings-block">
-        <div className="settings-block-head">
-          <h2>Catalog</h2>
-          <p>Models Lumine knows how to configure.</p>
+        <div className="settings-block-head flex items-center gap-1.5">
+          <h2>What each model can do</h2>
+          <Hint label="How to read this">
+            A dot means Lumine can hand that model that kind of input on the path it
+            is reached by — not that the model could accept it in principle. The
+            language stage sends a chat history of strings, so a camera turned on
+            beside a pipeline stage delivers frames to nobody; the Live models are
+            the only ones with somewhere to put one.
+          </Hint>
         </div>
-        <ul className="fact-list">
-          {(["stt", "llm", "tts", "realtime", "vad"] as const).map((capability) => (
-            <li key={capability}>
-              <span>{capability}</span>
-              <strong>{modelsByCapability(capability)}</strong>
-            </li>
-          ))}
-        </ul>
-        {deprecated.length > 0 && (
-          <div className="deprecated-list">
-            <h3>Needs attention</h3>
-            {deprecated.map((entry) => (
-              <p key={`${entry.provider}-${entry.model}`} className="validation is-warn">
-                <Icon name="clock" size={14} />
-                {entry.provider} · {entry.model} is {entry.status}.
-              </p>
-            ))}
-          </div>
-        )}
+        <CapabilityMatrix catalog={catalog} />
       </section>
 
       <section className="settings-block">
-        <div className="settings-block-head">
+        <div className="settings-block-head flex items-center gap-1.5">
           <h2>Active configuration checks</h2>
-          <p>Produced by the agent's own rules.</p>
+          <Hint label="Who writes these">
+            The agent's own rules, run against the profile as it would be started.
+            A blocking result here is what stops the voice button working.
+          </Hint>
         </div>
         {validating && <p className="validation is-pending">Checking…</p>}
         {!validating && diagnostics.length === 0 && (

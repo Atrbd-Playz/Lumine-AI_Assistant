@@ -467,7 +467,8 @@ def _validate_pipeline(
             provider, model, pipeline.get(key), f"pipeline.{key}", out, PROFILE_STRUCTURE
         )
 
-    _check_thinking_level(llm_provider, llm_model, pipeline.get("llm"), "pipeline.llm", out)
+    # The VAD check is below because it is conditional on the STT model, which is
+    # only known once the stage above has resolved.
 
     if stt_model is not None and stt_model.requires_vad and vad_provider is None:
         out.append(

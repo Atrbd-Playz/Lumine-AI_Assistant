@@ -28,14 +28,28 @@ def _disabled_ids() -> set[str]:
 
 def tool_allowed(tool: Any) -> bool:
     """Check a single tool against the environment toggles."""
+    return not disabled_reason(tool)
+
+
+def disabled_reason(tool: Any) -> str:
+    """Why a tool is switched off, or an empty string when it is available.
+
+    The Tools page shows this next to a disabled card. "Not available" and "you
+    turned this off" are different things to be told, and a card that only had a
+    boolean would have to pick one -- the wrong one, since the common case is a
+    deliberate choice someone made and then forgot they made.
+
+    Returned rather than raised, and rather than a bool, because both callers need
+    it: `tool_allowed` for the filter, this text for the screen.
+    """
     ident = tool_id(tool).lower()
     if ident in _disabled_ids():
-        return False
+        return f"Turned off by {DISABLED_TOOLS_VAR}."
     if ident in DESKTOP_TOOLS:
         enabled = (os.getenv(APP_LAUNCH_VAR, "true") or "true").strip().lower()
         if enabled not in _TRUTHY:
-            return False
-    return True
+            return f"Turned off by {APP_LAUNCH_VAR}."
+    return ""
 
 
 def filter_permissions(tools: Iterable[Any]) -> list[Any]:

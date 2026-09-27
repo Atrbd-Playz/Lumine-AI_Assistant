@@ -141,32 +141,56 @@ pub async fn test_provider_credential(provider: String) -> Result<ProbeOutcome, 
     // The keyring first, because that is what the user just saved. Falling back
     // to the environment is deliberate: someone who has never opened the
     // Providers page still deserves to know whether their `agent/.env` key works.
+    //
+    // Every variable the catalog names is injected, each with its own value. The
+    // previous version passed only the first name, so a three-value provider
+    // could never be probed and reported "not testable" -- which is how the
+    // LiveKit credential went wrong without anything on screen objecting.
     let store = OsCredentialStore;
-    let mut env: Vec<(&str, String)> = Vec::new();
-    if let Ok(secret) = store.secret_for_worker(&provider) {
-        let secret = secret.trim().to_string();
-        if secret.is_empty() {
+    let names: Vec<String> = declared
+        .get("keyEnv")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if names.is_empty() {
+        return Ok(ProbeOutcome::unprobed(
+            &provider,
+            Verdict::NoSecret,
+            "This provider declares no credential variable, so there is nothing to test.",
+        ));
+    }
+
+    let pairs = store.secrets_for_worker(&provider, &names);
+    if pairs.is_empty() {
+        // Nothing in the keyring. `agent/.env` may still hold a working key, so
+        // the script is still worth running -- it reads the environment itself.
+        // Reporting "no secret" here would tell someone with a perfectly good
+        // `agent/.env` that they have no credential.
+        let has_env = python_env::run_agent_script("provider_probe.py", &[&provider])
+            .ok()
+            .and_then(|stdout| serde_json::from_str::<serde_json::Value>(&stdout).ok())
+            .and_then(|value| value.get("verdict").and_then(serde_json::Value::as_str).map(str::to_string))
+            .is_some_and(|verdict| verdict == "no_secret");
+        if has_env {
             return Ok(ProbeOutcome::unprobed(
                 &provider,
                 Verdict::NoSecret,
-                "The stored credential is empty.",
+                "No key is stored, and none is set in agent/.env.",
             ));
-        }
-        if let Some(name) = declared
-            .get("keyEnv")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|values| values.first())
-            .and_then(serde_json::Value::as_str)
-        {
-            // First only: these are the variable names the catalog publishes, and
-            // the plugin reads the same one. A second name would be a fallback
-            // the provider documents, and passing the secret to both is harmless
-            // but adds nothing here.
-            env.push((name, secret));
         }
     }
 
-    let owned: Vec<(&str, &str)> = env.iter().map(|(name, value)| (*name, value.as_str())).collect();
+    let owned: Vec<(&str, &str)> = pairs
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
     let stdout = python_env::run_agent_script_with_env("provider_probe.py", &[&provider], &owned)?;
     let raw: RawOutcome =
         serde_json::from_str(&stdout).map_err(|err| format!("The probe result was not readable: {err}"))?;

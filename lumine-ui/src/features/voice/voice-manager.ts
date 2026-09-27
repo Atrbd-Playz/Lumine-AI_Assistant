@@ -359,6 +359,29 @@ export class LumineVoiceManager {
   }
 
   private async ensureWorker(sessionId: string, markLatency: (stage: string, details?: Record<string, unknown>) => void): Promise<void> {
+    // Refuse before spawning anything.
+    //
+    // This is the backstop, not the primary gate: the voice button is already
+    // disabled while setup is incomplete. It is here because the button is not the
+    // only way in — a stale render, a second window, or a keyring entry deleted
+    // between the check and the press would all reach this point. A missing
+    // `CARTESIA_API_KEY` otherwise becomes an unhandled 401 inside a session the
+    // user has already started talking into, which is indistinguishable from a
+    // muted microphone.
+    const setup = await invoke<{ ready: boolean; blocking: string[]; required: { id: string; local: boolean; stored: boolean; inEnv: boolean }[] }>("get_setup_status").catch(() => null);
+    if (setup && !setup.ready) {
+      const missing = setup.required
+        .filter((item) => !item.local && !item.stored && !item.inEnv)
+        .map((item) => item.id);
+      throw new Error(
+        setup.blocking.length > 0
+          ? `Lumine's configuration is not valid: ${setup.blocking[0]}`
+          : missing.length > 0
+            ? `Lumine needs ${missing.join(" and ")} before it can listen. Add the key in Settings, then try again.`
+            : "Lumine is not configured yet. Open Settings to finish setup.",
+      );
+    }
+
     try {
       await withTimeout(invoke("start_agent"), WORKER_START_TIMEOUT_MS, "Couldn't start Lumine's voice worker.");
       markLatency("worker_started", { sessionId });

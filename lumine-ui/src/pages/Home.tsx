@@ -1,73 +1,94 @@
-import { useRef, useState, type CSSProperties } from "react";
-import "./index.css";
+import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
 import { DEFAULT_APPEARANCE } from "./home/constants";
 import { AppearanceDialog } from "./home/components/AppearanceDialog";
 import { MainSpace } from "./home/components/MainSpace";
 import { Sidebar } from "./home/components/Sidebar";
 import { WorkspaceView } from "./home/components/WorkspaceView";
 import type { LumineState } from "./home/types";
-import { getReadableForeground, getReadableTextColor } from "./home/utils";
+import { getReadableForeground, getReadableTextColor, fontStack } from "./home/utils";
 import { usePreferences } from "./home/hooks/usePreferences";
 import { useDocumentTheme } from "./home/hooks/useDocumentTheme";
 import { useNotify } from "../features/toast/useNotify";
-import { SETTINGS_SECTIONS } from "./settings/SettingsNav";
+import { summarizeToolResult, toolToastText } from "../features/toast/toolToast";
+import { useAgentRuntime } from "../lib/agentRuntime";
+import { categorizeError } from "../lib/errors";
+import { SETTINGS_SECTIONS, type SettingsSection } from "./settings/SettingsNav";
 import { useConversation } from "./home/conversation/useConversation";
 import { ConversationPanel } from "./home/components/ConversationPanel";
-import type { Appearance } from "./home/types";
 import { useLumineVoice } from "../features/voice/useLumineVoice";
+import { useLocalMedia } from "../features/voice/useLocalMedia";
 import { DEFAULT_INTERRUPTION_MODE } from "../features/voice/interruption";
 import { SettingsDialog } from "./settings/SettingsDialog";
 import { ProvidersPage } from "./settings/ai/ProvidersPage";
-import { VoiceModelsPage } from "./settings/ai/VoiceModelsPage";
+import { VoicePage } from "./settings/ai/VoicePage";
+import { ModelsPage } from "./settings/ai/ModelsPage";
 import { DiagnosticsPage } from "./settings/system/DiagnosticsPage";
 import { CONFIG_VERSION } from "../features/settings/aiConfigTypes";
 import { useAiConfig } from "../features/settings/useAiConfig";
+import { useSetupStatus } from "../features/settings/useSetupStatus";
+import { SetupGate } from "./onboarding/SetupGate";
 import AvatarLabPage from "./AvatarLabPage";
 
 export default function Home() {
   const [nav, setNav] = useState(() => window.location.pathname === "/avatar" ? "avatar" : "home");
   const [glassMode, setGlassMode] = useState(() => localStorage.getItem("lumine.presentation-mode") === "glass");
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<"appearance" | "voice" | "providers" | "diagnostics">("voice");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("voice");
   const [conversationOpen, setConversationOpen] = useState(false);
   const notify = useNotify();
   const conversation = useConversation();
   const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
   const aiConfig = useAiConfig();
+  // Read once here and refreshed by the gate, so a key pasted in the wizard is
+  // reflected in the voice button without a second round-trip on every render.
+  const setup = useSetupStatus();
+  const voiceBlockedReason = setup.status && !setup.status.ready
+    ? setup.status.blocking.length > 0
+      ? "Lumine cannot start until the configuration is fixed. Open Voice & Models."
+      : "Lumine cannot start until its keys are set. Add them in the setup panel."
+    : null;
   // The active voice profile is authoritative once one is saved; until then the
   // environment default is what the worker will use, so the UI mirrors that.
   const interruptionMode =
     aiConfig.activeProfile?.kind === "realtime"
       ? (aiConfig.activeProfile.realtime?.turnHandling?.interruptionMode ?? DEFAULT_INTERRUPTION_MODE)
       : (aiConfig.activeProfile?.pipeline?.turnHandling?.interruptionMode ?? DEFAULT_INTERRUPTION_MODE);
+  /**
+   * A tool call in the transcript. No toast.
+   *
+   * The transcript accumulates and the notification does not, so a call's
+   * lifecycle belongs in one of them and not both. This used to raise a
+   * "get_weather done" toast here as well, which is why every tool produced two
+   * stacked notifications for a single action.
+   *
+   * The payload is deliberately not rendered here. A retrieved page sitting inline
+   * in a conversation reads as though the model had been handed it by the user --
+   * which is the shape a prompt injection wants. It goes to a toast instead.
+   */
   const handleToolEvent = (event: Parameters<typeof conversation.upsertToolEvent>[0]) => {
-    // Status only, and only a toast for the fact of running. The transcript
-    // accumulates; a payload shown there would accumulate too, and a retrieved
-    // page sitting inline in a conversation reads as though the model had been
-    // handed it by the user -- which is the shape a prompt injection wants.
     conversation.upsertToolEvent(event);
-    if (event.status === "started") return;
-    const timing = event.durationMs ? ` · ${event.durationMs}ms` : "";
-    notify({
-      tone: event.status === "completed" ? "success" : "error",
-      message: `${event.name}${event.status === "completed" ? " done" : " failed"}${timing}`,
-    });
   };
 
   /**
-   * A tool's actual output, as a toast.
+   * A finished tool call, as exactly one toast.
    *
-   * The one surface where showing the payload is free: transient, asked for, and
-   * gone before it can accumulate. Capped again here so a long payload cannot
-   * turn into a wall of text that covers the UI.
+   * The single notification for a tool call: what it was, one line of what came
+   * back, and how long it took. Short on purpose. A notification that has to be
+   * read before it can be dismissed is a document, and a tool call is neither
+   * rare enough to justify one nor important enough to want a paragraph.
    */
   const handleToolResult = (result: { name: string; status: string; payload: string; durationMs?: number }) => {
-    const detail = result.payload.length > 320 ? `${result.payload.slice(0, 320)}…` : result.payload;
+    const line = summarizeToolResult(result);
+    const text = toolToastText(line, result.durationMs);
+    // A failure is worth interrupting for; a routine lookup is not. A success
+    // with nothing to say is dropped entirely rather than shown as a bare "Done",
+    // which is a notification carrying no information.
+    if (line.tone === "success" && text === null) return;
     notify({
-      tone: result.status === "completed" ? "info" : "error",
-      title: result.name,
-      message: detail,
-      timeout: 6000,
+      tone: line.tone,
+      title: line.label,
+      ...(text ? { message: text } : { message: "No detail returned." }),
+      timeout: line.tone === "error" ? 8000 : 4000,
     });
   };
 
@@ -96,7 +117,45 @@ export default function Home() {
     notify({ tone: "error", title: "Something went wrong", message: notice.message, timeout: 6000 });
   };
 
-  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onToolEvent: handleToolEvent, onToolResult: handleToolResult, onNotice: handleNotice, interruptionMode, onError: (message) => notify({ tone: "error", message }) });
+  /**
+   * A failure, as a cause and a next step rather than a provider string.
+   *
+   * Every failure in the app -- a rejected key, a dropped room, a dead worker --
+   * arrives here as text, and text is the one thing a person cannot act on. A
+   * bare `401 Unauthorized` tells them nothing they did not already suspect, and
+   * the most common cause by a wide margin is a key that was never right.
+   * `categorizeError` turns the string into a title that names the problem and
+   * one sentence that says what to do about it.
+   *
+   * A rate limit is toned as a warning rather than an error, for the same reason
+   * the agent's own notices are: showing both red trains people to ignore the
+   * one that actually needs them.
+   */
+  const reportFailure = useCallback((raw: string, title?: string) => {
+    const { category, title: heading, message, action } = categorizeError(raw);
+    notify({
+      tone: category === "rate_limit" ? "warning" : "error",
+      title: title ?? heading,
+      message: action ? `${message} ${action}` : message,
+      timeout: 10_000,
+    });
+  }, [notify]);
+
+  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onToolEvent: handleToolEvent, onToolResult: handleToolResult, onNotice: handleNotice, interruptionMode, onError: (message) => reportFailure(message) });
+
+  /**
+   * The voice worker, followed rather than asked.
+   *
+   * A worker that dies between two status reads used to be invisible, because
+   * the only thing watching it was a poll. It is the difference between "Lumine
+   * did not answer" and "Lumine's process exited", and the second one is
+   * something that can be acted on.
+   */
+  useAgentRuntime({
+    onError: (status) => {
+      if (status.error) reportFailure(status.error, "The voice worker reported a problem");
+    },
+  });
 
   const handleNavigation = (next: string) => {
     if (next === "conversation") {
@@ -155,6 +214,23 @@ export default function Home() {
   // Portals render outside this subtree, so the palette has to reach <html> too.
   useDocumentTheme(mode, variables);
 
+  // The camera and the screen, released the moment the call ends. Owned here
+  // rather than in the voice hook because neither is part of the voice session:
+  // nothing is published, and the two lifecycles are genuinely different.
+  const media = useLocalMedia({ enabled: session.isActive });
+  // Whether the selected model could consume frames, read from the same
+  // `inputModalities` the Diagnostics matrix draws.
+  const canReceiveVideo = useMemo(() => {
+    const profile = aiConfig.activeProfile;
+    if (!profile || !aiConfig.catalog) return false;
+    const stage = profile.kind === "realtime" ? profile.realtime : profile.pipeline?.llm;
+    if (!stage?.provider || !stage.model) return false;
+    const model = aiConfig.catalog.providers
+      .find((provider) => provider.id === stage.provider)
+      ?.models.find((entry) => entry.id === stage.model);
+    return Boolean(model?.inputModalities.includes("image"));
+  }, [aiConfig.activeProfile, aiConfig.catalog]);
+
   return <div className={`lumine-app theme-${mode} route-${nav} ${glassMode ? "visual-glass" : "visual-classic"} ${conversationOpen && nav === "home" ? "conversation-open" : ""}`} style={variables}>
     <Sidebar active={conversationOpen ? "conversation" : nav} onChange={handleNavigation} onSettings={() => setSettingsOpen(true)} />
     {nav === "home" ? <MainSpace
@@ -170,12 +246,18 @@ export default function Home() {
       onGlassModeToggle={toggleGlassMode}
       muted={session.muted}
       onMuteToggle={() => { void session.toggleMute(); }}
+      media={media}
+      startedAt={session.startedAt}
       emotion={session.emotion}
       showEmotionDebug={import.meta.env.VITE_LUMINE_DEBUG_EMOTION === "true"}
+      gate={setup.status && !setup.status.ready ? <SetupGate setup={setup} onOpenProviders={() => { setSettingsSection("providers"); setSettingsOpen(true); }} onOpenDiagnostics={() => { setSettingsSection("diagnostics"); setSettingsOpen(true); }} /> : undefined}
+      voiceDisabledReason={voiceBlockedReason ?? undefined}
+      canReceiveVideo={canReceiveVideo}
     /> : nav === "avatar" ? <AvatarLabPage /> : <WorkspaceView kind={nav as "tools" | "memory" | "activity"} onSettings={() => { setSettingsSection("voice"); setSettingsOpen(true); }} />}
     {conversationOpen && nav === "home" && <ConversationPanel messages={conversation.messages} items={conversation.items} agentStatus={conversationStatus} bubbleVariant={appearance.chatBubbleVariant} onClose={() => setConversationOpen(false)} onClear={conversation.clearMessages} onReset={conversation.resetMessages} onAddMessage={conversation.addMessage} />}
     {settingsOpen && <SettingsDialog initialSection={settingsSection} onClose={() => setSettingsOpen(false)}>
-      {(section) => {
+      {(route) => {
+        const section = route.section;
         if (section === "appearance") {
           return <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={() => { setMode("dark"); setCursorGaze(true); resetAppearance(); }} onClose={() => setSettingsOpen(false)} />;
         }
@@ -185,7 +267,7 @@ export default function Home() {
         if (aiConfig.state === "error" || !aiConfig.catalog) {
           // One fallback covers every AI section, so the title is read from the
           // section rather than hardcoded — otherwise Providers and Diagnostics
-          // both announce themselves as "Voice & Models".
+          // both announce themselves as "Models".
           const definition = SETTINGS_SECTIONS.find((entry) => entry.id === section);
           return (
             <div className="settings-page">
@@ -214,29 +296,33 @@ export default function Home() {
         if (!aiConfig.activeProfile) {
           return <div className="settings-page"><p className="validation is-error">No active profile. Check Diagnostics.</p></div>;
         }
-        return (
-          <VoiceModelsPage
-            catalog={aiConfig.catalog}
-            profile={aiConfig.activeProfile}
-            document={aiConfig.draft ?? { version: CONFIG_VERSION, activeProfileId: "", providers: {}, profiles: [] }}
-            isEnvironmentBacked={aiConfig.isEnvironmentBacked}
-            diagnostics={aiConfig.diagnostics}
-            validating={aiConfig.validating}
-            onChange={(next) => aiConfig.updateActiveProfile(() => next)}
-            onMutateDocument={aiConfig.mutateDocument}
-            onSave={async () => { const ok = await aiConfig.save(); notify(ok ? { tone: "success", message: "AI configuration saved." } : { tone: "error", message: "Could not save the AI configuration." }); }}
-            onDiscard={aiConfig.discard}
-            canSave={aiConfig.canSave}
-            saving={aiConfig.saving}
-            hasUnsavedChanges={aiConfig.hasUnsavedChanges}
-            saveError={aiConfig.saveError}
-          />
-        );
+        // Voice and Models edit the same document, so they share the save state.
+        // Destructured into one object because passing seven identical props to
+        // two pages is how one of them ends up with a stale Save.
+        const shared = {
+          catalog: aiConfig.catalog,
+          profile: aiConfig.activeProfile,
+          isEnvironmentBacked: aiConfig.isEnvironmentBacked,
+          onChange: (next: typeof aiConfig.activeProfile) => aiConfig.updateActiveProfile(() => next),
+          onSave: async () => { const ok = await aiConfig.save(); notify(ok ? { tone: "success", message: "AI configuration saved." } : { tone: "error", message: "Could not save the AI configuration." }); },
+          onDiscard: aiConfig.discard,
+          canSave: aiConfig.canSave,
+          saving: aiConfig.saving,
+          hasUnsavedChanges: aiConfig.hasUnsavedChanges,
+          saveError: aiConfig.saveError,
+        };
+        if (section === "voice") {
+          return (
+            <VoicePage
+              {...shared}
+              document={aiConfig.draft ?? { version: CONFIG_VERSION, activeProfileId: "", providers: {}, profiles: [] }}
+              onMutateDocument={aiConfig.mutateDocument}
+            />
+          );
+        }
+        return <ModelsPage {...shared} tab={route.tab ?? "llm"} />;
       }}
     </SettingsDialog>}
   </div>;
 }
 
-function fontStack(font: Appearance["font"]) {
-  return font === "Newsreader" ? "Newsreader, serif" : font === "Space Grotesk" ? "Space Grotesk, sans-serif" : font === "DM Mono" ? "DM Mono, monospace" : font === "Roboto" ? "Roboto, sans-serif" : font === "Ubuntu" ? "Ubuntu, sans-serif" : "Manrope, sans-serif";
-}

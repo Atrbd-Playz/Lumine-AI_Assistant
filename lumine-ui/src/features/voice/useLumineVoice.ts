@@ -6,10 +6,41 @@ import { DEFAULT_INTERRUPTION_MODE, type InterruptionMode } from "./interruption
 
 export type LumineVoiceConnectionState = LumineVoiceStatus | "online" | "waiting" | "reconnecting";
 
+/**
+ * Every `LumineVoiceStatus`, mapped to what the UI shows.
+ *
+ * This is a total map rather than a ternary chain on purpose. The chain had a
+ * `: "online"` fallback, and `"connected"` was never given a case, so a session
+ * that reached `connected` was reported to the user as `online` -- the fallback
+ * answered for a state nobody had thought about. A `Record` keyed by the source
+ * union makes that a compile error instead: adding a state to `LumineVoiceStatus`
+ * now fails the build until it is mapped here.
+ */
+const CONNECTION_STATE_BY_VOICE_STATUS: Record<LumineVoiceStatus, LumineVoiceConnectionState> = {
+  disconnected: "idle",
+  idle: "idle",
+  connecting: "connecting",
+  // The room is joined and the agent is present but has not spoken yet. `online`
+  // is the honest word; it is what the label and the active styling both mean.
+  connected: "online",
+  initializing: "initializing",
+  listening: "listening",
+  thinking: "thinking",
+  speaking: "speaking",
+  disconnecting: "disconnecting",
+  ending: "disconnecting",
+  error: "error",
+};
+
 export type VoiceToolResult = {
   name: string;
   status: "completed" | "failed";
-  /** The tool's actual output. Goes to a toast, never into the transcript. */
+  /**
+   * The tool's actual output. Goes to a toast, never into the transcript.
+   *
+   * Empty for a failure that produced none, which is why this is delivered for
+   * every finished call rather than only the ones that carry data.
+   */
   payload: string;
   durationMs?: number;
   sessionId: string;
@@ -75,11 +106,17 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
             durationMs: event.durationMs,
           };
           onToolEvent?.(conversationEvent);
-          if (event.payload && event.status !== "started") {
+          if (event.status !== "started") {
+            // Fires for every finished call, payload or not.
+            //
+            // It used to fire only when a payload was present, which left a failed
+            // tool with no payload reporting itself nowhere. The fix is here rather
+            // than at the call site so that exactly one signal per tool call exists
+            // to report: two signals is what produced two toasts for one action.
             onToolResultRef.current?.({
               name: event.name,
               status: event.status,
-              payload: event.payload,
+              payload: event.payload ?? "",
               durationMs: event.durationMs,
               sessionId: event.sessionId,
             });
@@ -108,23 +145,7 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
     }
   }, [snapshot.state]);
 
-  const status: LumineVoiceConnectionState = snapshot.state === "disconnected" || snapshot.state === "idle"
-    ? "idle"
-    : snapshot.state === "connecting"
-      ? "connecting"
-      : snapshot.state === "initializing"
-        ? "initializing"
-        : snapshot.state === "listening"
-          ? "listening"
-          : snapshot.state === "speaking"
-            ? "speaking"
-            : snapshot.state === "disconnecting" || snapshot.state === "ending"
-              ? "disconnecting"
-              : snapshot.state === "error"
-                ? "error"
-                : snapshot.state === "thinking"
-                  ? "thinking"
-                  : "online";
+  const status: LumineVoiceConnectionState = CONNECTION_STATE_BY_VOICE_STATUS[snapshot.state];
 
   return {
     state: snapshot.state,

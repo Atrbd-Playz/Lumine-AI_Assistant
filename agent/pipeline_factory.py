@@ -23,16 +23,26 @@ try:
     from .config_store import ResolvedProfile, ResolvedStage, env_profile, resolve_profile
     from .llm_config import connect_max_retry
     from .pipeline_config import pipeline_name
-    from .providers import get_model
+    from .providers import Capability, get_model
     from .session_preferences import normalize_interruption_mode
-    from .validation import Diagnostic, diagnostic, validate_profile
+    from .validation import (
+        Diagnostic,
+        diagnostic,
+        env_credential_status,
+        validate_profile,
+    )
 except ImportError:
     from config_store import ResolvedProfile, ResolvedStage, env_profile, resolve_profile
     from llm_config import connect_max_retry
     from pipeline_config import pipeline_name
-    from providers import get_model
+    from providers import Capability, get_model
     from session_preferences import normalize_interruption_mode
-    from validation import Diagnostic, diagnostic, validate_profile
+    from validation import (
+        Diagnostic,
+        diagnostic,
+        env_credential_status,
+        validate_profile,
+    )
 
 # LiveKit plugins must be registered on the process's main thread. Import the
 # provider modules here, before any job/event loop is created, and only defer
@@ -61,6 +71,22 @@ except ImportError:
     _silero = None
 
 
+#: Provider ids that are reached through another provider's plugin.
+#:
+#: A local model server is not a LiveKit plugin. There is no
+#: `livekit-plugins-ollama`, and there will not be one: what speaks to Ollama is
+#: the OpenAI client, pointed somewhere else. So `ollama` is an *address*, not a
+#: package, and the factory has to know that a model chosen under it is built by
+#: the OpenAI plugin with a `base_url`.
+#:
+#: This is the one place the factory knows a provider exists, and it is a
+#: dictionary of names rather than a branch. A second local provider is a second
+#: line here, not a second `if`.
+_PLUGIN_ALIASES: dict[str, str] = {
+    "ollama": "openai",
+}
+
+
 def provider_module(provider_id: str) -> Any:
     """The imported plugin module for a provider id, or ``None`` if absent.
 
@@ -68,21 +94,27 @@ def provider_module(provider_id: str) -> Any:
     module-level ``_groq``/``_cartesia``/``_silero`` handles and have every
     builder observe the patch.
     """
+    resolved = _PLUGIN_ALIASES.get(provider_id, provider_id)
     return {
         "cartesia": _cartesia,
         "google": _google,
         "groq": _groq,
         "openai": _openai,
         "silero": _silero,
-    }.get(provider_id)
+    }.get(resolved)
 
 
 def require_module(provider_id: str, capability: str) -> Any:
     module = provider_module(provider_id)
     if module is None:
+        # The install instruction names the *package*, which for an aliased
+        # provider is not the provider's own name. "Install livekit-plugins-ollama"
+        # is advice nobody can follow -- the package does not exist -- and it is
+        # the only thing standing between a confusing ImportError and a fix.
+        package = _PLUGIN_ALIASES.get(provider_id, provider_id)
         raise RuntimeError(
             f"The {provider_id} provider is not installed. "
-            f"Install the matching livekit-plugins-{provider_id} package to use it for {capability}."
+            f"Install the matching livekit-plugins-{package} package to use it for {capability}."
         )
     return module
 
@@ -132,12 +164,6 @@ def _gemini_realtime_input_config(interruption_mode: str, silence_ms: int) -> An
 # ---------------------------------------------------------------------------
 
 
-async def _build_stt(stage: ResolvedStage) -> Any:
-    module = require_module(stage.provider, "speech-to-text")
-    options = {"model": stage.model, **stage.options}
-    return await asyncio.to_thread(module.STT, **options)
-
-
 def _declared_options(stage: ResolvedStage, capability: Capability) -> dict[str, Any]:
     """The keyword arguments to build this stage with, per the catalog.
 
@@ -157,6 +183,20 @@ def _declared_options(stage: ResolvedStage, capability: Capability) -> dict[str,
     return model.build_options(stage.options)
 
 
+def _voice_keyword(stage: ResolvedStage) -> str:
+    """The keyword this stage's plugin wants a voice passed as.
+
+    Cartesia calls it `voice`; Google's TTS calls it `voice_name`. Hardcoding
+    `voice` built a Google TTS session that raised `TypeError` on an unexpected
+    keyword, after the profile had saved and validated.
+    """
+    model = get_model(stage.provider, stage.model, "tts")
+    if model is None:
+        return "voice"
+    definition = model.option("voice")
+    return definition.plugin_keyword if definition is not None else "voice"
+
+
 async def _build_llm(stage: ResolvedStage) -> Any:
     module = require_module(stage.provider, "language")
     options = {"model": stage.model, **_declared_options(stage, "llm")}
@@ -167,7 +207,7 @@ async def _build_tts(stage: ResolvedStage) -> Any:
     module = require_module(stage.provider, "speech")
     options = {"model": stage.model, **_declared_options(stage, "tts")}
     if stage.voice:
-        options["voice"] = stage.voice
+        options[_voice_keyword(stage)] = stage.voice
     return await asyncio.to_thread(module.TTS, **options)
 
 
@@ -183,22 +223,6 @@ async def _build_vad(stage: ResolvedStage) -> Any:
     return await asyncio.to_thread(module.VAD.load, **options)
 
 
-def _realtime_thinking_level(model: Any, requested: Any) -> str | None:
-    """A thinking level the realtime model is known to accept, if it takes one.
-
-    The catalog's own lowest accepted level is used when none is requested, and
-    ``None`` when the model is not configured by level. Nothing is invented: a
-    wrong level is a 400 that produces a session with no audio.
-    """
-    if model is not None and not model.thinking_levels:
-        return None
-    if requested:
-        level = str(requested).strip().lower()
-        if model is None or model.supports_thinking_level(level):
-            return level
-    return model.default_thinking_level() if model is not None else None
-
-
 async def _build_realtime(stage: ResolvedStage, interruption_mode: str) -> Any:
     """Build a speech-to-speech model.
 
@@ -207,6 +231,13 @@ async def _build_realtime(stage: ResolvedStage, interruption_mode: str) -> Any:
     edit here. Gemini is the only one with a builder's worth of turn-handling
     wiring; another provider without it is refused with a clear message rather
     than producing a session that cannot be interrupted correctly.
+
+    A thinking level is not special-cased here. `_declared_options` drops it
+    entirely for a model that takes no level, and downgrades a stale one to a level
+    the model accepts, so the realtime path cannot send a parameter the model
+    rejects. It used to default to the model's lowest accepted level, which was a
+    way of always sending one -- and `gemini-3.8-live` rejects the parameter
+    outright, so the session failed at setup with no audio.
     """
     try:
         from livekit.agents import APIConnectOptions
@@ -239,9 +270,15 @@ async def _build_realtime(stage: ResolvedStage, interruption_mode: str) -> Any:
     try:
         return module.realtime.RealtimeModel(**options)
     except Exception as exc:
+        # The plugin's own message is the useful one. A missing key, an unknown
+        # model and a bad parameter all raise here, and they do not have the same
+        # fix -- replacing the underlying text with generic advice ("check the API
+        # key and the model id") throws away the part that names which one it was,
+        # which is the only thing a user can act on. So it is carried, not
+        # discarded. The class stays RuntimeError because callers already handle
+        # that as "this profile cannot be built".
         raise RuntimeError(
-            f"Could not create the {stage.provider} realtime model. "
-            "Check the provider's API key and the model id."
+            f"Could not create the {stage.provider} realtime model: {exc}"
         ) from exc
 
 
@@ -404,9 +441,13 @@ async def build_resolved(
                 "kind": resolved.kind,
                 **_validation_source(resolved),
             },
-            # Credential presence is the caller's business; this layer only checks
-            # that the shape can work.
-            credentials=None,
+            # Presence, not validity: this says a key is *set*, not that it works.
+            # Passing None here skipped the check entirely, so a profile missing
+            # its Cartesia key saved clean, validated clean, and failed at
+            # construction with a 401 on the user's first spoken turn. The
+            # environment is the right place to look because it is where the
+            # desktop app injects the keyring credentials.
+            credentials=env_credential_status(),
         )
         if any(d.severity == "error" for d in diagnostics):
             raise ConfigurationRejected(diagnostics)

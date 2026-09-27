@@ -8,13 +8,15 @@ The current implementation already shows the intended direction:
 
 - desktop-oriented layout
 - sidebar and main command space
-- presence/avatar area
+- presence/avatar area, animating on its own
 - theme controls with light/dark palettes
 - chat activity panel that can be toggled
+- a call bar rather than a microphone dock
 - animated avatar experimentation through the Avatar Lab
 - conversation state abstraction using a service hook
 
-This is a strong visual prototype, but it is not yet a desktop companion runtime.
+This is a working voice session wrapped in a strong visual prototype. What is missing
+is the desktop shell around it — tray, window lifecycle, wake word, sidecar packaging.
 
 ## Verified current architecture
 
@@ -28,23 +30,34 @@ Verified implementation details:
 - app title: `lumine-ui`
 - window dimensions: `800x600`
 - Vite dev server on `http://localhost:1420`
-- bundle enabled for release build
+- `bundle.active: false`. Do not assume `npm run tauri build` produces an installer.
 - default build runs `npm run build` before packaging
 
 ### Rust layer
 
-The Rust layer is not yet a real orchestrator. It only contains a placeholder command:
+The Rust layer is a real orchestrator for the process, and still a placeholder for
+the desktop shell. What exists:
 
-- `greet(name: &str) -> String`
-- registered with `tauri::generate_handler![greet]`
+| Module | Owns |
+| --- | --- |
+| `agent_manager.rs` | The Python child process: start (idempotent), stop, restart, and a readiness gate that blocks until the worker registers with LiveKit or reports an error. Re-emits `LUMINE_EVENT` records as Tauri events. |
+| `credentials.rs` | The OS keyring, **slot-addressed**. One entry per environment variable, not per provider. |
+| `credential_injection.rs` | Builds the child's environment, one variable from its own slot. |
+| `credential_probe.rs` | The secret's path — keyring, then environment, then one authenticated request. |
+| `setup_status.rs` | Whether this install can hold a conversation, per slot, failing closed. |
+| `settings_store.rs` | The versioned settings document, written atomically with a `.bak`. |
+| `python_env.rs` | Shared interpreter and agent-directory resolution. |
 
-This means the Tauri app currently has a scaffolded Rust layer, but no desktop orchestration logic for:
+What does not exist:
 
 - tray management
-- agent lifecycle
-- wake-word events
-- audio or mic permission flow
 - window visibility controls
+- wake-word events
+- an audio or mic permission flow
+
+`credentials.rs` is write-only from the frontend's side on purpose: there is
+deliberately no command that reads a stored secret back. See
+`../docs/ai-control-center.md` for the slot-addressing decision.
 
 ### React app
 
@@ -57,30 +70,52 @@ It owns the page-level state for:
 - settings modal
 - conversation panel visibility
 
-This is a UI shell and not yet a real backend integration layer.
+This is a real integration layer for the voice path and a UI shell for everything
+else. `Home.tsx` wires `useLumineVoice`, `useLocalMedia` and `useAgentRuntime` into
+`MainSpace`, so the avatar, the transcript, the call bar and the toasts all reflect a
+running session. What is still a shell is everything that is not a voice turn.
 
 ## Component organization
 
 The home experience is organized as follows:
 
 - [lumine-ui/src/pages/Home.tsx](lumine-ui/src/pages/Home.tsx) — page shell
-- [lumine-ui/src/pages/home/components/MainSpace.tsx](lumine-ui/src/pages/home/components/MainSpace.tsx) — command surface and voice controls
+- [lumine-ui/src/pages/home/components/MainSpace.tsx](lumine-ui/src/pages/home/components/MainSpace.tsx) — command surface, call bar, self-view
+- [lumine-ui/src/pages/home/components/CallBar.tsx](lumine-ui/src/pages/home/components/CallBar.tsx) — idle handset, then mute / camera / screen / end
+- [lumine-ui/src/pages/home/components/SelfView.tsx](lumine-ui/src/pages/home/components/SelfView.tsx) — the user's camera, locally only
 - [lumine-ui/src/pages/home/components/Presence.tsx](lumine-ui/src/pages/home/components/Presence.tsx) — animated avatar and state mapping
 - [lumine-ui/src/pages/home/components/ConversationPanel.tsx](lumine-ui/src/pages/home/components/ConversationPanel.tsx) — conversation activity panel
+- [lumine-ui/src/pages/home/components/WorkspaceView.tsx](lumine-ui/src/pages/home/components/WorkspaceView.tsx) — Memory, Activity and the tools grid
 - [lumine-ui/src/pages/home/conversation/useConversation.ts](lumine-ui/src/pages/home/conversation/useConversation.ts) — conversation state logic and message lifecycle
 - [lumine-ui/src/pages/home/hooks/usePreferences.ts](lumine-ui/src/pages/home/hooks/usePreferences.ts) — theme and appearance preferences
 - [lumine-ui/src/pages/home/constants.ts](lumine-ui/src/pages/home/constants.ts) — default theme values
+- [lumine-ui/src/components/avatar/useAvatarMontage.ts](lumine-ui/src/components/avatar/useAvatarMontage.ts) — the shared idle-montage queue driver
+
+`Camera and screenshare are a local preview.` `agent.py` has no video input, so
+nothing is published, no frames reach the agent, and the OS lights no recording
+indicator. `inputModalities` from the provider catalog is what stops the control
+offering itself to a stack that could not use the result.
 
 ## UI state model
 
-The current implementation defines the basic UI state in [lumine-ui/src/pages/home/types.ts](lumine-ui/src/pages/home/types.ts):
+Two vocabularies, and they are not interchangeable.
+
+**The room's state** — [lumine-ui/src/pages/home/types.ts](lumine-ui/src/pages/home/types.ts) — is what drives the avatar and the transcript:
 
 - `idle`
 - `listening`
 - `thinking`
 - `speaking`
 
-This matches the product direction, but there is no full state machine for sleep, wake, error, boot, or shutdown. Those remain future states.
+**The worker's state** — `AgentState` in [lumine-ui/src/lib/agentRuntime.ts](lumine-ui/src/lib/agentRuntime.ts) — is the process's lifecycle, mirroring `agent_manager.rs`:
+
+- `booting`, `ready`, `sleeping`, `listening`, `thinking`, `speaking`, `error`, `shutting_down`, `stopped`
+
+Collapsing these is what made the original agent bug invisible: "the worker is
+running" is not "Lumine is listening", and a worker can be up while its LiveKit
+registration is missing. Diagnostics reports `running` and `connected` separately for
+the same reason. `canServeRooms()` in `lib/agentRuntime.ts` is the honest test for
+"can this process answer a room".
 
 ## Avatar and presence
 
@@ -90,9 +125,15 @@ It currently uses:
 
 - an SVG avatar asset
 - a custom avatar engine (`LumineAvatarEngine`)
-- idle montage randomness
-- emotion/activity mapping from the UI state
+- the shared idle montage, driven by `useAvatarMontage`
+- emotion/activity mapping from the room state
 - a debug Avatar Lab for managing emotion, activity, and animation overrides
+
+The montage is a **queue driver**, not a `play()` call: each tick awaits the current
+animation and then waits a per-state gap, so timing is self-adjusting. It yields to
+a held reaction, and it *filters* the five gaze-touching animations rather than
+switching the montage off when cursor gaze is on. The Avatar Lab runs the same
+driver, so the two can no longer disagree about what "the montage" is.
 
 This is a strong visual foundation for the future state-driven avatar system. The UI is intentionally not a generic chat bubble layout; it is more like a companion presence layer.
 
@@ -122,19 +163,23 @@ This matches the architecture described in the product requirements and should r
 
 ## Conversation architecture
 
-The conversation layer is intentionally backend agnostic and currently defaults to a mock service in [lumine-ui/src/pages/home/conversation/useConversation.ts](lumine-ui/src/pages/home/conversation/useConversation.ts).
+`ConversationPanel` and `useConversation` stay **backend-agnostic**. `useConversation`
+keeps its `ConversationService` seam and still defaults to the empty mock, and
+`ConversationPanel` still has no import from `features/voice`.
 
-This is a real constraint:
+That constraint is still load-bearing, and the reason the voice path works at all is
+that live messages enter through the **callbacks `Home.tsx` wires in**, not through a
+panel that knows where they came from. The seam is the right place for a future
+text-turn backend; it is not where the existing one goes.
 
-- the UI does not currently talk to the Python agent
-- conversation is mock-driven
-- the backend event contract is planned, not implemented
-
-The design comment in [lumine-ui/src/pages/home/README.md](lumine-ui/src/pages/home/README.md) points to the correct future direction: replace the mock service with a backend adapter when the real desktop agent is available.
+The one thing that must not cross it is a tool payload. Those go to a toast via
+`onToolResult`, never through `ConversationToolEvent` — a retrieved page rendered
+inline in the transcript reads as though the model had been handed it by the user,
+which is the shape a prompt injection wants.
 
 ## How the UI should communicate with the agent
 
-The intended architecture is:
+This is the architecture, and it is the one that is implemented:
 
 ```text
 React UI
@@ -155,43 +200,71 @@ The UI should not directly know about:
 - wake-word implementation details
 - VAD wiring
 
+One honest exception, and it is deliberate: `features/voice/voice-manager.ts`
+connects to the LiveKit room itself. The browser side has to hold the audio
+connection, and the token is minted by a Tauri command precisely so no LiveKit
+secret reaches the bundle. Everything *about* LiveKit — URLs, ids, worker names —
+is confined to that module.
+
 Instead, it should consume high-level state and events such as:
 
-- `agent.state`
-- `agent.connected`
-- `agent.listening`
-- `agent.thinking`
-- `agent.speaking`
-- `agent.error`
+- `agent_started`
+- `agent_state_changed`
+- `agent_stopped`
+- `agent_error`
+- `agent_runtime`
+
+`lumine-ui/src/lib/agentRuntime.ts` is where those are declared, together with the
+`useAgentRuntime` hook that subscribes to them. Two rules about it:
+
+- The names are **underscores**. An earlier draft of that file used `agent.state`
+  and wrapped payloads in `{ type, payload }`; Rust emits `agent_started` with the
+  `AgentStatus` object *as* the payload. Nothing caught it because nothing imported
+  the file, which is why it is now wired rather than kept as a sketch.
+- `agent_*` is the **desktop layer's** view of the child process; `agent_runtime` is
+  the **worker's own** `LUMINE_EVENT` stream, forwarded verbatim. Do not collapse
+  them -- "the worker is running" is not "Lumine is listening", and reading it as
+  such is what made the original agent bug invisible.
 
 ## System tray, window management, and wake word
 
-These are all planned, not implemented.
+Agent lifecycle management is done: `agent_manager.rs` starts, stops and restarts
+the worker, `voice-manager.ts` calls `start_agent` then `wait_for_agent_worker`
+before dispatching, and the app reports what happens next if either fails. The rest
+is planned, not implemented.
 
 Current gaps:
 
 - [ ] system tray support
 - [ ] hide/show main window
 - [ ] minimize to tray
-- [ ] sleep/wake transitions
 - [ ] wake-word listener
 - [ ] local desktop activation events
-- [ ] agent lifecycle management
+- [ ] a typed daemon protocol for sleep/wake — `AgentState` carries the state, but nothing
+      *commands* the worker to enter one. LiveKit dispatch metadata plus the
+      `LUMINE_EVENT` stream remain the seam.
 
-This means the app is not yet a true “Lumine desktop companion” experience. It is still a presentation prototype with a voice-state UI shell.
+So the app is not yet a true “Lumine desktop companion” experience. It is a working
+voice session with a presentation prototype around it.
 
 ## Tauri responsibilities to be built
 
-The future Tauri responsibilities should include:
+Still to build:
 
 - tray icon and context menu
-- startup and session management
-- agent process start/stop/restart
-- event bridge between frontend and Rust
+- hide/show and minimize-to-tray
 - native permission handling
 - platform-aware window lifecycle
 - wake-word event propagation
-- logging and crash recovery
+- crash recovery and auto-restart
+- sidecar packaging
+
+Already built:
+
+- agent process start/stop/restart, with an idempotent start
+- startup and session management
+- the event bridge between frontend and Rust
+- worker readiness gating, so a dispatch never happens before registration
 
 ## Frontend roadmap
 
@@ -200,25 +273,41 @@ The future Tauri responsibilities should include:
 - [x] React + Vite app scaffolded
 - [x] Tauri shell scaffolded
 - [x] desktop companion visual direction implemented
-- [x] avatar presence and animation prototype implemented
+- [x] avatar presence and animation prototype implemented, and the montage actually running on the home screen
 - [x] light/dark theme and preset system implemented
 - [x] architecture comments and feature separation exist
-- [~] UI state is present but not backend-driven
+- [x] backend IPC: agent lifecycle commands, credential slots, probes, setup status, and the provider catalog
+- [x] typed agent state events (`lib/agentRuntime.ts`)
+- [~] UI state is present but only the voice path is backend-driven
 - [ ] system-tray/desktop orchestration not implemented
 - [ ] wake-word integration not implemented
-- [ ] backend IPC not implemented
 
 ### Planned work
 
-- [~] Tauri IPC contract
-- [~] typed agent state events
 - [ ] tray and window lifecycle
-- [~] agent manager commands
 - [ ] wake-word integration
-- [ ] state synchronization with avatar animation
+- [ ] a daemon protocol for sleep/wake, distinct from `LUMINE_EVENT` plus dispatch metadata
+- [ ] sidecar packaging, so end users never install Python
 - [ ] final desktop companion flow
 
-The frontend now invokes Tauri agent lifecycle commands and listens for high-level runtime events, but the app still cannot complete a full Tauri compile because the bundle icon configuration is failing in the Windows resource build step.
+The frontend invokes Tauri agent lifecycle commands and listens for high-level
+runtime events. `useLumineVoice` drives a real LiveKit session; the transcript,
+emotion, notice and tool events reach the panel and the toasts.
+
+`npm run tauri build` completes and writes `src-tauri/target/release/lumine-ui.exe`,
+with the Windows icon and version resources correctly embedded.
+
+The Windows resource icon step was never the blocker, and this file claimed it was
+for a while. `tauri.conf.json` sets no `bundle.icon`, and none is needed: the icons
+under `src-tauri/icons` are complete, git-tracked and valid, and `tauri-winres`
+finds `icon.ico` on its own. What actually failed was a poisoned `target/release`
+cache from an interrupted run, which made `core` resolve to a metadata stub and
+cascaded into 270 errors in `jsonptr` that read like a dependency fault. Run
+`cargo clean --release` — the debug artifacts, and therefore `tauri dev`, are
+untouched by it.
+
+Because `bundle.active` is `false`, a successful build produces no installer. That is
+the packaging decision, not a failure.
 
 ## Cross-platform and packaging constraints
 
@@ -242,7 +331,17 @@ The frontend now invokes Tauri agent lifecycle commands and listens for high-lev
 - Do not hardcode desktop automation or wake-word assumptions into the UI.
 - Do not couple React components directly to Python or LiveKit implementation details.
 - Keep state and presentation separated.
+- **One picker.** Every chooser is `components/ui/dropdown.tsx`. No native
+  `<select>`, no `<datalist>`, no segmented button row, no wall of cards where a
+  list belongs. A native popup is drawn by the OS, so it does not belong to the app.
+- **The catalog decides, the UI draws.** Whether a setting exists, whether it is
+  advanced, what its default is, and whether it is hidden are all declared in
+  `agent/providers.py` and published. The UI holds no provider knowledge, including
+  no knowledge of which environment variable a key goes in.
 
 ## Summary
 
-The UI currently behaves like a polished desktop companion prototype but remains a front-end shell. The important missing architectural leap is the Tauri orchestration layer: tray, agent manager, wake-word integration, and actual IPC/state synchronization with the Python agent.
+The voice path is real: a live LiveKit session, a driven avatar, a transcript, and
+failures that name their cause. The remaining architectural gap is the desktop shell
+around it — tray, window lifecycle, wake word, and packaging the worker as a sidecar
+so nobody has to install Python.

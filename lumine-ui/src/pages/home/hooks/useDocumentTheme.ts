@@ -25,7 +25,6 @@ export function useDocumentTheme(mode: ThemeMode, variables: CSSProperties) {
     const root = document.documentElement;
     root.classList.remove("theme-light", "theme-dark");
     root.classList.add(`theme-${mode}`);
-
     for (const [property, value] of Object.entries(JSON.parse(serialized) as Record<string, string>)) {
       if (value !== undefined && value !== null) root.style.setProperty(property, String(value));
     }

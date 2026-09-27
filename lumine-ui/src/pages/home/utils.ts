@@ -57,3 +57,39 @@ export function getReadableForeground(color: string, backgrounds: string[], fall
 export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
 }
+
+/**
+ * A CSS `font-family` for one of the six named interface faces.
+ *
+ * It lives here rather than in `Home.tsx` because there is a second caller now:
+ * the appearance settings draw every typeface option *in its own face*, and a
+ * chooser that samples a face with a stack built somewhere else is a chooser that
+ * quietly disagrees with the app the moment one of the two is edited.
+ *
+ * The fallback is a real part of the answer, not defensive noise. Each face is
+ * loaded from a webfont that can be absent — offline, blocked, or a machine that
+ * never fetched it — and the generic after the name is what the browser reaches
+ * for instead. A trailing `sans-serif` on a serif face would be wrong, which is
+ * why the generic is chosen per family rather than appended to all of them.
+ */
+export function fontStack(font: string): string {
+  switch (font) {
+    case "Newsreader":
+      return "Newsreader, serif";
+    case "DM Mono":
+      return "DM Mono, monospace";
+    case "Space Grotesk":
+      return "Space Grotesk, sans-serif";
+    case "Roboto":
+      return "Roboto, sans-serif";
+    case "Ubuntu":
+      return "Ubuntu, sans-serif";
+    case "Manrope":
+      return "Manrope, sans-serif";
+    default:
+      // An uncatalogued face. The name is still worth trying — a stored profile
+      // may name a font this build has not heard of — but sans-serif has to be
+      // there or the browser uses its default serif for a UI.
+      return `"${font}", sans-serif`;
+  }
+}

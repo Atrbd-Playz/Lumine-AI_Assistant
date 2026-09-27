@@ -198,6 +198,164 @@ class InconclusiveTests(ProbeTestCase):
         self.assertIn("not valid", outcome["detail"])
 
 
+class LiveKitProbeTests(unittest.TestCase):
+    """LiveKit's credential is three values that only mean anything together.
+
+    The server URL, the API key and the API secret are used to mint a short-lived
+    JWT. No one of them is a bearer token, so the first version of this probe --
+    one value placed in one header -- could not test LiveKit at all, and reported
+    "not testable" on a screen where the credential was quietly wrong.
+
+    These run against the same local server as the other probe tests, so the
+    suite never contacts a real LiveKit project.
+    """
+
+    reply = (200, {"rooms": []})
+    received_headers: dict = {}
+
+    def setUp(self):
+        _Handler.reply = self.reply
+        _Handler.received_headers = {}
+        _Handler.received_path = ""
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def _probe(self, **overrides):
+        env = {
+            "LIVEKIT_URL": f"http://127.0.0.1:{self.server.server_address[1]}",
+            "LIVEKIT_API_KEY": "APIkeynotreal",
+            "LIVEKIT_API_SECRET": "secretnotreal" + "x" * 32,
+        }
+        env.update(overrides)
+        with mock.patch.dict("os.environ", env, clear=True):
+            return provider_probe.probe("livekit")
+
+    def test_a_reachable_server_with_an_accepted_token_is_valid(self):
+        _Handler.reply = (200, {"rooms": []})
+        outcome = self._probe()
+        self.assertTrue(outcome["ok"], outcome.get("detail"))
+        self.assertEqual(outcome["verdict"], provider_probe.VERDICT_VALID)
+        self.assertEqual(outcome["status"], 200)
+        self.assertIsInstance(outcome["latencyMs"], int)
+
+    def test_the_request_carries_a_minted_token_and_names_the_right_path(self):
+        _Handler.reply = (200, {"rooms": []})
+        self._probe()
+        auth = _Handler.received_headers.get("Authorization", "")
+        # A real JWT, not the API key pasted in: three header segments, the first
+        # of which is the signing algorithm in base64url.
+        self.assertTrue(auth.startswith("Bearer eyJ"), auth)
+        self.assertEqual(auth.count("."), 2)
+        self.assertNotIn("APIkeynotreal", auth)
+        self.assertNotIn("secretnotreal", auth)
+        self.assertEqual(
+            _Handler.received_path, "/twirp/livekit.RoomService/ListRooms"
+        )
+
+    def test_a_refused_token_is_reported_as_a_rejected_credential(self):
+        # 401 is the answer to a wrong key *or* a wrong secret. It is the one
+        # status that can be blamed on the credential, so it is the one that is.
+        _Handler.reply = (401, {"code": "unauthenticated", "msg": "invalid token"})
+        outcome = self._probe()
+        self.assertFalse(outcome["ok"])
+        self.assertEqual(outcome["verdict"], provider_probe.VERDICT_REJECTED)
+        self.assertEqual(outcome["status"], 401)
+
+    def test_an_unrelated_status_is_inconclusive_not_a_bad_credential(self):
+        # A paused project or a gateway in front of LiveKit answers with something
+        # that is not about the key, and must not send anyone to re-enter it.
+        _Handler.reply = (503, {"msg": "upstream unavailable"})
+        outcome = self._probe()
+        self.assertEqual(outcome["verdict"], provider_probe.VERDICT_INCONCLUSIVE)
+        self.assertIn("does not indicate", outcome["detail"])
+
+    def test_a_missing_value_names_itself_instead_of_reporting_a_bad_key(self):
+        # The regression the whole slot design exists for: two of three entered
+        # used to look like a complete credential.
+        outcome = self._probe(LIVEKIT_API_SECRET="")
+        self.assertEqual(outcome["verdict"], provider_probe.VERDICT_NO_SECRET)
+        self.assertIn("LIVEKIT_API_SECRET", outcome["detail"])
+        self.assertNotIn("LIVEKIT_API_KEY", outcome["detail"])
+
+    def test_no_credential_at_all_names_all_three(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            outcome = provider_probe.probe("livekit")
+        self.assertEqual(outcome["verdict"], provider_probe.VERDICT_NO_SECRET)
+        for name in ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"):
+            self.assertIn(name, outcome["detail"])
+
+    def test_a_url_that_is_not_a_url_is_called_out_as_a_typo(self):
+        # The console hands out a `wss://` address; pasting it into a field
+        # expecting `https://` is a common mistake and deserves a plain message
+        # rather than a connection error.
+        outcome = self._probe(LIVEKIT_URL="my-project.livekit.cloud")
+        self.assertEqual(outcome["verdict"], provider_probe.VERDICT_REJECTED)
+        self.assertIn("not a server address", outcome["detail"])
+
+    def test_a_websocket_address_is_accepted_and_talked_to_over_https(self):
+        # Users copy `wss://` out of the LiveKit console. Twirp is served over
+        # HTTP even when the client speaks WebRTC, so the scheme is translated
+        # rather than rejected.
+        #
+        # Asserted on the URL the client is asked for rather than on a reply: the
+        # translation means the request is now TLS, which the plain-HTTP test
+        # server cannot answer, and this is the property actually under test.
+        asked: list = []
+
+        class _Recorder:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def post(self, url, **kwargs):
+                asked.append(url)
+                raise RuntimeError("stop here: the URL is what matters")
+
+        with mock.patch("httpx.Client", _Recorder):
+            outcome = self._probe(
+                LIVEKIT_URL="wss://acme.livekit.cloud/"
+            )
+
+        # Reached the network stage, so the `wss://` address was not rejected as a
+        # malformed URL, and was translated to the scheme Twirp is served on.
+        self.assertNotEqual(outcome["verdict"], provider_probe.VERDICT_REJECTED)
+        self.assertEqual(
+            asked, ["https://acme.livekit.cloud/twirp/livekit.RoomService/ListRooms"]
+        )
+
+    def test_a_trailing_slash_does_not_double_up_in_the_path(self):
+        self._probe(
+            LIVEKIT_URL=f"http://127.0.0.1:{self.server.server_address[1]}/"
+        )
+        self.assertEqual(
+            _Handler.received_path, "/twirp/livekit.RoomService/ListRooms"
+        )
+
+    def test_an_unreachable_server_is_inconclusive_and_leaks_nothing(self):
+        # Port 1 is reserved, so this never connects.
+        outcome = self._probe(LIVEKIT_URL="http://127.0.0.1:1")
+        self.assertEqual(outcome["verdict"], provider_probe.VERDICT_INCONCLUSIVE)
+        blob = json.dumps(outcome)
+        self.assertNotIn("APIkeynotreal", blob)
+        self.assertNotIn("secretnotreal", blob)
+
+    def test_livekit_is_no_longer_reported_as_untestable(self):
+        # The user-visible half of the bug: the Providers page said "not testable"
+        # for the one credential that decides whether a session can happen.
+        self.assertIsNotNone(get_provider("livekit").probe)
+        self.assertEqual(
+            get_provider("livekit").probe.auth_kind, "livekit_token"
+        )
+
+
 class NoCredentialTests(ProbeTestCase):
     def test_nothing_set_is_reported_as_no_secret(self):
         with mock.patch.dict("os.environ", {}, clear=True):
@@ -230,11 +388,26 @@ class NoCredentialTests(ProbeTestCase):
 
 class CatalogProbeTests(unittest.TestCase):
     def test_every_probe_is_https(self):
-        # The probe sends a real credential to this address.
+        # The probe sends a real credential to this address. A minted-token probe
+        # is exempt because it has no fixed address: the host is the credential
+        # under test, and the scheme is checked when the value is used.
         for provider in PROVIDERS.values():
-            if provider.probe is not None:
+            if provider.probe is not None and provider.probe.auth_kind == "header":
                 with self.subTest(provider=provider.id):
                     self.assertTrue(provider.probe.url.startswith("https://"))
+
+    def test_a_minted_token_probe_appends_a_rooted_path_and_has_a_key_pair(self):
+        # The one shape the ordinary checks above cannot express: a provider whose
+        # credential is several values signing a token. Without the rooted path it
+        # could be pointed at an unversioned endpoint; without two variables there
+        # is nothing to sign with, which is the original LiveKit bug.
+        for provider in PROVIDERS.values():
+            probe = provider.probe
+            if probe is None or probe.auth_kind != "livekit_token":
+                continue
+            with self.subTest(provider=provider.id):
+                self.assertTrue(probe.token_path.startswith("/"))
+                self.assertGreaterEqual(len(provider.key_env), 2)
 
     def test_every_probe_says_which_statuses_mean_a_bad_key(self):
         # Without this a wrong key and an outage are indistinguishable.

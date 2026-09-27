@@ -1,9 +1,15 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=Roboto:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=Ubuntu:wght@400;500;700&display=swap');
-@import 'tailwindcss';
-
 /* ==========================================================================
    Lumine UI — design tokens
    Keep component styles below these variables. Add new colors here first.
+
+   This file is the single source of truth for the palette. Tailwind is
+   imported once, from App.css, which also loads this file -- so there is one
+   stylesheet, one import, and one cascade order to reason about.
+
+   `--color-*` is Lumine's own vocabulary. The unprefixed tokens at the bottom
+   of each block are the bridge Tailwind's semantic utilities read through
+   (`--background` -> `bg-background`). They are aliases, not a second palette,
+   so a theme change needs to be written once and both systems follow it.
    ========================================================================== */
 
 :root {
@@ -11,8 +17,8 @@
   --color-surface: #211f1d;
   --color-surface-muted: #2c2926;
   --color-text: #f1ece5;
-  --color-text-soft: #c2bbb3;
-  --color-text-faint: #aaa39b;
+  --color-text-soft: #aaa39b;
+  --color-text-faint: #908a83;
   --color-border: #3a3733;
 
   --color-accent: #e86f3d;
@@ -25,14 +31,17 @@
   --color-stage-border: #706860;
 
   --color-control-icon: #aaa39b;
-  --color-control-hover: #f1ece5;
   --voice-button-icon: #0B0B12;
+
+  /* The one error color the app has. Previously referenced four times with a
+     hardcoded #c0392b fallback because no mode ever defined it. */
+  --color-danger: #e5645a;
+  --color-danger-soft: #3d1f1d;
 
   --color-avatar: #df6232;
 
   --sidebar-width: 76px;
   --side-panel-width: 354px;
-  --context-panel-width: var(--side-panel-width);
   --conversation-width: var(--side-panel-width);
   --conversation-surface: var(--color-surface);
   --conversation-border: var(--color-border);
@@ -45,7 +54,7 @@
 
   --font-ui: "Ubuntu", sans-serif;
   --font-display: "Newsreader", serif;
-  --font-mono: "Roboto", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
 
   --radius-sm: 10px;
   --radius-md: 14px;
@@ -53,6 +62,36 @@
   --radius-xl: 30px;
 
   --shadow-soft: 0 8px 24px rgba(232, 111, 61, 0.3);
+
+  /* Depth replaces borders for separation. Three steps is enough to read as
+     distinct planes; a fourth is noise. The first term of each is a hairline
+     ring at low alpha, which is what makes a surface sit *above* its parent
+     without a hard edge. Kept neutral -- a tinted shadow picks up whatever is
+     behind it and reads as dirt. */
+  --elevation-1: 0 1px 2px -1px rgb(0 0 0 / 0.28), 0 0 0 1px rgb(0 0 0 / 0.16);
+  --elevation-2: 0 0 0 1px rgb(0 0 0 / 0.18), 0 2px 4px -2px rgb(0 0 0 / 0.30),
+    0 6px 12px -6px rgb(0 0 0 / 0.34);
+  --elevation-3: 0 0 0 1px rgb(0 0 0 / 0.20), 0 4px 8px -4px rgb(0 0 0 / 0.32),
+    0 16px 32px -12px rgb(0 0 0 / 0.48);
+
+  /* ---- Tailwind bridge (see the note at the top of this block) ---- */
+  --background: var(--color-canvas);
+  --foreground: var(--color-text);
+  --card: var(--color-surface);
+  --card-foreground: var(--color-text);
+  --popover: var(--color-surface);
+  --popover-foreground: var(--color-text);
+  --primary: var(--color-accent);
+  --primary-foreground: var(--voice-button-icon);
+  --secondary: var(--color-surface-muted);
+  --secondary-foreground: var(--color-text);
+  --muted: var(--color-surface-muted);
+  --muted-foreground: var(--color-text-soft);
+  --accent: var(--color-accent-soft);
+  --accent-foreground: var(--color-text);
+  --destructive: var(--color-danger);
+  --input: var(--color-surface-muted);
+  --ring: var(--color-accent);
 }
 
 /* Light mode is opt-in; keeping dark tokens at the root prevents a light flash on launch. */
@@ -71,7 +110,15 @@
   --color-stage-text-soft: #bbb6af;
   --color-stage-border: #625b55;
   --color-control-icon: #8b8882;
-  --color-control-hover: #2c2926;
+  --color-danger: #b03a2e;
+  --color-danger-soft: #f7dfdc;
+  /* Light mode needs a softer shadow: the same alpha that reads as a gentle
+     lift on a dark canvas reads as a smudge on a light one. */
+  --elevation-1: 0 1px 2px -1px rgb(0 0 0 / 0.10), 0 0 0 1px rgb(0 0 0 / 0.06);
+  --elevation-2: 0 0 0 1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.08),
+    0 6px 12px -6px rgb(0 0 0 / 0.10);
+  --elevation-3: 0 0 0 1px rgb(0 0 0 / 0.08), 0 4px 8px -4px rgb(0 0 0 / 0.10),
+    0 16px 32px -12px rgb(0 0 0 / 0.14);
   --conversation-surface: #fbfaf8;
   --conversation-user: #e8e7e3;
   --conversation-assistant: #f7d8ca;
@@ -163,13 +210,19 @@ input {
    Sidebar
    ========================================================================== */
 
+/* The rail is lighter than the workspace beside it, so it is the rail that casts
+   the shadow. Same treatment as the settings rail, for the same reason: a
+   separator line between two flat panels says "different", a shadow says
+   "behind". */
 .sidebar {
   display: flex;
   flex-direction: column;
   align-items: center;
   padding: 24px 0 22px;
   background: var(--color-surface);
-  border-right: 1px solid var(--color-border);
+  box-shadow:
+    1px 0 0 rgb(0 0 0 / 0.06),
+    6px 0 18px -12px rgb(0 0 0 / 0.35);
 }
 
 .sidebar nav {
@@ -181,8 +234,7 @@ input {
 
 .logo-button,
 .nav-button,
-.panel-icon,
-.circle-button {
+.panel-icon {
   display: grid;
   place-items: center;
   cursor: pointer;
@@ -237,11 +289,14 @@ input {
   color: var(--color-text);
 }
 
+/* The icon-only variant: the marker is an underline painted into the row. It was
+   a 2px border-bottom with `border-radius: 0` to square off the button, which
+   meant the whole control was flat-bottomed while active. An inset shadow keeps
+   the rounded shape and keeps the marker. */
 .nav-button.is-active {
   background: transparent;
   color: var(--color-accent);
-  border-bottom: 2px solid var(--color-accent);
-  border-radius: 0;
+  box-shadow: inset 0 -2px 0 var(--color-accent);
 }
 
 .nav-button.is-active:hover {
@@ -289,9 +344,10 @@ input {
 
 .sidebar .nav-button.is-active {
   background: color-mix(in srgb, var(--color-accent) 12%, transparent);
-  border: 0;
-  border-left: 2px solid var(--color-accent);
-  border-radius: 10px;
+  /* The active marker is the one thing here that must not be mistaken for
+     decoration, so it is an inset shadow rather than a raised one: it is painted
+     into the row, not floating above it. */
+  box-shadow: inset 2px 0 0 var(--color-accent);
 }
 
 .sidebar .nav-button.is-active:hover {
@@ -336,6 +392,8 @@ input {
   line-height: 1.6;
 }
 
+/* The header's reset/settings button. Same three steps as every other control in
+   the app: flat, raised on hover, accent when it is doing something. */
 .workspace-settings {
   width: 42px;
   height: 42px;
@@ -344,16 +402,25 @@ input {
   flex: 0 0 auto;
   color: var(--color-control-icon);
   background: transparent;
-  border: 1px solid var(--color-border);
+  border: 0;
   border-radius: 10px;
+  box-shadow: var(--elevation-1);
   cursor: pointer;
+  transition:
+    box-shadow 140ms ease,
+    color 140ms ease,
+    background-color 140ms ease;
 }
 
 .workspace-settings:hover {
   color: var(--color-accent);
-  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+  background: var(--color-surface-muted);
+  box-shadow: var(--elevation-2);
 }
 
+/* The empty state is a raised card, not a heading with a rule above it. On Tools,
+   Memory and Activity this is the entire page content, so it is also the thing
+   that has to read as a surface rather than as a gap. */
 .workspace-empty {
   max-width: 860px;
   min-height: 420px;
@@ -363,7 +430,6 @@ input {
   justify-content: center;
   margin: 38px auto 0;
   padding: 42px 0;
-  border-top: 1px solid var(--color-border);
 }
 
 .workspace-empty-icon {
@@ -403,6 +469,347 @@ input {
   cursor: pointer;
 }
 
+/* --- Capability matrix ----------------------------------------------------- */
+
+/*
+ * One row per model, one column per kind of input. The comparison is the point,
+ * so the grid is what carries it -- a table, because this is tabular data and
+ * because a grid of divs has to re-implement row and column headers anyway.
+ *
+ * Horizontal scroll rather than a wrap: a wrapped matrix is unreadable, and the
+ * settings pane is wide enough for these four columns at any window size the
+ * desktop app is built for.
+ */
+.capability-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.capability-matrix {
+  width: 100%;
+  min-width: 460px;
+  border-collapse: collapse;
+}
+
+.capability-matrix th,
+.capability-matrix td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.capability-matrix thead th {
+  padding-bottom: 7px;
+  color: var(--color-text-faint);
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.capability-matrix thead th:not(:first-child) {
+  text-align: center;
+}
+
+/* A hairline under the header, and only there. Inside the body the separation is
+   spacing: a grid of rules reads as a spreadsheet, and this is a report. */
+.capability-matrix thead th {
+  box-shadow: inset 0 -1px 0 var(--color-border);
+}
+
+.capability-matrix tbody th {
+  font-weight: 500;
+}
+
+.capability-model {
+  display: block;
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.capability-provider {
+  display: block;
+  margin-top: 1px;
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+.capability-stage {
+  color: var(--color-text-soft);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.capability-cell {
+  text-align: center;
+}
+
+.capability-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-accent);
+  /* Depth on a dot is invisible at 7px, so the ring is what separates it from
+     the page -- the same reasoning as every other surface in the app. */
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.capability-matrix tr.is-retired .capability-model {
+  color: var(--color-text-soft);
+  text-decoration: line-through;
+  text-decoration-color: var(--color-text-faint);
+}
+
+.capability-more {
+  align-self: flex-start;
+  padding: 4px 0;
+  color: var(--color-text-soft);
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.capability-more:hover {
+  color: var(--color-accent);
+}
+
+/* --- Tools grid ----------------------------------------------------------- */
+
+/*
+ * The Tools page is a grid rather than a list because the question it answers is
+ * "what can she reach?", and a list makes you read past four cards to find the
+ * fifth. Grouped by category so the one that acts on the machine is not buried
+ * between two that only read a weather API.
+ *
+ * Same depth language as everywhere else: elevation, not borders. A card is a
+ * surface, and a turned-off tool is a surface pushed back.
+ */
+/*
+ * The Tools panel, laid out the way the settings screens are: a strip across the
+ * top, then the cards for whichever group is open.
+ *
+ * `.tools-panel` owns the width so the tab strip and the grid share one measure.
+ * A strip that is wider than the cards it filters looks like a different
+ * component from the one below it.
+ */
+.tools-panel {
+  max-width: 1080px;
+  margin: 26px auto 0;
+}
+
+.tools-panel .settings-tabs-bar {
+  padding: 0;
+  margin-bottom: 20px;
+}
+
+/* The count is what turns a tab from a word into an answer. "Web" says where the
+   tools are; "Web 3" says whether anything is. Small, muted, and never in the
+   accent — the selection is already carried by the tab's fill, and a second
+   accent in the same control competes with it. */
+.tab-count {
+  margin-left: 7px;
+  font: 500 10px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-faint);
+}
+
+.settings-tabs button.is-active .tab-count {
+  color: color-mix(in srgb, var(--color-accent) 78%, var(--color-text));
+}
+
+/* The open group's own description. It is the category's `help`, published by the
+   worker, and it is the sentence that makes "Desktop" mean "starts programs" and
+   not "an app of mine is installed here". */
+.tools-group-note {
+  max-width: 62ch;
+  margin: 0 0 16px;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.tools-note {
+  margin: 0 0 18px;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+}
+
+.tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(246px, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/*
+ * Waiting on the worker.
+ *
+ * Six seconds of grey cards with nothing in them read as an empty page, which is
+ * the one thing this page must never look like: the list exists to prove Lumine
+ * can do things, and "nothing here" is a claim it cannot make. So the wait says
+ * what it is waiting for, and a small mark turns while it does.
+ */
+.tools-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px 2px;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+}
+
+.tools-loading-mark {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--color-text) 16%, transparent);
+  border-top-color: var(--color-accent);
+  animation: lumine-spin 0.85s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tools-loading-mark {
+    animation-duration: 2.4s;
+  }
+}
+
+.tool-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 15px 16px 14px;
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
+  transition: box-shadow 140ms ease;
+}
+
+.tool-card:hover {
+  box-shadow: var(--elevation-2);
+}
+
+/*
+ * A tool that is switched off is shown, not hidden. Someone who turned something
+ * off needs to be able to see it is off and why; making it disappear would leave
+ * them wondering whether the app had dropped it.
+ */
+.tool-card.is-off {
+  background: var(--color-surface-muted);
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-card {
+    transition: none;
+  }
+}
+
+.tool-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tool-card h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.tool-card.is-off h3 {
+  color: var(--color-text-soft);
+}
+
+.tool-tag {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font: 500 9px var(--font-mono);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.tool-tag.is-off {
+  color: var(--color-text-soft);
+  background: color-mix(in srgb, var(--color-text) 9%, transparent);
+}
+
+.tool-summary {
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.tool-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tool-fact {
+  padding: 2px 7px;
+  border-radius: 6px;
+  color: var(--color-text-soft);
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  font: 500 9px var(--font-mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/*
+ * The one fact that is not cosmetic. A tool that starts a program is a different
+ * kind of permission from one that reads a weather API, and the card says so in
+ * the accent colour rather than leaving it to the label.
+ */
+.tool-fact-effect.is-opens {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.tool-params {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.tool-params dt {
+  color: var(--color-text);
+  font: 500 10.5px var(--font-mono);
+}
+
+.tool-params dd {
+  margin: 2px 0 0;
+  color: var(--color-text-soft);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+/* The id the model is actually given, so a report of a tool call can be matched
+   to the card above it. Documentation, not an input. */
+.tool-id {
+  margin-top: auto;
+  color: var(--color-text-faint);
+  font: 400 10px var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
 .avatar-lab-page {
   min-width: 0;
   min-height: 0;
@@ -425,9 +832,9 @@ input {
 
 .avatar-lab-stage,
 .avatar-lab-controls {
-  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
+  box-shadow: var(--elevation-1);
 }
 
 .avatar-lab-stage {
@@ -448,6 +855,24 @@ input {
   font: 500 10px var(--font-mono);
   letter-spacing: .08em;
   text-transform: uppercase;
+}
+
+/* The read-out, on the stage rather than in the panel.
+   The old page named what was playing in a badge inside the controls column, so
+   looking at the preview meant looking away from the thing that said what it
+   was. It is here instead, at the top of the thing being described. */
+.avatar-lab-stage-label .avatar-lab-live {
+  margin-left: auto;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  font: 500 9px var(--font-mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  /* The halo behind the face is the same hue at 18%. A label competing with it
+     reads as a second, brighter halo. */
+  backdrop-filter: blur(6px);
 }
 
 .avatar-lab-preview {
@@ -491,13 +916,18 @@ input {
   filter: sepia(.08) saturate(1.08);
 }
 
+/* The caption sits at the foot of the stage, so the stage casts onto it rather
+   than the two being divided by a line. The fallback hairline keeps the
+   separation visible if the shadow is ever clipped by the stage's overflow. */
 .avatar-lab-caption {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: 16px;
   padding: 18px 22px 22px;
-  border-top: 1px solid color-mix(in srgb, var(--color-stage-text) 12%, transparent);
+  box-shadow:
+    0 -1px 0 color-mix(in srgb, var(--color-stage-text) 9%, transparent),
+    0 -14px 22px -20px rgb(0 0 0 / 0.5);
   color: var(--color-stage-text-soft);
   font-size: 12px;
 }
@@ -512,13 +942,16 @@ input {
   padding: 24px;
 }
 
+/* Section head inside the controls panel. A recessed trough reads as "this is a
+   group inside something" in a way a rule does not: the gap below it is doing the
+   separating either way, and the line was only underlining that. */
 .avatar-lab-controls-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   padding-bottom: 20px;
-  border-bottom: 1px solid var(--color-border);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--color-border) 70%, transparent);
 }
 
 .avatar-lab-controls-head h2 {
@@ -539,35 +972,90 @@ input {
   text-transform: uppercase;
 }
 
-.avatar-lab-controls .avatar-lab-section {
+/* A labelled control in the panel, matching the shape the settings use: a caption,
+   the control, and one line of explanation. */
+.avatar-lab-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
   margin-top: 20px;
 }
 
-.avatar-lab-controls .avatar-lab-section > span,
-.avatar-lab-controls .avatar-lab-row > span {
+.avatar-lab-field > label,
+.avatar-lab-row > span,
+.avatar-lab-section > span {
   color: var(--color-text-faint);
+  font: 500 9px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
 }
 
-.avatar-lab-controls button {
+/* The explanation under a picker, in the interface face at the faintest step.
+   Duplicating the dropdown's own per-row hint here is deliberate: the hint belongs
+   to the *choice*, and this belongs to the current state, which is what stays
+   on screen after the menu closes. */
+.avatar-lab-hint {
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+/* The emotion wall. Twenty-six chips is the one list in this app that is a wall on
+   purpose: a menu hides twenty-five of them at a time, and comparing several
+   expressions is the activity this page exists for. */
+.avatar-lab-emotions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+/* Chips are flat at rest, raised on hover, and raised further with the accent
+   painted in when selected — the same three steps the settings rail uses, so the
+   two screens read as one system.
+
+   Scoped to the three places that hold chips on purpose. The previous rule was
+   `.avatar-lab-controls button`, which reached every button in the panel
+   including the dropdown trigger and the disclosure trigger, and a class-plus-
+   element selector outranks the single-class utilities those carry. A blanket
+   rule here silently repainted every picker on the page. */
+.avatar-lab-emotions button,
+.avatar-lab-row button,
+.avatar-lab-actions button {
   padding: 5px 7px;
-  border: 1px solid var(--color-border);
+  border: 0;
   border-radius: 6px;
-  background: transparent;
+  background: var(--color-canvas);
+  box-shadow: var(--elevation-1);
   font-size: 10px;
   cursor: pointer;
   color: var(--color-text-soft);
+  transition:
+    box-shadow 140ms ease,
+    background-color 140ms ease,
+    color 140ms ease;
 }
 
-.avatar-lab-controls button:hover,
-.avatar-lab-controls button.is-selected {
+.avatar-lab-emotions button:hover,
+.avatar-lab-row button:hover,
+.avatar-lab-actions button:hover {
   color: var(--color-text);
-  border-color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  background: var(--color-surface-muted);
+  box-shadow: var(--elevation-2);
 }
 
-.avatar-lab-controls .avatar-lab-actions button:first-child {
-  color: var(--color-stage-text);
-  background: var(--color-accent);
+.avatar-lab-emotions button:focus-visible,
+.avatar-lab-row button:focus-visible,
+.avatar-lab-actions button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.avatar-lab-emotions button.is-selected,
+.avatar-lab-row button.is-selected {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-canvas));
+  box-shadow: inset 0 0 0 1px var(--color-accent), var(--elevation-1);
 }
 
 .route-tools,
@@ -741,6 +1229,17 @@ input {
   background: var(--color-canvas);
 }
 
+/*
+ * When the setup gate is up, the stage and the gate share the flexible space.
+ *
+ * The stage keeps the larger share on purpose. Someone who has not set Lumine up
+ * yet is exactly the person who should already be able to see Lumine, so the gate
+ * takes the room the two quick-intent cards were using and no more.
+ */
+.main-space.is-gated {
+  grid-template-rows: 82px minmax(160px, 1fr) minmax(150px, 1fr) 102px;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -754,22 +1253,30 @@ input {
   gap: 6px;
 }
 
+/* Header toggles. One convention across the app: a control is a raised surface,
+   and a pressed one is raised a little further with the accent wash. The accent
+   text alone was not enough on an icon-only button -- there is no label to read
+   and the glyph is the same shape whatever its state. */
 .visual-mode-toggle {
   width: 36px;
   height: 36px;
   display: grid;
   place-items: center;
+  border-radius: var(--radius-sm);
   color: var(--color-control-icon);
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .visual-mode-toggle:hover,
 .visual-mode-toggle.is-active {
   color: var(--color-accent);
-  border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  box-shadow: var(--elevation-1);
 }
 
 .conversation-toggle {
@@ -777,18 +1284,21 @@ input {
   height: 36px;
   display: grid;
   place-items: center;
+  border-radius: var(--radius-sm);
   color: var(--color-control-icon);
   background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
   cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .conversation-toggle:hover,
 .conversation-toggle.is-open {
   color: var(--color-accent);
-  /* background: var(--color-accent-soft); */
-  border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  box-shadow: var(--elevation-1);
 }
 
 .conversation-panel {
@@ -805,12 +1315,15 @@ input {
   transition: width 260ms ease, background-color 180ms ease, border-color 180ms ease;
 }
 
+/* The panel's header and composer are the top and bottom of a scrollable column.
+   Both edges are where a shadow cast from the panel itself lands, so both read as
+   depth rather than as two rules drawn across the width. */
 .conversation-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 18px 0 22px;
-  border-bottom: 1px solid var(--conversation-border);
+  box-shadow: 0 1px 0 var(--conversation-border);
 }
 
 .conversation-brand {
@@ -903,71 +1416,14 @@ input {
   margin-top: 2px;
 }
 
-.bubble {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  width: fit-content;
-  max-width: 92%;
-  color: var(--conversation-text);
-  border-radius: 15px;
-  transition: background-color 180ms ease, border-color 180ms ease, transform 180ms ease;
-}
-
-.bubble-align-end {
-  align-self: flex-end;
-}
-
-.bubble-primary {
-  background: var(--conversation-accent);
-  color: #fffaf5;
-}
-
-.bubble-secondary {
-  background: var(--conversation-user);
-}
-
-.bubble-muted {
-  background: color-mix(in srgb, var(--conversation-surface) 70%, var(--conversation-user));
-  color: var(--conversation-muted);
-}
-
-.bubble-tinted {
-  background: var(--conversation-assistant);
-}
-
-.bubble-outline {
-  background: transparent;
-  border: 1px solid var(--conversation-accent);
-}
-
-.bubble-ghost {
-  width: 100%;
-  max-width: 100%;
-  padding-right: 0;
-  padding-left: 0;
-  background: transparent;
-  border-radius: 0;
-}
-
-.bubble-content {
-  min-width: 0;
-}
-
-.bubble-reactions {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  color: color-mix(in srgb, var(--conversation-text) 58%, transparent);
-  font: 500 8px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.bubble-primary .bubble-reactions {
-  color: color-mix(in srgb, #fffaf5 70%, transparent);
-}
+/* The bubble's own box lives in the `[data-slot="bubble-content"]` rules below.
+   The `.bubble-*` class rules that used to be here were dead the moment the
+   conversation panel moved to the generated `Bubble` component: it marks its
+   parts with `data-slot`, never with those class names, so every one of them had
+   been matching nothing for a while. Six of the seven were the variant
+   treatments, and those are now expressed as `[data-variant]` on the message
+   row -- which is what the appearance setting actually changes, so the rules
+   there follow the setting instead of duplicating it. */
 
 /* Keep the generated shadcn slots inside Lumine's independent conversation theme. */
 .conversation-message > [data-slot="bubble-content"] {
@@ -1127,11 +1583,14 @@ input {
   right: 18px;
   bottom: 76px;
   z-index: 2;
-  border: 1px solid color-mix(in srgb, var(--conversation-accent) 42%, transparent);
+  border: 0;
   border-radius: 999px;
   padding: 7px 10px;
   color: var(--conversation-text);
   background: color-mix(in srgb, var(--conversation-surface) 94%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--conversation-accent) 42%, transparent),
+    var(--elevation-2);
   font: 600 10px var(--font-mono);
   cursor: pointer;
 }
@@ -1150,6 +1609,10 @@ input {
 .conversation-tool.is-failed { color: #d48d7d; }
 .conversation-tool small { color: color-mix(in srgb, var(--conversation-text) 48%, transparent); }
 
+/* The composer is a recessed trough -- it sits below the message list, so it is a
+   step down rather than a step up -- and the focus ring is an inset shadow for
+   the same reason every other focus ring in the app is: `border-color` would
+   reflow the field, and the second ring would have to restate the trough. */
 .conversation-composer {
   display: flex;
   align-items: end;
@@ -1157,13 +1620,16 @@ input {
   margin: 0 16px 16px;
   padding: 9px 9px 9px 12px;
   background: var(--color-canvas);
-  border: 1px solid var(--conversation-border);
+  border: 0;
   border-radius: 14px;
+  box-shadow: var(--elevation-1);
+  transition: box-shadow 140ms ease;
 }
 
 .conversation-composer:focus-within {
-  border-color: var(--conversation-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--conversation-accent) 8%, transparent);
+  box-shadow:
+    inset 0 0 0 1px var(--conversation-accent),
+    0 0 0 3px color-mix(in srgb, var(--conversation-accent) 8%, transparent);
 }
 
 .conversation-composer textarea {
@@ -1216,15 +1682,10 @@ input {
   letter-spacing: -0.03em;
 }
 
-.top-status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--color-text-soft);
-  font-size: 12px;
-}
-
-.online-dot,
+/* `.top-status` and `.online-dot` are gone. The header reports Lumine's state
+   through the presence layer now, and the only dot left in the app is the one in
+   the Avatar Lab's live-preview label, which is `.signal-dot`. Two ways to say
+   "she is online" is one too many, and they disagreed. */
 .signal-dot {
   width: 7px;
   height: 7px;
@@ -1450,12 +1911,11 @@ input {
   filter: brightness(1.22) saturate(0.9) contrast(1.1);
 }
 
-.expression-artifact--thoughts {
-  right: 2px;
-  top: 12px;
-  width: 86px;
-  height: 86px;
-}
+/* There is deliberately no `.expression-artifact--thoughts` rule. The artifact
+   carries no per-effect modifier class -- `ExpressionEffects.tsx` renders
+   `className="expression-artifact"` and sets the size inline from its own table
+   -- so a rule keyed on a modifier would match nothing. The per-effect placement
+   that used to be split across modifiers is a property of the wrapper above. */
 
 .expression-effects--blush {
   stroke: color-mix(in srgb, #ef8b96 72%, var(--color-stage-text));
@@ -1549,74 +2009,52 @@ input {
   filter: sepia(0.2) saturate(1.22);
 }
 
-.avatar-lab-trigger {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 4;
-  padding: 7px 10px;
-  border: 1px solid color-mix(in srgb, var(--color-stage-text) 18%, transparent);
-  border-radius: 999px;
-  color: var(--color-stage-text-soft);
-  background: color-mix(in srgb, var(--color-stage) 82%, transparent);
-  font: 500 10px var(--font-mono);
-  cursor: pointer;
+/* The Avatar Lab is a full page (`AvatarLabPage.tsx`) and styles its own panel.
+   What was left here were the old overlay's box, drag handle and trigger pill,
+   none of which match anything, plus a *second* copy of the emotion-chip rules
+   that the panel block above had already replaced — the two copies disagreed on
+   `margin-top` and on which element a caption styled, so which one applied
+   depended on source order rather than on intent.
+
+   Only the layout that is still true survives. */
+.avatar-lab-section {
+  margin-top: 20px;
 }
 
-.avatar-lab-trigger:hover,
-.avatar-lab button:hover {
-  color: var(--color-stage-text);
-  border-color: var(--color-accent);
+.avatar-lab-section > span {
+  display: block;
+  margin-bottom: 6px;
 }
 
-.avatar-lab {
-  position: fixed;
-  top: 84px;
-  right: 20px;
-  z-index: 5;
-  width: min(306px, calc(100vw - 48px));
-  max-height: min(620px, calc(100vh - 108px));
-  overflow: auto;
-  padding: 14px;
-  border: 1px solid color-mix(in srgb, var(--color-stage-text) 18%, transparent);
-  border-radius: 12px;
-  color: var(--color-stage-text);
-  background: color-mix(in srgb, var(--color-stage) 94%, black);
-  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.3);
-  font-size: 11px;
-}
-
-.avatar-lab-head,
+/* The montage switch row: caption, switch, and the hint that explains it. The
+   `?` is inside the row rather than after it so the three read as one unit. */
 .avatar-lab-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
+  margin-top: 18px;
 }
 
-.avatar-lab-head {
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
+.avatar-lab-row > span {
+  flex: none;
 }
 
-.avatar-lab-head:active { cursor: grabbing; }
+.avatar-lab-row > button {
+  margin-left: auto;
+}
 
-.avatar-lab-head strong { font-size: 13px; }
-.avatar-lab-head span,
-.avatar-lab-state,
-.avatar-lab-section > span,
-.avatar-lab-row > span { color: var(--color-stage-text-soft); }
-.avatar-lab-state { margin: 9px 0 12px; line-height: 1.5; }
-.avatar-lab-state b { color: var(--color-stage-text); font-weight: 500; }
-.avatar-lab-section { margin-top: 12px; }
-.avatar-lab-section > span { display: block; margin-bottom: 6px; font: 500 9px var(--font-mono); text-transform: uppercase; letter-spacing: .08em; }
-.avatar-lab-section > div { display: flex; flex-wrap: wrap; gap: 5px; }
-.avatar-lab button { padding: 5px 7px; border: 1px solid color-mix(in srgb, var(--color-stage-text) 14%, transparent); border-radius: 6px; color: var(--color-stage-text-soft); background: transparent; font-size: 10px; cursor: pointer; }
-.avatar-lab button.is-selected { color: var(--color-stage); border-color: var(--color-stage-text); background: var(--color-stage-text); }
-.avatar-lab-row { margin-top: 14px; }
-.avatar-lab-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
-.avatar-lab-actions button:first-child { color: var(--color-stage); border-color: var(--color-accent); background: var(--color-accent); }
+.avatar-lab-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.avatar-lab-actions button:first-child {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-accent) 16%, var(--color-canvas));
+  box-shadow: inset 0 0 0 1px var(--color-accent), var(--elevation-1);
+}
 
 /* ==========================================================================
    Bottom command controls
@@ -1630,14 +2068,29 @@ input {
   padding: 0 42px;
 }
 
+/*
+ * The setup gate takes the whole row.
+ *
+ * Two half-width quick-intent cards cannot hold a list of providers and the
+ * buttons that fill them in, and squeezing them would produce exactly the
+ * cramped screen the gate exists to replace. It also needs to be scrollable
+ * without the page scrolling behind it, because the voice dock stays pinned.
+ */
+.command-bottom.is-gated {
+  display: block;
+  padding: 0 42px 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .feature-surface {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 23px;
+  padding: 22px 25px;
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
+  box-shadow: var(--elevation-1);
 }
 
 .feature-surface h3 {
@@ -1682,74 +2135,212 @@ input {
   color: var(--color-accent);
 }
 
-.voice-dock {
+/* A translucent bar pinned to the bottom of the command space. The hairline it
+   had was the one element of chrome that got in the way of the avatar, which sits
+   directly above it; a shadow cast upward fades instead of cutting. */
+/* ---- Call bar ----------------------------------------------------------- */
+
+/*
+ * The call controls, in the shape a call has.
+ *
+ * This replaced a dock with a microphone button and a mute button side by side —
+ * two controls for one thing, in the same state, told apart only by size. What is
+ * here now is one handset while off, and the four controls that exist once there
+ * is a call. The bar's own background is a shadow cast upward, so it fades
+ * instead of cutting, and the avatar directly above it stays legible.
+ */
+.call-bar {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: 16px;
+  /* 72px, not 92. The bar's job is to hold four controls at the bottom edge of a
+     window, and every pixel it takes is a pixel off the avatar it sits under. It
+     was sized for a touch target that a desktop mouse never needs, which is why
+     it read as a dock rather than a control strip. */
+  min-height: 72px;
+  padding: 10px 0;
   background: color-mix(in srgb, var(--color-surface) 76%, transparent);
-  border-top: 1px solid var(--color-border);
+  box-shadow:
+    0 -1px 0 rgb(0 0 0 / 0.05),
+    0 -12px 26px -20px rgb(0 0 0 / 0.45);
 }
 
-.voice-dock > span {
-  position: absolute;
-  margin-left: 385px;
-  color: var(--color-text-soft);
-  font-size: 12px;
+.call-bar--live {
+  gap: 20px;
 }
 
-.circle-button {
-  width: 38px;
-  height: 38px;
-  border: 1px solid var(--color-border);
-  border-radius: 50%;
-}
-
-.circle-button:disabled {
-  opacity: 0.32;
-  cursor: default;
-}
-
-.voice-button {
-  width: 64px;
-  height: 64px;
+/*
+ * The start-call button.
+ *
+ * A single large circle, centred, with no label. The handset is the whole
+ * instruction, and a caption under it would be the same thing in words. The ring
+ * is an inset shadow rather than a border, so that the states below — which
+ * replace `box-shadow` wholesale — cannot silently lose it.
+ */
+.call-button {
+  width: 56px;
+  height: 56px;
   display: grid;
   place-items: center;
   border-radius: 50%;
-  color:var(--voice-button-icon, #ffffff);
-  background: var(--color-accent);
-  border: 2px solid color-mix(in srgb, var(--voice-button-icon, #ffffff) 42%, transparent);
-  cursor: pointer;
-  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 16%, transparent), var(--shadow-soft);
-  transition: 180ms ease;
-}
-
-.voice-button svg{
   color: var(--voice-button-icon, #ffffff);
-}
-
-.voice-button:hover {
-  transform: translateY(-2px);
-}
-
-.voice-button.is-listening {
+  background: var(--color-accent);
+  cursor: pointer;
   box-shadow:
-    0 0 0 8px color-mix(in srgb, var(--color-accent) 13%, transparent),
-    0 0 0 4px color-mix(in srgb, var(--color-accent) 16%, transparent),
+    inset 0 0 0 2px color-mix(in srgb, var(--voice-button-icon, #ffffff) 42%, transparent),
+    0 0 0 5px color-mix(in srgb, var(--color-accent) 16%, transparent),
+    var(--shadow-soft);
+  transition:
+    transform 180ms ease,
+    background-color 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.call-button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 0 0 2px color-mix(in srgb, var(--voice-button-icon, #ffffff) 42%, transparent),
+    0 0 0 9px color-mix(in srgb, var(--color-accent) 13%, transparent),
+    0 0 0 5px color-mix(in srgb, var(--color-accent) 16%, transparent),
     var(--shadow-soft);
 }
 
-.voice-button.is-loading {
-  background: color-mix(in srgb, var(--color-accent) 74%, transparent);
-  border-color: color-mix(in srgb, var(--voice-button-icon, #ffffff) 26%, transparent);
+.call-button:disabled {
+  cursor: default;
 }
 
-.voice-button-contents {
+.call-button.is-connecting,
+.call-button.is-ending {
+  background: color-mix(in srgb, var(--color-accent) 74%, transparent);
+  box-shadow:
+    inset 0 0 0 2px color-mix(in srgb, var(--voice-button-icon, #ffffff) 26%, transparent),
+    0 0 0 5px color-mix(in srgb, var(--color-accent) 16%, transparent),
+    var(--shadow-soft);
+}
+
+/*
+ * Blocked by setup, not busy.
+ *
+ * Distinct from `.is-connecting` on purpose: a connecting button is doing
+ * something that will finish, a blocked one needs the person. So it drops to a
+ * neutral fill and loses the accent halo — the loudest thing on the screen stops
+ * asking for a press it cannot honour. The gate on the command stage says what
+ * is missing.
+ */
+.call-button.is-blocked {
+  background: var(--color-surface);
+  color: var(--color-text-faint);
+  box-shadow: var(--elevation-1);
+}
+
+.call-button.is-blocked:hover {
+  transform: none;
+}
+
+.call-button-contents {
   display: grid;
   place-items: center;
   width: 100%;
   height: 100%;
+}
+
+/* The timer. The only text in the bar, because a call's length is the one number
+   a person actually wants from it, and it is set in the mono face so the digits
+   do not shuffle sideways once a second. */
+.call-timer {
+  min-width: 4.5ch;
+  color: var(--color-text-soft);
+  font: 500 12.5px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.call-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.call-control {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+  box-shadow: var(--elevation-1);
+  cursor: pointer;
+  transition:
+    background-color 140ms ease,
+    box-shadow 140ms ease,
+    color 140ms ease;
+}
+
+.call-control:hover:not(:disabled) {
+  background: var(--color-surface);
+  box-shadow: var(--elevation-2);
+}
+
+.call-control:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+/*
+ * "Off" is the filled state, and that is the interesting part of this control.
+ *
+ * A muted microphone is a microphone with a slash through it, and a plain greyed
+ * circle next to three live ones is not a state anybody has to read twice. So the
+ * off state takes the surface colour and the icon takes the accent — the same
+ * "you are looking at the thing that is off" answer the toggles elsewhere in the
+ * app give, arrived at from the other direction.
+ */
+.call-control.is-off {
+  color: var(--color-stage-text);
+  background: var(--color-accent);
+}
+
+.call-control.is-off:hover:not(:disabled) {
+  background: var(--color-accent);
+  box-shadow: var(--elevation-2);
+}
+
+/*
+ * The end call.
+ *
+ * Last in the row and the only red thing on the screen. A row of four identical
+ * circles leaves the destructive one to be found by hovering, and the answer to
+ * "which one ends this" should not need a tooltip. The red is a hard stop rather
+ * than the theme accent, because a hang-up is not an action in this app's
+ * vocabulary — it is the absence of the conversation.
+ */
+.call-control--end {
+  margin-left: 8px;
+  color: #ffffff;
+  background: #d64545;
+  box-shadow: 0 4px 14px -6px rgb(214 69 69 / 0.7);
+}
+
+/*
+ * The hang-up, as the call button's handset turned through 135 degrees.
+ *
+ * 135 rather than 180: a handset is drawn diagonally, so rotating by a quarter
+ * turn leaves it diagonal the other way and *reads* as dropped, where 180 would
+ * land it vertical and look like it had been cut in half. It is also why the
+ * glyph is the plain handset rather than a slashed one — a slash drawn through a
+ * filled handset merges with it at this size and comes out looking like a
+ * "blocked" sign.
+ */
+.call-control--end svg {
+  transform: rotate(135deg);
+}
+
+.call-control--end:hover:not(:disabled) {
+  background: #e04f4f;
+  box-shadow: 0 6px 18px -6px rgb(214 69 69 / 0.8);
 }
 
 .voice-spinner {
@@ -1761,9 +2352,89 @@ input {
   animation: lumine-spin 0.9s linear infinite;
 }
 
+/* A refusal or a missing device, said once and quietly. `role="status"` rather
+   than an alert: nothing is on fire, and a camera permission prompt that shouts
+   is a camera permission prompt people dismiss. */
+.call-error {
+  margin: -4px 40px 12px;
+  color: var(--color-text-soft);
+  font-size: 12px;
+  text-align: center;
+}
+
 @keyframes lumine-spin {
   to { transform: rotate(360deg); }
 }
+
+/* ---- Self view ---------------------------------------------------------- */
+
+/*
+ * The user's own picture, in the corner of the command stage.
+ *
+ * Mirrored, because a preview of yourself that is not mirrored is a preview of a
+ * stranger. The caption along the bottom is not decoration: the frames are not
+ * reaching Lumine, and a live picture in the corner of the window with no
+ * statement of that reads as a video call with one participant who cannot see
+ * you. The badge says which it is, in five words.
+ */
+.self-view {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 176px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--color-surface);
+  box-shadow: var(--elevation-3);
+}
+
+.self-view-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  background: #11100f;
+  transform: scaleX(-1);
+}
+
+/* A screen share is already the right way round, and mirroring it would make text
+   on the shared screen unreadable — which is the one thing a screenshare is for. */
+.self-view--screen .self-view-video {
+  transform: none;
+}
+
+.self-view-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px;
+  background: var(--color-surface);
+}
+
+.self-view-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-text-soft);
+  font-size: 11px;
+}
+
+.self-view-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--color-text-faint);
+  background: var(--color-surface-muted);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.self-view-badge.is-shared {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
 
 /* ==========================================================================
    Context panel
@@ -1969,38 +2640,6 @@ input {
   font-size: 11px;
 }
 
-.chat-log {
-  margin-top: 27px;
-  padding-top: 18px;
-  border-top: 1px solid var(--color-border);
-}
-
-.chat-message {
-  margin-bottom: 10px;
-  padding: 10px 11px;
-  border-left: 2px solid var(--color-accent);
-  background: var(--color-surface-muted);
-}
-
-.chat-message.user {
-  border-left-color: var(--color-icon);
-}
-
-.chat-message span,
-.chat-message small {
-  color: var(--color-text-soft);
-  font: 500 10px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.chat-message p {
-  margin: 6px 0 5px;
-  color: var(--color-text);
-  font-size: 13px;
-  line-height: 1.4;
-}
-
 /* ==========================================================================
    Composer
    ========================================================================== */
@@ -2069,29 +2708,95 @@ input {
 }
 
 /* ==========================================================================
-   Dark theme
+   Local model discovery
+
+   A list of things a server on this machine reported. It is a list rather than a
+   dropdown because it is not a choice being narrowed to one: the point is to see
+   what exists, and a menu hides the rest. Each row is a button, so picking one
+   writes the id straight into the profile without a second control.
+
+   The current model is marked by its fill, like every other selected state in
+   this app, and is still clickable — re-picking it is harmless and better than a
+   disabled row that looks broken.
    ========================================================================== */
 
-.theme-dark {
-  --color-canvas: #181715;
-  --color-surface: #211f1d;
-  --color-surface-muted: #2c2926;
-  --color-text: #f1ece5;
-  --color-text-soft: #aaa39b;
-  --color-text-faint: #908a83;
-  --color-border: #3a3733;
-  --color-nav-active: #f1ece5;
-
-  --color-accent-soft: #4a2a1f;
-
-  --color-stage: #11100f;
-  --color-stage-text: #fffaf5;
-  --color-stage-text-soft: #c2bcb4;
-  --color-stage-border: #706860;
-
-  --color-control-icon: #aaa39b;
-  --color-control-hover: #f1ece5;
+.local-models {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
 }
+
+.local-models-result {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+  box-shadow: var(--elevation-1);
+}
+
+.local-models-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.local-models-list button {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  text-align: left;
+  color: var(--color-text);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.local-models-list button:hover {
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+}
+
+.local-models-list button.is-current {
+  background: color-mix(in srgb, var(--color-accent) 14%, var(--color-canvas));
+}
+
+.local-model-id {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.local-model-size {
+  margin-left: auto;
+  flex: none;
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Dark theme
+
+   The token values live on `:root`, so there is deliberately no token
+   re-declaration here. This block previously restated twelve of them, and the
+   two copies of `--color-text-soft` disagreed -- so which one applied depended
+   on whether `.theme-dark` was present, and the root values were never the
+   dark ones despite the comment above them saying they were. Only the
+   component rules that genuinely differ by mode belong below.
+   ========================================================================== */
 
 .theme-dark .voice-dock {
   background: color-mix(in srgb, var(--color-surface) 82%, transparent);
@@ -2117,48 +2822,11 @@ input {
   animation: settings-in 0.2s ease-out;
 }
 
-.appearance-dialog {
-  width: min(620px, 100%);
-  max-height: min(760px, calc(100vh - 48px));
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  overflow: hidden;
-  color: var(--color-text);
-  background: var(--color-surface);
-  border: 1px solid color-mix(in srgb, var(--color-border) 85%, white);
-  border-radius: 25px;
-  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.28);
-}
-
-.appearance-dialog header,
-.appearance-dialog footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 23px 26px;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.appearance-dialog h2 {
-  margin: 4px 0 0;
-  color: var(--color-text);
-  font: 400 29px / 1 var(--font-display);
-  letter-spacing: -0.05em;
-}
-
-.dialog-close {
-  width: 31px;
-  height: 31px;
-  color: var(--color-text);
-  background: var(--color-surface-muted);
-  border-radius: var(--radius-sm);
-  font-size: 22px;
-  line-height: 1;
-  cursor: pointer;
-}
-
+/* Padding only. The scroll container is `.settings-content-scroll`, one level up,
+   and this used to declare `overflow: auto` as well — two nested scrollers in the
+   same pane, which is how a wheel ends up moving a box that is not the one the
+   pointer is over. */
 .appearance-body {
-  overflow: auto;
   padding: 6px 26px 19px;
 }
 
@@ -2174,40 +2842,22 @@ input {
   gap: 20px;
 }
 
+/* A setting's name sits beside a `?` that holds its explanation, so the name is
+   a flex item rather than a block stacked over a paragraph. The rule for `p` that
+   used to live here is gone: every one of these explanations is on hover now, and
+   the six pages that shared it had all been converted. */
 .setting-title strong {
-  display: block;
   color: var(--color-text);
   font-size: 14px;
   letter-spacing: -0.02em;
 }
 
-.setting-title p {
-  margin: 4px 0 0;
-  color: var(--color-text-soft);
-  font-size: 12px;
-}
-
-.segmented {
-  display: flex;
-  padding: 3px;
-  background: var(--color-surface-muted);
-  border-radius: var(--radius-sm);
-}
-
-.segmented button {
-  padding: 6px 10px;
-  color: var(--color-text-soft);
-  background: transparent;
-  border-radius: 7px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.segmented button.active {
-  color: var(--color-text);
-  background: var(--color-surface);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-}
+/* A segmented control is gone. There were four of them — the colour mode here,
+   the profile switch, the lighting toggle and a diagnostics filter — and they
+   disagreed on whether the chosen key carried an accent fill, a border, or
+   nothing but a raised shadow. The dropdown now owns every choice, so a
+   two-option question is asked with the same control as a six-option one and
+   the selected state is one thing in the app instead of three. */
 
 .switch {
   width: 39px;
@@ -2236,34 +2886,26 @@ input {
   transform: translateX(17px);
 }
 
-.font-choices {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 9px;
-  margin-top: 13px;
-}
-
-.bubble-variant-choices {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.bubble-variant-choices button {
-  padding: 8px 6px;
-  color: var(--color-text-soft);
-  background: transparent;
-  border: 1px solid var(--color-border);
+/*
+ * The bubble preview.
+ *
+ * The bubble style is the one setting whose options are invisible in the control
+ * that holds them: "Tinted" and "Secondary" differ in a way no label or swatch
+ * can convey, so the sample below the dropdown is not a flourish — it is the only
+ * part of this setting that actually shows the choice. It is inset rather than
+ * full-bleed so it reads as a picture of the panel instead of a second panel.
+ */
+.bubble-preview {
+  margin-top: 10px;
+  padding: 12px 14px;
   border-radius: var(--radius-sm);
-  font-size: 10px;
-  cursor: pointer;
+  background: var(--color-surface-muted);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.14);
 }
 
-.bubble-variant-choices button.selected {
-  color: var(--color-text);
-  background: var(--color-surface-muted);
-  border-color: var(--color-accent);
+.bubble-preview [data-slot="bubble-content"] {
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .setting-subheading {
@@ -2272,40 +2914,6 @@ input {
   font: 500 9px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
-}
-
-.font-choices button {
-  padding: 13px;
-  color: var(--color-text);
-  text-align: left;
-  background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-}
-
-.font-choices button.selected {
-  border-color: var(--color-accent);
-  box-shadow: inset 0 0 0 1px var(--color-accent);
-}
-
-.font-choices b,
-.font-choices span {
-  display: block;
-}
-
-.font-choices b {
-  font-size: 14px;
-}
-
-.font-choices .serif b {
-  font: 16px var(--font-display);
-}
-
-.font-choices span {
-  margin-top: 3px;
-  color: var(--color-text-soft);
-  font-size: 11px;
 }
 
 .reset-link {
@@ -2391,55 +2999,13 @@ input {
   opacity: 0.45;
 }
 
-.preset-list {
-  display: grid;
-  gap: 6px;
-  margin-top: 9px;
-}
-
-.preset-row {
-  display: flex;
-  align-items: center;
-  background: var(--color-canvas);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-}
-
-.preset-choice,
-.preset-delete {
-  color: var(--color-text);
-  background: transparent;
-  cursor: pointer;
-}
-
-.preset-choice {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1;
-  padding: 8px 10px;
-  text-align: left;
-  font-size: 12px;
-}
-
-.preset-swatch {
-  width: 13px;
-  height: 13px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  box-shadow: 0 0 0 2px var(--color-surface);
-}
-
-.preset-delete {
-  padding: 7px 10px;
-  color: var(--color-text-soft);
-  font-size: 16px;
-}
+/* Saved palettes are applied from a dropdown now, so the per-preset rows this
+   section used to hold are gone. The swatch survived as an option on
+   `Dropdown`: a palette is a colour, and a list of names with no colour in it is
+   a list of things to try in turn. */
 
 .palette-import {
   margin-top: 18px;
-  padding-top: 17px;
-  border-top: 1px solid var(--color-border);
 }
 
 .file-button {
@@ -2507,29 +3073,6 @@ input {
   font-size: 11px;
 }
 
-.appearance-dialog footer {
-  color: var(--color-text-soft);
-  font-size: 12px;
-  border-top: 1px solid var(--color-border);
-  border-bottom: 0;
-}
-
-.appearance-dialog footer button {
-  padding: 9px 16px;
-  color: #ffffff;
-  background: var(--color-accent);
-  border-radius: 11px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.appearance-dialog footer .reset-all-button {
-  margin-right: auto;
-  padding: 9px 0;
-  color: var(--color-accent);
-  background: transparent;
-}
-
 /* ==========================================================================
    Settings shell (AI Control Center)
    A full-height overlay with its own rail. Reuses the existing tokens so the
@@ -2540,6 +3083,9 @@ input {
   padding: 18px;
 }
 
+/* The dialog is the one surface that floats, so it is the one surface that earns
+   a large shadow. Its edge is drawn by the shadow's falloff rather than by a
+   hairline -- a 1px lightened border on a rounded panel reads as a sticker. */
 .settings-shell {
   width: min(1160px, 100%);
   height: min(800px, calc(100vh - 36px));
@@ -2548,11 +3094,8 @@ input {
   overflow: hidden;
   color: var(--color-text);
   background: var(--color-surface);
-  border: 1px solid color-mix(in srgb, var(--color-border) 80%, white);
   border-radius: 24px;
-  box-shadow:
-    0 40px 110px -20px rgba(0, 0, 0, 0.55),
-    0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+  box-shadow: 0 40px 110px -20px rgba(0, 0, 0, 0.55);
   animation: settings-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
   outline: none;
 }
@@ -2563,13 +3106,16 @@ input {
     0 0 0 2px color-mix(in srgb, var(--color-accent) 60%, transparent);
 }
 
+/* The rail is a step *down* from the content beside it, not a separate panel
+   split by a line. A shadow cast by the content edge says the same thing and
+   survives a change of palette. */
 .settings-rail {
   display: flex;
   flex-direction: column;
   min-height: 0;
   padding: 22px 12px 14px;
   background: color-mix(in srgb, var(--color-canvas) 68%, var(--color-surface));
-  border-right: 1px solid var(--color-border);
+  box-shadow: 1px 0 0 rgb(0 0 0 / 0.06), 6px 0 18px -12px rgb(0 0 0 / 0.35);
 }
 
 .settings-rail header {
@@ -2621,6 +3167,8 @@ input {
   text-transform: uppercase;
 }
 
+/* The rail rows are raised keys. Selection is depth plus the accent wash; there
+   is no border to tint, which means no layout shift and no second convention. */
 .settings-rail-group button {
   position: relative;
   display: flex;
@@ -2628,7 +3176,6 @@ input {
   gap: 10px;
   width: 100%;
   padding: 9px 11px;
-  border: 1px solid transparent;
   border-radius: 12px;
   color: var(--color-text-soft);
   background: transparent;
@@ -2639,7 +3186,7 @@ input {
   transition:
     background-color 140ms ease,
     color 140ms ease,
-    border-color 140ms ease;
+    box-shadow 140ms ease;
 }
 
 .settings-rail-icon {
@@ -2686,6 +3233,7 @@ input {
 .settings-rail-group button:hover {
   color: var(--color-text);
   background: var(--color-surface-muted);
+  box-shadow: var(--elevation-1);
 }
 
 .settings-rail-group button:hover .settings-rail-icon {
@@ -2693,14 +3241,14 @@ input {
 }
 
 .settings-rail-group button:focus-visible {
-  outline: none;
-  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
 }
 
 .settings-rail-group button.is-active {
   color: var(--color-text);
   background: color-mix(in srgb, var(--color-accent) 13%, transparent);
-  border-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  box-shadow: var(--elevation-1);
 }
 
 .settings-rail-group button.is-active .settings-rail-icon {
@@ -2729,7 +3277,6 @@ input {
   gap: 8px;
   width: 100%;
   padding: 9px 11px;
-  border: 1px solid var(--color-border);
   border-radius: 11px;
   color: var(--color-text-soft);
   background: transparent;
@@ -2738,33 +3285,107 @@ input {
   cursor: pointer;
   transition:
     color 140ms ease,
-    border-color 140ms ease,
+    box-shadow 140ms ease,
     background-color 140ms ease;
 }
 
 .settings-rail-close:hover {
   color: var(--color-text);
-  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
   background: var(--color-surface-muted);
+  box-shadow: var(--elevation-1);
 }
 
-/* Shows the shortcut rather than describing it. */
+/* Shows the shortcut rather than describing it. A keycap is a raised thing, so it
+   is drawn as one; an outlined rectangle sitting on a surface reads as flat. */
 .settings-rail-close kbd {
   padding: 1px 5px;
-  border: 1px solid var(--color-border);
   border-radius: 5px;
   color: var(--color-text-faint);
   background: var(--color-surface);
+  box-shadow: var(--elevation-1);
   font: 500 10px var(--font-mono);
 }
 
+/* The content pane is a column, not a scroller: a section with sub-tabs has a
+   strip that has to stay put while the stage below it scrolls, and a strip inside
+   a scroller scrolls away from the page it is meant to be labelling. */
 .settings-content {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
+}
+
+.settings-content-scroll {
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--color-border) transparent;
+}
+
+/* The second level of navigation. Same rule as the rail: a selected item is drawn
+   by its fill and colour, not by an outline, because an outlined tab reads as
+   focused rather than chosen. The fill steps down for an unselected tab so the
+   strip has a resting surface to sit on. */
+.settings-tabs-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 16px 40px 0;
+}
+
+.settings-tabs {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.05);
+}
+
+.settings-tabs button {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--color-text-soft);
+  background: transparent;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.settings-tabs button:hover:not(.is-active) {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+}
+
+.settings-tabs button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+/* Depth 1, the same elevation the dropdown trigger uses, because it is the same
+   kind of control: a surface that is the selected one, sitting on a surface that
+   is not. */
+.settings-tabs button.is-active {
+  color: var(--color-text);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-1);
 }
 
 /* The animated wrapper. A plain inner element keeps the slide on one node
@@ -2777,6 +3398,9 @@ input {
   display: flex;
   flex-direction: column;
   gap: 22px;
+  /* Fills the pane so a sticky footer has something to stick to at the bottom
+     when the content is short, and `margin-top: auto` on it can hold it down. */
+  min-height: 100%;
   max-width: 780px;
   padding: 34px 40px 40px;
 }
@@ -2824,17 +3448,23 @@ input {
   gap: 12px;
   margin-top: 8px;
   padding: 26px 24px;
-  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   background: color-mix(in srgb, var(--color-canvas) 55%, transparent);
+  box-shadow: var(--elevation-1);
 }
 
+/* A section is separated by air and by its heading, not by a rule.
+ *
+ * There was a hairline here, and it ran the full width of the panel between every
+ * pair of sections. A settings page is mostly headings, so a rule under each one
+ * draws a line under text that did not need one -- and it competes with the
+ * surfaces *inside* each section, which is where the depth belongs. */
 .settings-block {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding-top: 20px;
-  border-top: 1px solid var(--color-border);
+  margin-top: 6px;
+  padding-top: 24px;
 }
 
 .settings-block-head h2 {
@@ -2852,27 +3482,32 @@ input {
   line-height: 1.6;
 }
 
+/* Grouped sub-controls, recessed rather than framed. A group that belongs to the
+   stage above it is *inside* it, so it sits lower rather than being boxed in. */
 .nested-fields {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 14px 15px;
-  border: 1px solid var(--color-border);
+  padding: 16px;
   border-radius: var(--radius-md);
-  background: var(--color-canvas);
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+  box-shadow: var(--elevation-1);
 }
 
 /* ---- Active configuration card ---- */
 
+/* The one thing on the page worth looking at, so it is the one thing raised off
+   it. Depth 1 plus the accent wash says "this is the answer" without a coloured
+   outline, which on a page of twelve controls would be one more thing shouting. */
 .active-card {
-  padding: 20px 22px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, var(--color-border));
+  padding: 22px;
   border-radius: var(--radius-lg);
   background: linear-gradient(
     150deg,
     color-mix(in srgb, var(--color-accent) 9%, var(--color-canvas)),
     var(--color-canvas) 62%
   );
+  box-shadow: var(--elevation-1);
 }
 
 .active-card header {
@@ -2907,6 +3542,8 @@ input {
   flex-wrap: wrap;
 }
 
+/* The stages of the active stack. One level above the card they sit in, which is
+   the hierarchy the old border was approximating. */
 .active-node {
   display: flex;
   flex: 1 1 150px;
@@ -2914,9 +3551,9 @@ input {
   gap: 3px;
   min-width: 0;
   padding: 12px 13px;
-  border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--color-surface) 78%, transparent);
+  box-shadow: var(--elevation-2);
 }
 
 .active-node svg {
@@ -2990,16 +3627,26 @@ input {
   min-width: 0;
 }
 
+/* Fields are raised surfaces, not outlined ones.
+ *
+ * A border on a text field is doing two jobs at once: it shows the hit area, and
+ * it draws a box. Only the first is necessary, and a lifted background with a
+ * soft shadow does it -- the field is a card sitting on the page, which is what a
+ * box around it implies anyway. It also matches the dropdown and the knob, which
+ * are built the same way, so a form reads as one set of surfaces instead of three
+ * different conventions. */
 .field select,
 .field-row select,
 .field input {
   padding: 9px 11px;
-  border: 1px solid var(--color-border);
+  border: 0;
   border-radius: var(--radius-sm);
   color: var(--color-text);
-  background: var(--color-canvas);
+  background: var(--color-surface-muted);
+  box-shadow: var(--elevation-1);
   font-size: 12.5px;
   cursor: pointer;
+  transition: box-shadow 140ms ease;
 }
 
 .field input {
@@ -3012,108 +3659,48 @@ input {
   color: var(--color-text-faint);
 }
 
+.field select:hover,
+.field-row select:hover,
+.field input:hover {
+  box-shadow: var(--elevation-2);
+}
+
 .field select:focus-visible,
 .field-row select:focus-visible,
 .field input:focus-visible {
+  /* The focus ring is the one place a field keeps an edge: a shadow cannot show
+     where the keyboard is, and this is the only indicator there is. */
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
+  box-shadow: var(--elevation-2);
+}
+
+.field select:disabled,
+.field input:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  box-shadow: var(--elevation-1);
 }
 
 /* --------------------------------------------------------------------------
- * Profile list
+ * Profile picker
+ *
+ * The list of profiles used to be a bordered row per profile, each with its own
+ * Duplicate and Delete buttons. It is a dropdown now, so all that survives here is
+ * the confirmation panel -- the rest of this section moved to Tailwind with the
+ * component that uses it.
  * ----------------------------------------------------------------------- */
 
-.profile-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.profile-row {
-  position: relative;
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-canvas);
-}
-
-.profile-row.is-active {
-  border-color: var(--color-accent);
-  background: var(--color-surface);
-}
-
-.profile-select {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.profile-select:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 3px;
-  border-radius: 3px;
-}
-
-.profile-name {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  color: var(--color-text);
-}
-
-.profile-tag {
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: var(--color-stage);
-  color: var(--color-text-faint);
-  font-size: 10px;
-  letter-spacing: 0.02em;
-}
-
-/* Model ids are long and the row is narrow, so they are truncated from the
-   left: the distinguishing part of a model id is its tail, not its prefix. */
-.profile-summary {
-  overflow: hidden;
-  color: var(--color-text-faint);
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-}
-
-.profile-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.profile-confirm,
-.profile-add {
-  grid-column: 1 / -1;
+.profile-confirm {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-top: 4px;
-  padding: 10px;
-  border: 1px solid var(--color-border);
+  padding: 12px;
   border-radius: var(--radius-sm);
   background: var(--color-stage);
+  /* Depth, not a border: the panel sits inside the block it confirms an action in,
+     and a shadow says "closer" where a line only says "different". */
+  box-shadow: var(--elevation-2);
 }
 
 .profile-confirm p {
@@ -3122,25 +3709,26 @@ input {
   color: var(--color-text);
 }
 
-.profile-confirm-actions,
-.profile-add-actions {
+.profile-confirm-actions {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
 }
 
+/* A destructive action is outlined, not filled: the border is the only thing
+   saying "this removes something", and a filled red button says "press me". */
 .settings-danger {
   padding: 7px 12px;
-  border: 1px solid var(--color-danger, #c0392b);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 55%, transparent);
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--color-danger, #c0392b);
+  color: var(--color-danger);
   font-size: 12px;
   cursor: pointer;
 }
 
 .settings-danger:hover:not(:disabled) {
-  background: var(--color-danger, #c0392b);
+  background: var(--color-danger);
   color: var(--color-canvas);
 }
 
@@ -3148,10 +3736,6 @@ input {
   opacity: 0.5;
   cursor: not-allowed;
 }
-
-/* --------------------------------------------------------------------------
- * Secret field
- * ----------------------------------------------------------------------- */
 
 /* --------------------------------------------------------------------------
  * Model options
@@ -3171,9 +3755,8 @@ input {
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--color-border);
+  margin-top: 10px;
+  padding-top: 10px;
 }
 
 .probe-verdict {
@@ -3188,7 +3771,7 @@ input {
 }
 
 .probe-result.is-missing .probe-verdict {
-  color: var(--color-danger, #c0392b);
+  color: var(--color-danger);
 }
 
 .secret-field {
@@ -3196,10 +3779,154 @@ input {
   flex-direction: column;
   gap: 8px;
   margin-top: 10px;
-  padding: 12px;
-  border: 1px solid var(--color-border);
+  padding: 14px;
   border-radius: var(--radius-sm);
   background: var(--color-stage);
+  box-shadow: var(--elevation-1);
+}
+
+/*
+ * One variable of a credential, and whether it is already there.
+ *
+ * A credential is write-only, so the input is always empty and there is no way to
+ * fill it from the keyring. That makes an empty box beside a stored value
+ * genuinely ambiguous from the outside — which is how "it saved all three but two
+ * were empty" and "reopening it showed three empty fields" were the same report.
+ * So the state is said in words above the box, per variable, and a stored value
+ * ends in a dot and a tone rather than a tick alone: a tick is a shape, and this
+ * is a sentence.
+ */
+.secret-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: var(--color-accent);
+  font: 500 11px var(--font-mono);
+  letter-spacing: 0.04em;
+}
+
+.secret-state-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* A value that came from `agent/.env` is a different answer from a stored one and
+   is a thing the user may not have done on purpose, so it is not dressed as
+   success. It is neutral, and it names the file. */
+.secret-state.is-env {
+  color: var(--color-text-faint);
+}
+
+/*
+ * How far through setup you are, in one thin bar.
+ *
+ * A number alone ("2 of 5") is work to interpret; a bar is read instantly and
+ * costs one row of vertical space. It is deliberately not a ring or a spinner —
+ * this is a position, not a process, and the process is already visible because
+ * every unfilled field is sitting right underneath it.
+ */
+.setup-progress {
+  height: 3px;
+  margin-top: 12px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-text) 9%, transparent);
+}
+
+.setup-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-accent);
+  transition: width 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-progress-fill {
+    transition: none;
+  }
+}
+
+/*
+ * A provider's variables as cards.
+ *
+ * A grid rather than a column, and side by side rather than stacked, because the
+ * question being asked is "which of these three is left", and a column of three
+ * near-identical inputs makes that a reading exercise. Laid out in a row, the two
+ * that already have a state are visibly a different kind of object from the one
+ * that does not, and the answer is the empty one.
+ *
+ * One column below 620px, where three side by side would be three inputs too
+ * narrow to paste a key into.
+ */
+.setup-slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+  align-items: start;
+}
+
+.setup-slots .secret-field {
+  margin-top: 0;
+}
+
+/*
+ * The same list, read-only, for a provider that is already complete.
+ *
+ * Ticks where the inputs would be. Same reason: the wizard is for what is
+ * missing, and three blank boxes for a credential that is already stored is noise
+ * in front of the row that is not finished.
+ */
+.setup-slot-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 11px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.setup-slot-summary li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+}
+
+.setup-slot-mark {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.setup-slot-summary li.is-owed .setup-slot-mark {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--color-text-faint);
+}
+
+.setup-slot-label {
+  color: var(--color-text-soft);
+}
+
+.setup-slot-state {
+  font: 500 10.5px var(--font-mono);
+  letter-spacing: 0.03em;
+  color: var(--color-text-faint);
+}
+
+.setup-slot-summary li.is-done .setup-slot-state {
+  color: color-mix(in srgb, var(--color-accent) 80%, var(--color-text));
+}
+
+.setup-slot-summary li.is-owed .setup-slot-state {
+  color: var(--color-danger);
 }
 
 .secret-input {
@@ -3243,14 +3970,19 @@ input {
   line-height: 1.5;
 }
 
+/* The one border left in the settings dialog, and it earns its place: a 2px rule
+   down the leading edge is how the kind of message is read without reading it,
+   and it survives at a glance in a way a background tint does not. The box around
+   it is depth. */
 .notice {
   margin: 0;
-  padding: 11px 13px;
-  border: 1px solid var(--color-border);
+  padding: 12px 14px;
+  border: 0;
   border-left: 2px solid var(--color-accent);
   border-radius: var(--radius-sm);
   color: var(--color-text-soft);
-  background: var(--color-canvas);
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+  box-shadow: var(--elevation-1);
   font-size: 12.5px;
   line-height: 1.6;
 }
@@ -3333,10 +4065,10 @@ input {
 }
 
 .provider-card {
-  padding: 16px 18px;
-  border: 1px solid var(--color-border);
+  padding: 18px;
   border-radius: var(--radius-md);
-  background: var(--color-canvas);
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+  box-shadow: var(--elevation-1);
 }
 
 .provider-card header {
@@ -3426,6 +4158,53 @@ input {
   gap: 8px;
 }
 
+/*
+ * One row per value of a multi-part credential.
+ *
+ * A provider like LiveKit needs a server address, an API key and an API secret.
+ * They are separate rows rather than one row with three fields because they are
+ * separate things: one of them is not a secret, and one of them is the reason the
+ * other two stop working. A missing value is called out on its own row so a
+ * half-entered credential cannot read as complete.
+ */
+.key-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 13px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.key-slot {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 10px 0;
+}
+
+.key-slot + .key-slot {
+  border-top: 1px solid var(--color-border);
+}
+
+.key-slot-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/*
+ * An open field takes the full width under its own row rather than being squeezed
+ * into the second column, where a server address would be truncated exactly where
+ * the part that matters -- the host -- is hard to check.
+ */
+.key-slot > .secret-field {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+}
+
 .provider-link {
   display: inline-flex;
   align-items: center;
@@ -3495,12 +4274,33 @@ input {
 
 /* ---- Actions ---- */
 
+/* Pinned to the bottom of the content pane, not parked under the last control.
+   The stages screen is a scrolling column, and a Save that has scrolled out of
+   reach on a page of sliders is a Save nobody finds. The fill matches the pane
+   behind it so the settings passing underneath are hidden, and the top hairline
+   is the only thing marking the seam -- a shadow alone would read as a second
+   panel. */
 .settings-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding-top: 18px;
+  margin-top: auto;
+  padding: 16px 0 0;
   border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.settings-actions::before {
+  /* Bleeds the fill to the page's own padding, so nothing shows through the gap
+     between the column and the pane. */
+  content: "";
+  position: absolute;
+  inset: 0 -40px 0;
+  z-index: -1;
+  background: var(--color-surface);
 }
 
 .settings-primary {

@@ -16,7 +16,6 @@ LEGACY_PIPELINE = "legacy_cascade"
 DEFAULT_GEMINI_MODEL = "gemini-3.8-live"
 DEFAULT_GEMINI_VOICE = "Sulafat"
 DEFAULT_GEMINI_LANGUAGE = "en"
-DEFAULT_GEMINI_THINKING_LEVEL = "minimal"
 DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 1024
 DEFAULT_GEMINI_CONNECT_MAX_RETRY = 0
 DEFAULT_GEMINI_CONNECT_TIMEOUT = 10.0
@@ -32,6 +31,12 @@ DEFAULT_CARTESIA_TTS_MODEL = "sonic-3"
 DEFAULT_CARTESIA_VOICE = "002622d8-19d0-4567-a16a-f99c7397c062"
 DEFAULT_CARTESIA_LANGUAGE = "en"
 DEFAULT_CARTESIA_SPEED = 0.95
+# sonic-3 accepts speed only in 0.6-2.0 and only as a float. The plugin warns
+# rather than raises on a number outside that band, so an out-of-range value
+# reaches Cartesia's API and comes back as a synthesis error mid-sentence. Both
+# the environment clamp in `cartesia_tts_settings` and the catalog's declared
+# bound use these numbers.
+CARTESIA_SPEED_RANGE = (0.6, 2.0)
 
 _PIPELINE_ALIASES = {
     "gemini": "gemini_live",
@@ -108,10 +113,6 @@ def gemini_settings() -> dict[str, Any]:
         "model": _raw("GEMINI_MODEL") or _raw("LUMINE_GEMINI_MODEL") or DEFAULT_GEMINI_MODEL,
         "voice": _raw("GEMINI_VOICE") or DEFAULT_GEMINI_VOICE,
         "language": _raw("GEMINI_LANGUAGE") or DEFAULT_GEMINI_LANGUAGE,
-        "thinking_config": {
-            "thinking_level": _raw("GEMINI_THINKING_LEVEL") or DEFAULT_GEMINI_THINKING_LEVEL,
-            "include_thoughts": _bool_env("GEMINI_INCLUDE_THOUGHTS", False),
-        },
         "max_output_tokens": _int_env(
             "GEMINI_MAX_OUTPUT_TOKENS", DEFAULT_GEMINI_MAX_OUTPUT_TOKENS, 16, 4096
         ),
@@ -134,6 +135,20 @@ def gemini_settings() -> dict[str, Any]:
         except ValueError:
             pass
 
+    # A thinking level is reported only when the environment actually names one.
+    # There is deliberately no default. The accepted set is per-model and Google
+    # rejects `thinking_config` outright on a model that does not take a level, so
+    # a hardcoded level is a guess that is wrong for some model in every family --
+    # `minimal` was wrong for both current Gemini 3.8 Live models. This mirrors the
+    # pipeline LLM path, which stopped inventing a level for the same reason.
+    # `include_thoughts` rides inside `thinking_config`, so it goes with it.
+    thinking_level = _raw("GEMINI_THINKING_LEVEL")
+    if thinking_level:
+        settings["thinking_config"] = {
+            "thinking_level": thinking_level,
+            "include_thoughts": _bool_env("GEMINI_INCLUDE_THOUGHTS", False),
+        }
+
     return settings
 
 
@@ -147,5 +162,9 @@ def cartesia_tts_settings() -> dict[str, Any]:
         "model": _raw("CARTESIA_TTS_MODEL") or DEFAULT_CARTESIA_TTS_MODEL,
         "voice": _raw("CARTESIA_TTS_VOICE") or DEFAULT_CARTESIA_VOICE,
         "language": _raw("CARTESIA_TTS_LANGUAGE") or DEFAULT_CARTESIA_LANGUAGE,
-        "speed": _float_env("CARTESIA_TTS_SPEED", DEFAULT_CARTESIA_SPEED, 0.5, 2.0),
+        "speed": _float_env(
+            "CARTESIA_TTS_SPEED",
+            DEFAULT_CARTESIA_SPEED,
+            *CARTESIA_SPEED_RANGE,
+        ),
     }

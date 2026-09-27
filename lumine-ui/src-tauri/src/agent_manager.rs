@@ -44,10 +44,71 @@ pub struct AgentManager {
     readiness: Arc<(Mutex<Readiness>, Condvar)>,
 }
 
-#[derive(Default)]
-struct Readiness {
-    registered: bool,
-    error: Option<String>,
+/// The worker-registration state, shared with the stdout reader.
+///
+/// Cloned out of the manager before any waiting begins, so the readiness gate
+/// never holds the manager's own lock. That lock is what `get_agent_status`,
+/// `stop_agent` and `restart_agent` need, and a worker that takes twenty
+/// seconds to register would otherwise make all four of them look hung.
+#[derive(Default, Debug)]
+pub struct Readiness {
+    pub registered: bool,
+    pub error: Option<String>,
+}
+
+/// How a readiness wait ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReadinessOutcome {
+    Registered,
+    /// The worker reported an error instead of registering.
+    Failed(String),
+    /// Nothing arrived in time. Not necessarily a failure: a worker started
+    /// outside Tauri is invisible here and may still be serving the room.
+    TimedOut,
+}
+
+impl ReadinessOutcome {
+    pub fn message(&self) -> String {
+        match self {
+            ReadinessOutcome::Failed(message) => message.clone(),
+            ReadinessOutcome::TimedOut => {
+                "Lumine worker did not register with LiveKit within 20 seconds.".to_string()
+            }
+            ReadinessOutcome::Registered => "Worker is ready.".to_string(),
+        }
+    }
+}
+
+/// Block until the worker registers, reports an error, or `timeout` elapses.
+///
+/// Deliberately takes only the readiness lock. The caller applies the result to
+/// the manager afterwards, so nothing that needs the manager can be blocked by a
+/// slow worker boot.
+pub fn await_readiness(
+    readiness: &Arc<(Mutex<Readiness>, Condvar)>,
+    timeout: Duration,
+) -> ReadinessOutcome {
+    let deadline = Instant::now() + timeout;
+    let (lock, signal) = &**readiness;
+    let Ok(mut state) = lock.lock() else {
+        return ReadinessOutcome::Failed("Worker readiness lock poisoned.".to_string());
+    };
+
+    while !state.registered && state.error.is_none() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return ReadinessOutcome::TimedOut;
+        }
+        match signal.wait_timeout(state, remaining) {
+            Ok(result) => state = result.0,
+            Err(_) => return ReadinessOutcome::Failed("Worker readiness wait failed.".to_string()),
+        }
+    }
+
+    match state.error.clone() {
+        Some(error) => ReadinessOutcome::Failed(error),
+        None => ReadinessOutcome::Registered,
+    }
 }
 
 impl Default for AgentManager {
@@ -67,10 +128,52 @@ impl Default for AgentManager {
 }
 
 impl AgentManager {
+    /// A handle to the readiness gate, cloned so the caller can wait without
+    /// holding the manager's lock.
+    pub fn readiness_handle(&self) -> Arc<(Mutex<Readiness>, Condvar)> {
+        Arc::clone(&self.readiness)
+    }
+
+    /// Record the result of a readiness wait on the manager's status.
+    pub fn apply_readiness(
+        &mut self,
+        app: &AppHandle,
+        outcome: ReadinessOutcome,
+    ) -> Result<AgentStatus, String> {
+        match outcome {
+            ReadinessOutcome::Registered => {
+                self.status.state = AgentState::Ready;
+                self.status.connected = true;
+                self.status.error = None;
+                app.emit("agent_state_changed", &self.status).ok();
+                Ok(self.status.clone())
+            }
+            ReadinessOutcome::Failed(_) | ReadinessOutcome::TimedOut => {
+                self.status.state = AgentState::Error;
+                self.status.connected = false;
+                self.status.error = Some(outcome.message());
+                app.emit("agent_state_changed", &self.status).ok();
+                Err(outcome.message())
+            }
+        }
+    }
+
+    /// Whether a child is still alive.
+    ///
+    /// A `try_wait` error counts as *not* alive. Folding the error into "still
+    /// running" would make `start` believe it found a healthy worker and return
+    /// without doing anything, while in fact the handle is unusable and nothing
+    /// is coming back.
+    fn is_alive(&mut self) -> bool {
+        self.child
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+    }
+
     pub fn start(&mut self, app: &AppHandle) -> Result<AgentStatus, String> {
         self.sync_if_exited(app);
 
-        if self.child.as_mut().is_some_and(|child| child.try_wait().ok().flatten().is_none()) {
+        if self.is_alive() {
             return Ok(self.status.clone());
         }
 
@@ -144,7 +247,23 @@ impl AgentManager {
         let pid = child.id();
         println!("[LUMINE][WORKER] spawn pid={pid}");
         self.child = Some(child);
-        let child = self.child.as_mut().expect("agent child was just stored");
+        // Not `expect`. The value was just stored, so this branch is unreachable
+        // in practice -- but a panic in a Tauri command aborts the process, and a
+        // bookkeeping slip is not a reason a desktop app can disappear. Report it
+        // the way every other failure here is reported.
+        let Some(child) = self.child.as_mut() else {
+            let message = "The agent process was spawned but could not be tracked.".to_string();
+            self.status = AgentStatus {
+                state: AgentState::Error,
+                running: false,
+                connected: false,
+                pid: None,
+                error: Some(message.clone()),
+            };
+            app.emit("agent_error", &self.status).ok();
+            app.emit("agent_state_changed", &self.status).ok();
+            return Err(message);
+        };
         let readiness = Arc::clone(&self.readiness);
         if let Some(stdout) = child.stdout.take() {
             spawn_output_reader(app.clone(), stdout, "stdout", Some(readiness));
@@ -165,33 +284,6 @@ impl AgentManager {
         app.emit("agent_state_changed", &self.status)
             .map_err(|err| format!("Failed to emit agent_state_changed: {err}"))?;
 
-        Ok(self.status.clone())
-    }
-
-    pub fn wait_until_ready(&mut self, app: &AppHandle) -> Result<AgentStatus, String> {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let (readiness_lock, readiness_signal) = &*self.readiness;
-        let mut readiness = readiness_lock.lock().map_err(|err| format!("Worker readiness lock poisoned: {err}"))?;
-        while !readiness.registered && readiness.error.is_none() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                self.status.state = AgentState::Error;
-                self.status.connected = false;
-                self.status.error = Some("Lumine worker did not register with LiveKit within 20 seconds.".to_string());
-                return Err(self.status.error.clone().unwrap_or_else(|| "Lumine worker readiness timed out.".to_string()));
-            }
-            let result = readiness_signal.wait_timeout(readiness, remaining).map_err(|err| format!("Worker readiness wait failed: {err}"))?;
-            readiness = result.0;
-        }
-        if let Some(error) = readiness.error.clone() {
-            self.status.state = AgentState::Error;
-            self.status.connected = false;
-            self.status.error = Some(error.clone());
-            return Err(error);
-        }
-        self.status.state = AgentState::Ready;
-        self.status.connected = true;
-        app.emit("agent_state_changed", &self.status).ok();
         Ok(self.status.clone())
     }
 
@@ -305,11 +397,8 @@ fn read_provider_catalog() -> Option<Value> {
     serde_json::from_str(&stdout).ok()
 }
 
-fn resolve_project_root() -> Result<PathBuf, String> {    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .canonicalize()
-        .map_err(|err| format!("Could not resolve project root: {err}"))?;
+fn resolve_project_root() -> Result<PathBuf, String> {
+    let root = python_env::project_root()?;
 
     if !root.join("agent").join("agent.py").exists() {
         return Err("Could not find the Python agent script in the project root.".to_string());
@@ -336,48 +425,14 @@ fn resolve_agent_script() -> Result<PathBuf, String> {
     }
 }
 
+/// The interpreter to run the worker with.
+///
+/// Delegates to `python_env` rather than repeating the resolution. This file
+/// used to carry its own copy of the `LUMINE_PYTHON_BIN` -> `VIRTUAL_ENV` ->
+/// repository `.venv` -> `python` ladder, and the two copies had already drifted
+/// on what counted as a usable interpreter. One ladder, one place to change it.
 fn resolve_python_bin() -> Result<String, String> {
-    if let Ok(path) = env::var("LUMINE_PYTHON_BIN") {
-        if !path.trim().is_empty() {
-            return Ok(path);
-        }
-    }
-
-    if let Ok(venv) = env::var("VIRTUAL_ENV") {
-        let candidate = if cfg!(windows) {
-            PathBuf::from(&venv).join("Scripts").join("python.exe")
-        } else {
-            PathBuf::from(&venv).join("bin").join("python")
-        };
-
-        if candidate.exists() {
-            return Ok(candidate.to_string_lossy().to_string());
-        }
-    }
-
-    let root = resolve_project_root()?;
-    let bundled = if cfg!(windows) {
-        root.join(".venv").join("Scripts").join("python.exe")
-    } else {
-        root.join(".venv").join("bin").join("python")
-    };
-    if bundled.exists() {
-        return Ok(bundled.to_string_lossy().to_string());
-    }
-
-    for candidate in ["python", "python3"] {
-        if Command::new(candidate)
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok()
-        {
-            return Ok(candidate.to_string());
-        }
-    }
-
-    Err("Could not resolve a Python interpreter. Set LUMINE_PYTHON_BIN or activate a venv before starting the agent.".to_string())
+    python_env::python_bin()
 }
 
 fn resolve_agent_args() -> Vec<String> {

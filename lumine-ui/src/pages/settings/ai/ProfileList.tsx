@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import type { ConfigDocument, ProfileKind, ProviderCatalog } from "../../../features/settings/aiConfigTypes";
+import type { ConfigDocument, ProviderCatalog, VoiceProfile } from "../../../features/settings/aiConfigTypes";
 import {
   activateProfile,
   canDeleteProfile,
@@ -8,17 +8,30 @@ import {
   deleteProfile,
   duplicateProfile,
 } from "../../../features/settings/profileOps";
-import { Icon } from "../../home/components/Icon";
+import { Dropdown } from "../../../components/ui/dropdown";
+import { Hint } from "../../../components/ui/hint";
 
 /**
- * The profile list.
+ * Which profile is active, as a dropdown.
  *
- * Sits at the top of Voice & Models rather than on a page of its own: choosing
- * what Lumine runs and configuring what it runs on are one decision, and
- * splitting them put the choice somewhere it could not be made.
+ * ## Why not a list
  *
- * Every structural change goes through a pure helper in `profileOps`, so the
- * catalog decides what a new profile contains and no provider name appears here.
+ * This used to render every profile as a row, each with its own Duplicate and
+ * Delete buttons. Two problems, both about attention rather than capacity: a
+ * document with four profiles put four rows of controls on a screen that has
+ * sections below it competing for the same eye, and the controls on a row that is
+ * *not* active are the ones nobody wanted — you are editing the active profile, so
+ * the other three rows' buttons are decoration.
+ *
+ * A dropdown puts the choice in one place and keeps the actions for the thing
+ * being edited. The profiles are not hidden, though: the row under the dropdown
+ * names the active one and shows the models it uses, and the dropdown's own
+ * trigger does the same.
+ *
+ * ## Every structural change still goes through a pure helper
+ *
+ * `profileOps` decides what a new profile contains, and no provider name appears
+ * in this file.
  */
 export type ProfileListProps = {
   catalog: ProviderCatalog;
@@ -30,6 +43,9 @@ export type ProfileListProps = {
   onDiscard: () => void;
 };
 
+const NEW_PIPELINE = " new:pipeline";
+const NEW_REALTIME = " new:realtime";
+
 export function ProfileList({
   catalog,
   document,
@@ -38,156 +54,116 @@ export function ProfileList({
   onMutate,
   onDiscard,
 }: ProfileListProps) {
-  const [adding, setAdding] = useState<ProfileKind | null>(null);
-  const [draftName, setDraftName] = useState("");
-  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const active = document.profiles.find((profile) => profile.id === document.activeProfileId);
   const anyDeletable = canDeleteProfile(document);
 
-  const submitNew = (event: React.FormEvent) => {
-    event.preventDefault();
-    const kind = adding;
-    if (!kind) return;
-    const name = draftName.trim();
-    setAdding(null);
-    setDraftName("");
-    onMutate((current) => createProfile(catalog, current, kind, name));
-  };
-
   return (
     <section className="settings-block">
-      <div className="settings-block-head">
-        <h2>Profiles</h2>
-        <p>
-          A profile is one complete way for Lumine to listen, think, and speak. The active profile is what
-          the next voice session uses.
-        </p>
+      <div className="settings-block-head flex items-center gap-1.5">
+        <h2>Profile</h2>
+        <Hint label="What a profile is">
+          A profile is one complete way for Lumine to listen, think, and speak — a stack of models plus the
+          settings they take. The active profile is what the next voice session uses, so switching here
+          changes the next conversation and not the one in progress.
+        </Hint>
       </div>
 
-      <ul className="profile-list">
-        {document.profiles.map((profile) => {
-          const isActive = profile.id === document.activeProfileId;
-          const summary =
-            profile.kind === "realtime"
-              ? (profile.realtime?.model ?? "Realtime")
-              : [profile.pipeline?.stt?.model, profile.pipeline?.llm?.model, profile.pipeline?.tts?.model]
-                  .filter(Boolean)
-                  .join(" · ");
-          return (
-            <li key={profile.id} className={isActive ? "profile-row is-active" : "profile-row"}>
+      <div className="flex min-w-0 flex-col gap-2">
+        <Dropdown
+          label="Active profile"
+          value={active?.id ?? ""}
+          onChange={(id) => {
+            if (id === "" || id === active?.id) return;
+            onMutate((current) => activateProfile(current, id));
+            setConfirmingDelete(false);
+          }}
+          placeholder="No profile is active"
+          options={document.profiles.map((profile) => ({
+            value: profile.id,
+            label: profile.name,
+            hint: describeProfile(profile),
+          }))}
+        />
+
+        {active && (
+          <p className="text-[11.5px] leading-relaxed text-faint">
+            {describeProfile(active)}
+            {isEnvironmentBacked && !hasUnsavedChanges && " · read from agent/.env"}
+          </p>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Dropdown
+          label="Add a profile"
+          // A sentinel value rather than a control that opens a naming form: the
+          // name is editable on the profile itself a few lines down, so a second
+          // field to fill in before anything exists is a step with no purpose.
+          value=""
+          onChange={(choice) => {
+            if (choice === "") return;
+            const kind = choice === NEW_REALTIME ? "realtime" : "pipeline";
+            onMutate((current) => createProfile(catalog, current, kind, ""));
+          }}
+          placeholder="Add a profile…"
+          options={[
+            { value: NEW_PIPELINE, label: "Pipeline", hint: "Speech, thinking and voice chosen separately" },
+            { value: NEW_REALTIME, label: "Realtime", hint: "One model for all three" },
+          ]}
+        />
+
+        {active && (
+          <>
+            <button
+              type="button"
+              className="settings-quiet"
+              title="Copy this profile and switch to the copy"
+              onClick={() => onMutate((current) => duplicateProfile(current, active.id))}
+            >
+              Duplicate
+            </button>
+            {anyDeletable && (
               <button
                 type="button"
-                className="profile-select"
-                onClick={() => onMutate((current) => activateProfile(current, profile.id))}
-                aria-current={isActive ? "true" : undefined}
+                className="settings-quiet"
+                onClick={() => setConfirmingDelete((open) => !open)}
               >
-                <span className="profile-name">
-                  {profile.name}
-                  {isActive && isEnvironmentBacked && !hasUnsavedChanges && (
-                    <span className="profile-tag">From agent/.env</span>
-                  )}
-                </span>
-                <span className="profile-summary">{summary}</span>
+                Delete
               </button>
+            )}
+          </>
+        )}
+      </div>
 
-              <div className="profile-actions">
-                <button
-                  type="button"
-                  className="settings-quiet"
-                  title="Copy this profile and switch to the copy"
-                  onClick={() => onMutate((current) => duplicateProfile(current, profile.id))}
-                >
-                  Duplicate
-                </button>
-                {anyDeletable && (
-                  <button
-                    type="button"
-                    className="settings-quiet"
-                    onClick={() => setConfirmingDelete(confirmingDelete === profile.id ? null : profile.id)}
-                  >
-                    Delete
-                  </button>
-                )}
-              </div>
-
-              {confirmingDelete === profile.id && (
-                <div className="profile-confirm">
-                  <p>
-                    Delete <strong>{profile.name}</strong>?
-                    {isActive && " It is active, so another profile will take over."}
-                  </p>
-                  <div className="profile-confirm-actions">
-                    <button
-                      type="button"
-                      className="settings-secondary"
-                      onClick={() => setConfirmingDelete(null)}
-                    >
-                      Keep it
-                    </button>
-                    <button
-                      type="button"
-                      className="settings-danger"
-                      onClick={() => {
-                        onMutate((current) => deleteProfile(current, profile.id));
-                        setConfirmingDelete(null);
-                      }}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-
-      {adding ? (
-        <form className="profile-add" onSubmit={submitNew}>
-          <label className="field">
-            <span className="field-label">Name for the new {adding} profile</span>
-            <input
-              value={draftName}
-              onChange={(event) => setDraftName(event.target.value)}
-              placeholder={adding === "realtime" ? "Realtime" : "Pipeline"}
-              spellCheck={false}
-              autoFocus
-            />
-            <small className="field-hint">
-              It starts from the defaults for a {adding} stack. Change anything afterwards.
-            </small>
-          </label>
+      {confirmingDelete && active && (
+        <div className="profile-confirm">
+          <p>
+            Delete <strong>{active.name}</strong>?
+            {active.id === document.activeProfileId && " Another profile will take over."}
+          </p>
           <div className="profile-confirm-actions">
-            <button type="submit" className="settings-primary">
-              Create
+            <button type="button" className="settings-secondary" onClick={() => setConfirmingDelete(false)}>
+              Keep it
             </button>
             <button
               type="button"
-              className="settings-secondary"
+              className="settings-danger"
               onClick={() => {
-                setAdding(null);
-                setDraftName("");
+                onMutate((current) => deleteProfile(current, active.id));
+                setConfirmingDelete(false);
               }}
             >
-              Cancel
+              Delete
             </button>
           </div>
-        </form>
-      ) : (
-        <div className="profile-add-actions">
-          <button type="button" className="settings-secondary" onClick={() => setAdding("pipeline")}>
-            <Icon name="plus" size={14} /> New pipeline profile
-          </button>
-          <button type="button" className="settings-secondary" onClick={() => setAdding("realtime")}>
-            <Icon name="plus" size={14} /> New realtime profile
-          </button>
         </div>
       )}
 
       {hasUnsavedChanges && (
         <p className="field-hint">
-          Profile changes are part of the draft. Save to make them the active configuration, or{" "}
+          Changes are part of the draft. Save to make them active, or{" "}
           <button type="button" className="settings-quiet" onClick={onDiscard}>
             discard
           </button>
@@ -197,4 +173,19 @@ export function ProfileList({
       {!active && <p className="notice is-warning">No profile is active. The worker will use agent/.env.</p>}
     </section>
   );
+}
+
+/**
+ * One line naming what a profile runs, for the dropdown's rows and the caption.
+ *
+ * A realtime profile is one model, so that is all it has. A pipeline has three,
+ * and listing them is the only way to tell two pipeline profiles apart when both
+ * are called "Default".
+ */
+export function describeProfile(profile: VoiceProfile): string {
+  if (profile.kind === "realtime") return profile.realtime?.model ?? "Realtime";
+  const stages = [profile.pipeline?.stt?.model, profile.pipeline?.llm?.model, profile.pipeline?.tts?.model].filter(
+    Boolean,
+  );
+  return stages.length > 0 ? stages.join(" · ") : "Pipeline";
 }

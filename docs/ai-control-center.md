@@ -4,14 +4,15 @@ This document pins down the contracts that the settings redesign depends on, and
 records the decisions taken so far. It is the reference for the remaining
 phases; the executable source stays authoritative where prose and code disagree.
 
-Status: **Phases 0–6 complete, plus the token-budget and failure-visibility work.**
-The catalog, validation rules, shared types, configuration precedence, the
-capability-driven factory, the Tauri command surface, the settings surface, profile
-collections, credential injection, and the credential connectivity check all exist
-and are tested.
+Status: **Phases 0-6 complete, plus the token-budget, failure-visibility, and
+settings-re-architecture work.** The catalog, validation rules, shared types,
+configuration precedence, the capability-driven factory, the Tauri command surface,
+the settings surface, profile collections, credential injection, the credential
+connectivity check, slot-addressed multi-variable credentials, the model-capability
+matrix, and the local-model path all exist and are tested.
 
 Beyond the original phases, four things landed together because they are one
-problem seen from four sides — a voice turn that costs too many tokens, fails
+problem seen from four sides - a voice turn that costs too many tokens, fails
 silently, and takes the conversation down with it:
 
 - the always-sent system prompt is a fraction of its former size
@@ -26,6 +27,37 @@ silently, and takes the conversation down with it:
 `agent.py` now honours a saved configuration when one is valid and falls back to
 `agent/.env` otherwise. A fresh install with nothing saved behaves exactly as
 before, so the voice path is unchanged until a user saves something.
+
+The closing pass over the whole app changed three things that are not new features
+but are the difference between the settings being usable and being documented:
+
+- **Option metadata is the provider's, not a guess.** Every model option now
+  declares its widget and its numeric bounds from the plugin's own signature
+  (`OptionDefinition.control/minimum/maximum/step`). Three real bugs were latent
+  behind this: Cartesia `temperature`, Google TTS `voice`/`speed`, and Google STT
+  `language` are not parameters the plugins accept. Each would have saved,
+  validated clean, and then raised `TypeError` on the first spoken turn.
+- **Voice is a control section, with an audition.** Speed, emotion and volume are
+  rendered from that metadata, and a preview button speaks a phrase with the
+  *unsaved* draft through the worker's own stage builder
+  (`agent/voice_preview.py`, the `preview_voice` command). A slider you cannot
+  hear is a slider you drag once and never revisit.
+- **One notification per tool call, and one line of it.** A call used to raise two
+  toasts and print 320 characters of JSON in the second. There is now a single
+  signal per call and `features/toast/toolToast.ts` reduces the payload to one
+  readable line.
+- **Nothing is outlined, anywhere.** The borders-to-depth pass covered the whole
+  app, not only the settings screen, and it is verified by walking the rendered
+  DOM on every route and counting non-zero computed border widths. The count is
+  zero outside three elements: the avatar's presence halo and its two orbit
+  rings, which are drawn geometry from the avatar engine rather than UI chrome.
+  Three elevation steps (`--elevation-1/2/3`, surfaced to Tailwind as
+  `shadow-elev-1/2/3`) and one control convention — flat at rest, raised on hover,
+  accent and inset-ring when chosen — now carry all of it.
+- **Explanation is a hover, not a paragraph.** The settings pages put their prose
+  in a `?` affordance (`components/ui/hint.tsx`) and the profile and appearance
+  lists became dropdowns. A preset dropdown keeps the accent swatch, because a
+  saved palette is a colour first and a name second.
 
 ## Decisions taken
 
@@ -44,6 +76,14 @@ Recorded so later phases do not relitigate them:
 | Persona on a token budget | Split into an always-sent core plus an on-demand reference. The full text is unchanged on disk. |
 | History growth | Trimmed to an item budget, as a backstop. Compression at the source is the actual fix. |
 | Retries on failure | None. Back off and tell the user; hammering a rate-limited endpoint spends the remaining quota. |
+| Multi-variable credentials | Addressed by slot. A single-variable provider keeps the bare provider id; a multi-slot one never falls back to it. |
+| One picker | Every chooser is `components/ui/dropdown.tsx`. No native `<select>`, `<datalist>`, or segmented button row anywhere. |
+| Advanced settings | Classified in the catalog, not the UI. Temperature, token caps and `top_p` go behind a disclosure; voice, speed, emotion and thinking level do not. |
+| Settings navigation | `Appearance · Voice · Models · Providers · Diagnostics`, with `Models` carrying a sub-tab per stage. One route object, not two pieces of state. |
+| `local` vs `ollama` | `local` stays **reserved** for weights that ship with the app. `ollama` promises a server the user started, and shipping the first under the second's name would be a promise the app cannot keep. |
+| Local model discovery | A button, not an automatic list. A network round trip on a tab somebody came to for something else, against a server that may not be running, is not a list. |
+| Camera and screenshare | Local preview only. Nothing is published, so no frames reach the agent and the OS lights no recording indicator. |
+| Model capabilities | `inputModalities` means "what Lumine can hand this model on the path it is reached by" — not what it could accept in principle. |
 
 ## What exists today
 
@@ -151,6 +191,64 @@ is write-only plus status: `set_credential`, `delete_credential`,
 `get_credential_status` returning `present` / `last4` / `updatedAt`. There is
 deliberately no command that returns plaintext.
 
+### Credentials are addressed by slot, not by provider
+
+`set_credential`, `delete_credential` and `get_credential_status` each take an
+optional `slot`: the environment variable the value belongs in. The keyring
+account name is the bare provider id when no slot is given, and
+`{provider}:{VARIABLE}` when one is.
+
+This exists because the first version stored one secret per provider id and
+`credential_injection.rs` wrote that single value into **every** variable the
+provider declared. Harmless for a provider with one key. Fatal for LiveKit,
+which needs three: a user who pasted their API key got `LIVEKIT_URL=<api key>`,
+`LIVEKIT_API_KEY=<api key>` and `LIVEKIT_API_SECRET=<api key>`. The worker could
+not register, `wait_for_agent_worker` timed out at 20 s, and the agent never
+joined the room.
+
+Nothing surfaced it. There was no LiveKit probe — the Providers page said "not
+testable" for the one credential that decides whether a session can happen — and
+`setup_status.rs` asked only whether *any* value existed for the provider, which a
+single pasted value satisfied.
+
+Two properties make the rekey safe and the gap visible:
+
+- **A single-variable provider keeps the bare provider id**, and
+  `secrets_for_worker` falls back to it. Every key stored before this change is
+  found again with no migration. Google, Groq, Cartesia and OpenAI are untouched.
+- **A multi-variable provider never falls back to the bare entry.** One value
+  cannot stand in for three, so reading it would reinstate the bug rather than
+  work around it. Its absence is reported instead.
+
+An existing bare `livekit` entry therefore has to be re-entered once. That is a
+real, one-time inconvenience and it is the honest outcome: the stored value was
+never a usable LiveKit credential, and there is no way to split it into three.
+
+The catalog publishes `keySlots` — one entry per variable, with a label a person
+can act on ("Server URL", not `LIVEKIT_URL`) and a `kind` of `secret`, `url` or
+`text`. The UI renders that list and holds no provider knowledge of its own. A
+`url` slot is drawn in the clear rather than masked: a hidden hostname hides the
+exact typo that caused this, and `KeySlot.__post_init__` refuses to mark a
+variable named like a credential as one.
+
+### The LiveKit probe
+
+`ProbeDefinition` gained `auth_kind` and `token_path`. `"header"` is the ordinary
+case — one secret, one header. `"livekit_token"` is for LiveKit, which has no
+bearer key at all: access is a short-lived JWT minted from the key and signed
+with the secret, so the three values only mean anything together.
+
+The probe POSTs to `{server}/twirp/livekit.RoomService/ListRooms` with that token.
+`ListRooms` is the cheapest authenticated call there is — 200 and an empty list on
+a new project — and it separates the three failure modes that matter: an
+unreachable host (inconclusive), a refused token (rejected), and a working
+credential (valid). A `wss://` server address, which is what the LiveKit console
+hands out, is translated to `https://` rather than rejected.
+
+Verified on this checkout against a real project: 200 with correctly slotted
+values, and a plain "LIVEKIT_URL is not a server address" when all three
+variables hold the same value, which is what the old injection produced.
+
 ### Decision: the `keyring` crate
 
 The candidates were the `keyring` crate (Windows Credential Manager, macOS
@@ -229,9 +327,9 @@ Registered in `lib.rs`, and deliberately inert with respect to the worker:
 | `get_config` | `{source, document, diagnostics}` | `source` is `"ui"` or `"env"`; `"env"` means the document is a read-only report of `agent/.env`. |
 | `save_config` | — | Atomic write with a `.bak` alongside. |
 | `validate_config` | `{ok, errorCount, warningCount, diagnostics}` | Takes the document as a string, because it arrives untyped from the webview and may legitimately be malformed. |
-| `set_credential` | redacted status | Write-only. |
-| `delete_credential` | — | Deleting an absent credential is a success. |
-| `get_credential_status` | redacted status | `present` / `last4` only. |
+| `set_credential` | redacted status | Write-only. Takes an optional `slot` (the variable name). |
+| `delete_credential` | — | Deleting an absent credential is a success. Also takes `slot`. |
+| `get_credential_status` | redacted status | `present` / `last4` only. Also takes `slot`. |
 
 There is deliberately **no command that returns a credential value to the
 webview**. The status shape is the whole contract with the UI.
@@ -754,8 +852,14 @@ This is the part that changed the design. Documentation rarely states the
 | groq | `GET /openai/v1/models` | 200 | 401 "Invalid API Key" |
 | cartesia | `GET /voices` + `Cartesia-Version` header | 200 | 401 "must be logged in" |
 | openai | `GET /v1/models` | — | 401 |
-| livekit | — | not probeable | |
+| livekit | `POST /twirp/livekit.RoomService/ListRooms`, JWT minted from all three values | 200 | 401 |
 | silero | local, needs no key | not probeable | |
+
+LiveKit's row was "not probeable" when this table was first written, and that gap
+is the one that mattered: it is the credential that decides whether a session can
+happen at all, and the page said so about the one provider that could not be
+checked. It became probeable only once credentials were addressed by slot — see
+[The LiveKit probe](#the-livekit-probe).
 
 Three findings that documentation would not have given:
 
@@ -855,18 +959,28 @@ for the rest of this repo: **no relative imports below module scope, ever.**
 * No `ProviderConnection` object, no live model refresh, no embeddings or image
   capabilities. The `Capability` union is open-ended so these can be added
   without rewriting every provider, but nothing speculative is in the tree.
-* LiveKit has no connectivity check. Its twirp API rejected a request built from
-  the API key and secret directly, so a probe needs a minted token; the Providers
-  page says "not testable" rather than implying a key was verified.
 * Credential changes need a worker restart. The worker is a persistent LiveKit
   process; re-reading the keyring per job would mean a round trip on every voice
   session. The *test* does not have that problem — it is a one-shot child.
-* The `providers` map in the document is declared but still carries no meaning.
-  Injection currently keys off "a secret exists in the keyring" rather than an
-  `enabled` flag, so there is no per-profile provider opt-out yet.
-* No local/offline provider. The id is reserved; the backend is not.
-* A packaged build must resolve the Python worker as a sidecar rather than
-  through the repository path that `python_env.rs` currently assumes.
+* The `providers` map in the document is now read: the setup gate derives which
+  credentials the active profile requires from it, so a profile that swaps its
+  speech synthesizer is asked for that provider's key rather than the old one.
+  Per-provider *opt-out* still does not exist; `enabled` is not consulted.
+* No bundled local model. The `local` id stays reserved and undefined, because
+  shipping weights in the app is a packaging decision nobody has taken. `ollama`
+  is the honest version of the same idea: a server the user started.
+* The camera and screenshare controls are a **local preview only**.
+  `agent.py` has no video input — no `RoomInputOptions(video=...)`, no frame
+  handler — so nothing is published and the frames go nowhere. The self-view is
+  labelled for what it is, and `inputModalities` is what stops the control
+  offering itself to a stack that could not use the result. When the agent gains
+  video input, the change is to publish what `useLocalMedia` already captures.
+* The frontend has no listener for the worker's own `LUMINE_EVENT` stream beyond
+  the two records it acts on. `lib/agentRuntime.ts` passes the whole stream
+  through, so nothing is lost, but per-turn records are not yet rendered.
+* `src/pages/tools/Tools.tsx` is a zero-byte file nothing imports. It was left
+  alone deliberately: it is ambiguous enough that deleting it might have removed
+  something somebody meant to fill in.
 * A packaged build must resolve the Python worker as a sidecar rather than
   through the repository path that `python_env.rs` currently assumes.
 
@@ -885,6 +999,8 @@ Both are upstream and not fixable here, but they will become upgrade blockers:
 agent/providers.py                     catalog: providers, models, voices, capabilities
 agent/provider_catalog.py              CLI: redacted JSON + --check self-check
 agent/provider_probe.py                CLI: one authenticated request per provider
+agent/tool_catalog.py                  CLI: the tool registry as a redacted grid
+agent/local_models.py                  CLI: discover a locally hosted inference server
 agent/multisession_check.py            CLI: three sessions against one running worker
 agent/broken_stdout_check.py           CLI: a worker whose stdout is a dead pipe
 agent/validation.py                    pure validation rules -> diagnostics
@@ -892,6 +1008,7 @@ agent/config_store.py                  precedence: saved document > agent/.env >
 agent/validate_config.py               configuration CLI: --describe and validate
 agent/session_preferences.py           per-job metadata -> JobPreferences (mode + profile ref)
 agent/pipeline_config.py               cartesia_tts_settings() (model no longer hardcoded)
+agent/pipeline_factory.py              capability-driven builders; _PLUGIN_ALIASES
 agent/llm_errors.py                    status + message -> a named, sayable failure
 agent/failure_gate.py                  consecutive-failure circuit; the spoken apology
 agent/context_trim.py                  chat context trimmed to an item budget
@@ -904,16 +1021,25 @@ agent/tests/test_validation.py         every rule above, both directions
 agent/tests/test_config_store.py       precedence, env profile, job metadata, deprecation guard
 agent/tests/test_pipeline_capabilities.py  independent stage selection, half-cascade gating
 agent/tests/test_config_wiring.py      saved-config governance and environment fallback
+agent/tests/test_local_models.py       root derivation, discovery outcomes, exit-code contract
+agent/tests/test_env_example.py        the shipped file agrees with the code that reads it
 agent/tests/test_import_shapes.py      worker import path + no relative imports in functions
 agent/tests/test_resilience.py         failure classification, circuit, tool budgets
 agent/tests/test_persona_split.py      the core is small AND the full persona survives
 agent/tests/fixtures/                  golden config, validated by the suite
+lumine-ui/src/components/ui/           dropdown, disclosure, knob, hint, toast, bubble
+lumine-ui/src/components/avatar/       engine, expressions, montage, useAvatarMontage
 lumine-ui/src/features/settings/       TS mirror of the contracts, IPC client, state hook
-lumine-ui/src/pages/settings/          settings shell, nav, and pages
 lumine-ui/src/features/settings/profileOps.ts  pure profile operations (kind conversion, defaults)
-lumine-ui/scripts/                    check:profile-ops, check:conversion, the TS resolver hook
+lumine-ui/src/lib/agentRuntime.ts      the worker event contract, and the hook over it
+lumine-ui/src/lib/errors.ts            a raw failure string -> a cause and a next step
+lumine-ui/src/pages/settings/          settings shell, nav, and pages
+lumine-ui/scripts/                    check:profile-ops, check:conversion, check:tool-toast, the TS resolver hook
 lumine-ui/src-tauri/src/settings_store.rs   versioned file, atomic write, .bak
-lumine-ui/src-tauri/src/credentials.rs       OS keyring, write-only surface
+lumine-ui/src-tauri/src/credentials.rs       OS keyring, slot-addressed, write-only surface
+lumine-ui/src-tauri/src/credential_probe.rs  the secret's path: keyring -> env -> one request
+lumine-ui/src-tauri/src/credential_injection.rs  every variable, from its own slot
+lumine-ui/src-tauri/src/setup_status.rs  can this install hold a conversation?
 lumine-ui/src-tauri/src/python_env.rs        shared interpreter/agent-dir resolution
 ```
 
@@ -921,21 +1047,24 @@ lumine-ui/src-tauri/src/python_env.rs        shared interpreter/agent-dir resolu
 
 | Check | Result |
 | --- | --- |
-| `python -m unittest discover -s agent\tests` | 376 passed |
-| `cargo test --lib` (src-tauri) | 39 passed |
-| `cargo build` / `cargo check --all-targets` | zero warnings |
+| `python -m unittest discover -s agent\tests` | 488 passed |
+| `cargo test --lib` (src-tauri) | 70 passed |
+| `cargo check` | zero warnings |
 | `npm run build` (`tsc && vite build`) | clean |
 | `npm run check:profile-ops` | passed |
 | `npm run check:conversion` | passed |
-| `python agent/provider_catalog.py --check` | ok (version 7) |
+| `npm run check:tool-toast` | passed |
+| `python agent/provider_catalog.py --check` | ok (version 12) |
+| `python agent/tool_catalog.py --check` | ok (5 tools) |
 | `python agent/validate_config.py --describe` | reports the effective source and path |
 | `python agent/multisession_check.py` | 3/3 sessions on one worker |
 | `python agent/broken_stdout_check.py` | the job starts with stdout on a dead pipe |
+| rendered-page border audit | zero CSS borders outside the avatar's presence rings |
 
 ### Checking the TypeScript side
 
 The frontend has no test runner and the project rule is not to add one for
-convenience. Two checks run against the real source instead, because Node can
+convenience. Three checks run against the real source instead, because Node can
 strip type annotations itself. `scripts/ts-extension-resolver.mjs` teaches Node
 the extensionless imports Vite resolves, so nothing is copied or duplicated:
 
@@ -943,6 +1072,7 @@ the extensionless imports Vite resolves, so nothing is copied or duplicated:
 | --- | --- |
 | `check:profile-ops` | `convertProfileKind` produces a complete, valid profile in both directions, the interruption mode survives a round trip, a chosen name is not mistaken for an environment label, and the catalog's voice lists are duplicate-free. |
 | `check:conversion` | The document the settings screen builds is accepted by `agent/validate_config.py`, and loading it through `LUMINE_CONFIG_PATH` — the same variable `agent_manager.rs` sets — reports `source: "ui"` with the selection intact. |
+| `check:tool-toast` | One tool call produces at most one toast, one line long. A named field beats a shorter unnamed one, an 800-character retrieved page is cut, the untrusted-content wrapper is never shown to anyone, a success with nothing to say says nothing at all, and a failure with no reason still reads as a sentence. |
 
 `check:conversion` exists because the seed values are chosen in TypeScript and
 judged in Python, and nothing else in the build puts those two halves in the same
@@ -1268,6 +1398,613 @@ AssertionError: RuntimeEventPublisher.emit is missing --
 That is the general lesson: asserting that a function *works* is not the same as
 asserting that a class still *has* it.
 
+## The fifth smoke test: the agent never joined the room
+
+Reported as three separate symptoms — LiveKit would not accept the credentials,
+the agent never appeared, and the voice test did nothing. One cause.
+
+### Three values, one slot
+
+`credentials.rs` stored one secret per provider id, and `credential_injection.rs`
+wrote it into every variable that provider declared:
+
+```rust
+let secret = store.secret_for_worker(&provider_id)?;   // one value
+for name in names {
+    command.env(name, secret.trim());                  // into all of them
+}
+```
+
+A user pasting their LiveKit API key got all three variables set to it. The
+worker could not register with LiveKit, `wait_for_agent_worker` timed out after
+20 s, and no session ever started. The reported "LiveKit rejects the credentials"
+was accurate and misleading at once: the values really were rejected, because one
+of them was an API key in the field meant for a hostname.
+
+### Why three separate screens stayed quiet
+
+This is the part worth keeping. Every layer that could have caught it was built
+on "does a value exist for this provider?", which one pasted value satisfies:
+
+- **Providers** said "Stored", because the keyring reported one entry.
+- **Test** said "Not testable", because `_PROBES` had no LiveKit entry at all.
+- **The setup gate** said ready, because `is_satisfied()` was
+  `local || stored || in_env`.
+
+Not one of them was lying. Each was answering a question that could not have the
+answer. The fix was not to correct the wording; it was to make the credential
+expressible — three slots, three fields, and a gate that requires all three.
+
+### Verified both ways
+
+The regression is pinned from three sides, because the interesting failure is
+silent:
+
+- `credentials.rs` — three slots hold three different values, and a multi-slot
+  provider **never** falls back to the legacy bare entry.
+- `credential_injection.rs` — `LIVEKIT_URL` != `LIVEKIT_API_KEY` in the child's
+  environment, and a partly-filled provider leaves the untyped variable unset
+  rather than copying a sibling into it.
+- `provider_probe.py` — against a local server, a minted JWT reaches
+  `ListRooms`; 401 is a rejected credential and 503 is not.
+
+And against the real project on this checkout:
+
+```text
+livekit: {"ok": true,  "verdict": "valid", "status": 200, "latencyMs": 2274}
+```
+
+The same three variables deliberately collapsed to one value — reproducing the
+old injection exactly — is now reported rather than suffered:
+
+```text
+{"ok": false, "verdict": "rejected",
+ "detail": "LIVEKIT_URL is not a server address. It should start with https:// or wss://."}
+```
+
+That second line is the actual deliverable. The bug was never that the
+credential was wrong; it was that a wrong credential produced silence, and
+silence is indistinguishable from a broken microphone.
+
+## Phase B: one picker, and settings that route
+
+The settings screen had grown four different choosers. A native `<select>` (whose
+popup is drawn by the OS, so a warm low-contrast screen got a hard white
+rectangle the moment anyone opened it), a `<datalist>`, a segmented button row, and
+a wall of cards for typefaces. Four settings, four applications.
+
+They are all `components/ui/dropdown.tsx` now — base-ui's listbox with Lumine's
+surfaces, so the keyboard model and typeahead are free and the popup belongs to the
+app. It grew three capabilities to get there:
+
+| Addition | Why it was needed |
+| --- | --- |
+| `editable` | A trailing row swaps the trigger for a text field. Providers publish far more voices than any curated list, and a cloned voice has no name that could be listed, so a dropdown that only offered known ids could not represent a legal value. |
+| `group` | `provider/model` in one control, split on the **first** slash — model ids contain slashes, so a `split("/")` pair would shred `openai/gpt-oss-20b`. |
+| `face` | A CSS `font-family` per row, for the typeface picker. Applied as a style and never baked into the label string, so base-ui's typeahead still matches plain text. |
+
+A value with no matching row is appended as "Not in the published list" rather than
+rendered empty. A picker that shows a placeholder for a value that is genuinely set is
+lying about the thing it exists to report.
+
+`StageSelect` collapsed from two native selects to one. The two selects had also been
+inconsistent with each other, which is how a model that did not belong to the chosen
+provider could be selected and then refused at save time.
+
+## Phase C: the settings rail, rebuilt
+
+```
+Appearance · Voice · Models · Providers · Diagnostics
+```
+
+`Voice` is the profile, the voice, and the active card. `Models` carries a sub-tab
+per stage — `stt / llm / tts / vad` — because a tab that mixes four providers' worth
+of settings is not a tab. Configuration checks moved to Diagnostics, where a blocking
+result already means something.
+
+Three implementation decisions, each of which fixed a real defect rather than
+tidying a preference:
+
+- **`SettingsRoute` is one object.** `{ section, tab }` as two pieces of state let a
+  section be shown with a tab it does not have. `normaliseRoute()` makes that
+  unrepresentable, and it is the reason the `AnimatePresence` key is
+  `` `${section}:${tab}` ``.
+- **One `Hint` for the whole tab strip.** Five `?` affordances, one per tab, is five
+  tooltips to read and nothing to read them from. The content pane is a flex column
+  with its own scroller, so the strip stays put while the pane scrolls.
+- **The save bar is a sticky footer, not a layout sibling.** `position: sticky;
+  bottom: 0` with a `::before` bleed, and `.settings-page` gained `min-height: 100%`
+  so `margin-top: auto` can hold it to the bottom. It was previously in normal flow,
+  which meant it scrolled away on a long stage and the screen had no visible save.
+
+Appearance was rebuilt on the same primitives: colour mode is a dropdown, the two
+typefaces are one list drawn in their own faces, and the bubble-style picker is a
+dropdown beside a **live preview** drawn with the real `Bubble` components. A
+bubble-style choice that shows you a generic rectangle is a choice you are making
+about a rectangle. The twelve colour inputs and the palette importer sit behind
+separate disclosures, and "Custom colours" counts how many differ from the mode's
+own palette — a count rather than a dot, because "3 set" is answerable and
+"something is in here" is not.
+
+## Phase D: `advanced`, declared in the catalog
+
+Every stage lists what its model accepts. The list is longer than the stage is
+interesting: speed, voice and thinking level are what somebody came to change;
+temperature, a token cap and a top-p are not — they are correct at the provider's
+default and wrong in ways that are hard to trace back to a slider.
+
+So the catalog marks each option advanced or not, and the judgement is made there
+rather than in the UI, because only the catalog knows whether a `temperature` is
+ordinary on one model and meaningless on another.
+
+| Advanced | Never advanced |
+| --- | --- |
+| `temperature`, `top_p`, `max_completion_tokens`, `parallel_tool_calls`, `volume`, every Silero VAD timing | voice, speed, emotion, language, `thinking_level`, `reasoning_effort` |
+
+Two tests pin the classification in both directions. A test that only checked the
+first column would let everything migrate into it.
+
+## Phase E: a call, not a dock
+
+The old bottom control was a microphone button and a mute button side by side — two
+controls for one thing in the same state, distinguished only by size. Pressing the
+big one during a call ended it. A call has a beginning and an end, and the interface
+shows that now:
+
+| State | Controls |
+| --- | --- |
+| Idle | One circular handset, centred. `is-blocked` is a neutral fill with no accent halo, so "you cannot call" never looks like "calling". |
+| Connecting / ending | The same handset with a spinner. |
+| Live | Mute, camera, screenshare, then end call in red **last**. A row of four identical circles leaves the destructive one to be found by hovering. |
+
+The timer is counted from the session's own `startedAt`, not from when the component
+mounted, so a reconnect does not reset a call to zero. It is the only text in the
+bar, because a call's length is the one number somebody actually wants from it.
+
+`Icon` gained a `weight` prop. The start and end handsets are `fill`; the toolbar
+handsets are not. A handset rather than a square, because the control starts a
+conversation rather than toggling a state — and the end-call mark is the same
+handset dropped, which is what makes the pair readable without a label.
+
+## Phase F: what each model can actually do
+
+`ModelDefinition.input_modalities`, defaulted from `CAPABILITY_MODALITIES` and
+published as `inputModalities`. All four Gemini Live models declare
+`(text, audio, image, video)`; `transport` declares none.
+
+The claim is narrower than it looks, and the Diagnostics matrix says so on screen:
+a dot means **Lumine can hand that model that kind of input on the path it is reached
+by** — not that the model would accept it in principle. The language stage sends a
+chat history of strings, so a camera turned on beside a pipeline stage delivers
+frames to nobody. Only the Live models have somewhere to put one, and that is what
+`canReceiveVideo` in `Home.tsx` reads.
+
+The Diagnostics page's vague "Catalog" block is now a sorted matrix with a
+retired-model toggle and a "N of M can see" summary. Every `<p>` under a heading
+became a `Hint`, because a diagnostics screen that answers in paragraphs cannot be
+scanned.
+
+## Phase G: local models, and the value a plugin demands
+
+The `ollama` provider: `requires_key=False`, `local=True`, `key_env=()`, and four
+seed models offered as "things to offer before anyone has opened Discovery".
+
+`max_completion_tokens` is **deliberately absent** from its options. OpenAI's newer
+parameter names are rejected keywords, and a rejected keyword is a 400 on the first
+spoken turn — which is the exact failure mode this whole document keeps running
+into.
+
+The `api_key` problem is the interesting one. Ollama's OpenAI-compatible server has
+no authentication, but the OpenAI client refuses to construct without a key, so Lumine
+sends the literal string `"ollama"`. Three things had to be true for that not to
+reach a person:
+
+1. The catalog publishes an explicit `default` for an option the profile does not
+   set, and `build_options` applies it.
+2. The catalog publishes `hidden`, and `ModelOptions` filters hidden **before** the
+   advanced split. A mandatory value nobody can usefully change is not a setting.
+3. `("ollama", "llm")` is an ordinary catalog entry, so nothing about it is special
+   in Python, in Rust, or in the UI.
+
+Wiring it needed no factory branch. `_PLUGIN_ALIASES = {"ollama": "openai"}` in
+`pipeline_factory.py`, and `require_module` names the **package**
+(`livekit-plugins-openai`) rather than the provider, so a missing plugin is not
+reported as "install livekit-plugins-ollama", which does not exist.
+
+`local` stays in `RESERVED_PROVIDER_IDS`, and the comment says why: it is reserved
+for inference whose weights ship **with the app**. `ollama` promises a server you
+started. Shipping the first under the second's name would be a promise the app
+cannot keep.
+
+Discovery is a button, not an automatic list — `agent/local_models.py`, run as a
+one-shot by the Tauri command `discover_local_models`. A network round trip on a tab
+somebody may have come to for something else, against a server that may not be
+running, is not a list. Three details in it are worth recording:
+
+- **It always exits 0.** The desktop helper discards stdout on a non-zero exit, so
+  the one message worth reading would be thrown away. The verdict lives in `ok`.
+- **Reachable-but-empty is not unreachable.** Those are different problems with
+  different fixes, and a single boolean cannot say which one happened.
+- **Root stripping is longest-suffix-first.** `/v1` matched the tail of `/api/v1` and
+  left `http://host/api`, which then 404s on `/api/tags`. A test caught it.
+
+## Phase H: the avatar moves on its own
+
+`components/avatar/idleMontage.ts` already had a weighted fourteen-animation
+montage, and **nothing outside the lab called it**. `Presence.tsx` called
+`engine.connect()`, which played one `blink` and stopped. So the home screen was a
+still image, and the lab — which had its own private montage switch — looked
+correct. The lab was the only place the feature was visible, which is the worst
+possible place for it to be visible.
+
+`useAvatarMontage.ts` is a queue driver, not a `play()` call. Each tick awaits the
+current animation and then waits a per-state gap, so timing is self-adjusting rather
+than assuming an animation lasts its nominal duration. Two yields:
+
+- **A held reaction.** A priority-0 gesture cancelled mid-tween by a priority-2
+  reaction leaves motion half-applied, so `paused` is true while a reaction is set.
+- **Cursor gaze.** Not by switching the montage off, which would freeze the face for
+  anyone who left gaze on — it *filters* the five gaze-touching animations and keeps
+  body movement running.
+
+`Presence.tsx` now holds `engine` in state as well as a ref, because the hook must
+restart when the avatar connects and cannot see a ref change. The Avatar Lab was
+rebuilt on the same driver, so the two can no longer disagree about what "the montage"
+is. Its twenty-six emotions remain a wall of chips on purpose: a menu hides
+twenty-five of them, and comparing expressions is the activity the page exists for.
+
+## What the dead code was hiding
+
+Three files nothing imported, and the reasons were not all the same.
+
+| File | Verdict |
+| --- | --- |
+| `features/expression-studio/lab.tsx` | Deleted. A second avatar lab. Two avatar labs means two places to change an animation. |
+| `hooks/useLumineSession.ts` | Deleted. A duplicate of `useLumineVoice` whose own comment called itself a duplicate. |
+| `lib/agentRuntime.ts` | **Wired, not deleted** — see below. |
+| `lib/errors.ts` | **Wired, not deleted** — see below. |
+
+`lib/agentRuntime.ts` declared the events as `agent.started` and wrapped each
+payload in `{ type, payload }`. Rust emits `agent_started` with the `AgentStatus`
+object *as* the payload. Every name was wrong and every shape was wrong, and nothing
+noticed for one reason: no component imported it.
+
+Which is the argument for fixing it rather than deleting it. Deleting would have
+removed the only description of the contract and left the real gap untouched — the
+worker emits these and the app listened to **none** of them, so a worker that died
+between two status polls was invisible. That is the same class of silence as the
+LiveKit bug, and the `agent/` side of the repository already has a note about it.
+
+It now also draws a distinction worth keeping. `agent_*` is the **desktop layer's**
+view: one child process, and whether it is registered. `agent_runtime` is the
+**worker's own** stream, forwarded verbatim: the session connected, a tool ran, a
+turn failed. Collapsing them is how "the worker is running" gets read as "Lumine is
+listening", which is the confusion that made the original bug so hard to see from the
+UI. Diagnostics reports `running` and `connected` separately for the same reason —
+a process can be alive while its LiveKit registration is missing.
+
+`lib/errors.ts` turns a raw failure string into a title that names the problem and
+one sentence that says what to do about it. Every failure in the app now goes through
+it, because text is the one thing a person cannot act on: a bare `401 Unauthorized`
+tells them nothing they did not already suspect, and the most common cause by a wide
+margin is a key that was never right.
+
+## The shipped defaults are now the tested ones
+
+`agent/.env.example` shipped `GROQ_MAX_COMPLETION_TOKENS=300` while the code's
+default was 900. On a *reasoning* model the thinking is drawn from the same budget,
+so 300 buys a monologue and no audio — a silent turn that presents exactly like a
+muted microphone, which is the failure mode this document has now hit three times.
+
+It also shipped `LIVEKIT_API_KEY=your-livekit-api-key` **uncommented**, and the same
+placeholder in every credential variable. Every credential check in the product
+treats "the variable holds a non-empty string" as "you have this key", because
+telling a placeholder from a real key would cost a billable request. So the shipped
+file declared credentials nobody had, and the setup gate opened on them. This is the
+same shape as the injection bug — a value that reads as something it is not — and it
+is guarded the same way: **absence has to be real, so the shipped values are empty
+rather than illustrative.** An empty line is an absence *and* leaves somewhere to
+paste.
+
+`agent/tests/test_env_example.py` compares the shipped file against the code that
+reads it. The credential list is derived from the catalog rather than written out, so
+a provider gaining a second variable is covered automatically; and every credential
+variable must still be **named** in the file, so the fix cannot be "delete the line".
+
+One more default had two answers. Google draws its voice catalogue from two lists,
+and each marked a default, so the merged provider had two — and they disagreed: the
+per-model list said `Sulafat`, the merged list said `Zephyr`. The same provider
+therefore defaulted to a different voice depending on whether the caller happened to
+name a model. `_dedupe_voices` now demotes the later default, the `default` is
+declared once, and two tests hold both the rule and the agreement with
+`DEFAULT_GEMINI_VOICE`.
+
+The default pipeline is `gemini_live`, so a fresh install needs LiveKit's three
+values and Google's one. `test_the_default_pipeline_needs_no_optional_credential`
+exists because if that ever moves back to the cascade, the first-run requirement
+silently doubles — and nothing else would notice until a user hit it.
+
+## Four reports, and only two of them were bugs
+
+Four things were reported at once. Two were defects in the code and two were
+defects in how the code was presented, and the difference matters because the
+fixes are not interchangeable.
+
+### The settings overlay drew its own navigation and no content
+
+The rail, the header and the tab strip rendered; the pane under them did not. The
+cause was one character in `SettingsDialog.tsx`:
+
+```ts
+transition.animate = reduceMotion
+  ? { opacity: 1, y: 0 }
+  : { opacity: 0, y: 0 };   // the pane rested at invisible
+```
+
+`animate` is the frame the element settles on, and it was `0` in the motion branch
+only. So the bug was **conditional on `prefers-reduced-motion` being off** - which is
+the default path, on every machine that has not asked for reduced motion. That is why
+it presented as total rather than intermittent, and why it looked like "the settings
+page has no content" rather than "an animation occasionally failed".
+
+The reduced-motion branch was already correct, which is what made it misleading: the
+file contains a correct answer to this exact question, one line away from the wrong
+one, and nothing about the bug points at the pair.
+
+### "It saved all three keys, and reopening showed three empty boxes"
+
+This one is worth being precise about, because the reported behaviour sounds like a
+write path and is not one. `setCredential(provider, secret, slot)` ->
+`set_credential` -> `OsCredentialStore.set(provider, slot, secret)` was, and remains,
+correctly slot-addressed. Nothing ever wrote three values when one was submitted.
+
+What was broken was everything *around* the write:
+
+- `SetupGate` closed the whole provider group after **one** slot's save, so the panel
+  vanished and the other two fields went with it. Saving a server URL looked like
+  completing the credential.
+- The button read "Replace" off the first slot alone, so a provider holding exactly
+  one of three values was labelled as though it were finished.
+- Nothing on the page could say which slot was filled. A credential is write-only -
+  there is deliberately no command that reads one back - so an empty input beside a
+  stored value is genuinely ambiguous from the outside, and "empty" was the only
+  thing the UI could draw.
+
+Three fields, no per-field state, a panel that closes on the first save. The user was
+reading the UI correctly.
+
+**So the fix was to publish per-slot state, not to change the write path.** Rust
+already knew the answer; it was being flattened:
+
+```rust
+pub struct SlotStatus {          // new
+    pub env: String, pub label: String, pub kind: String, pub help: String,
+    pub stored: bool, pub stored_last4: Option<String>, pub in_env: bool,
+}
+// RequiredCredential.stored is now "any slot stored" - a badge signal, deliberately
+// weaker than is_satisfied(), which stays per-slot.
+```
+
+`RequiredCredential.stored` used to be read from `key_env.first()`, which is a
+different question and gave a confident wrong answer for a three-value credential.
+It now means *any* slot is held, and is documented as a badge only: nothing that
+decides whether a call can be attempted may read it. `missing.length == 0` decides
+that.
+
+Two more facts keep this honest:
+
+- An empty input next to a stored value is not a bug to be papered over. The field
+  says `Stored ....3f2a` in words, because that is the only copy of the fact that
+  exists anywhere.
+- `stored` and `in_env` are different answers. A value in `agent/.env` is not a
+  credential the app stored, and the UI names the file rather than dressing it as
+  success.
+
+### The Tools page took a very long time and showed nothing
+
+Measured: `python agent/tool_catalog.py` takes **6.36 seconds** cold. The page showed
+five grey placeholder cards for that entire window, which is the one thing a page
+whose job is "here is what Lumine can do" must not look like.
+
+The catalog is now cached in Rust for the life of the process
+(`OnceLock<Mutex<Option<Result<Value, String>>>>`), behind `clear_tool_catalog` as the
+deliberate escape hatch. Caching it in Rust rather than in TypeScript is a real
+decision: the catalog depends only on `TOOL_CARDS` (on disk) and
+`LUMINE_DISABLED_TOOLS` / `LUMINE_ENABLE_APP_LAUNCH`, which are read from *this
+process's* environment when the child is spawned, and Tauri never rewrites its own
+environment afterwards. So the value cannot go stale within a run. Failures are cached
+too, deliberately - a helper that cannot start will not start on the fourth attempt
+either, and retrying it six seconds apart is how a broken install becomes a slow one.
+
+The loading state now says what it is waiting for rather than drawing six seconds of
+nothing.
+
+## The Tools page is a tab strip, and the tabs are declared in Python
+
+It was a scrolling column of grouped cards, which is a fine layout for two groups and
+a bad one for "can she open Spotify" - you had to scroll past the entire web section
+to find a heading saying the answer was further down. Settings already solved this,
+so the Tools page now uses the **identical control** rather than a second
+implementation that would drift within a release.
+
+That control is `components/ui/tabstrip.tsx`, and extracting it exposed a real bug:
+`SettingsDialog` had a document-level `ArrowLeft`/`ArrowRight` handler for its strip
+*and* a second one on the strip itself. Both fired, so one keypress moved two tabs.
+Both landings looked like "the tab changed", so nothing noticed. The strip now owns
+its own keys and the overlay owns only the rail's.
+
+The rail is a vertical list and was taking horizontal keys anyway - `ArrowRight`
+moved it *up*, because the handler fell through to `index - 1` for anything that was
+not `ArrowDown`. It is now `ArrowUp`/`ArrowDown`/`Home`/`End` and nothing else, and
+each level only claims focus from within itself, so stepping between sections no
+longer dumps you into the tab strip and strands you there.
+
+The categories themselves are declared in `agent/tools/tools_registry.py` and
+published, order included:
+
+| Order | Category | Holds |
+| --- | --- | --- |
+| 1 | `Web` | `get_weather`, `get_news`, `search_web` |
+| 2 | `Internal` | `recall_persona` |
+| 3 | `Desktop` | `open_app` |
+
+The order is a decision, not alphabetical accident. Web is most of what Lumine can
+do and least interesting to distinguish; `Desktop` is the only category that acts on
+the machine, so it comes last and a reader is offered the harmless categories before
+the one that starts programs.
+
+`--check` rejects a card whose category is not in `TOOL_CATEGORIES`, because the page
+derives its tabs from that list: an undeclared category does not error, it *hides the
+tool behind a tab that was never drawn*. A declared-but-empty category is not an
+error - declaring a group before its first tool arrives is legitimate, and the
+frontend drops empty groups for exactly that reason.
+
+Empty `App` and `System` tabs were considered and rejected. An empty section teaches
+the user that the app has features it does not have, and inventing a tab for a
+capability nobody has asked for is the same lie in a more convincing costume.
+
+## Three presentation fixes that are worth more than they look
+
+**The call bar was 92px tall.** It holds four controls at the bottom edge of a
+window, and every pixel of it comes off the avatar above. It was sized for a touch
+target a desktop mouse never needs. Now 72px, with a 56px call button.
+
+**The end-call icon was `PhoneDisconnect` at `fill`.** A slash through a filled
+handset merges with it at 20px - earpiece, mouthpiece and bar become one silhouette -
+and reads as a "blocked" sign rather than a hang-up. Both handsets are now the same
+glyph at `bold`, with the end-call one rotated 135 degrees by CSS. 135 and not 180
+because a handset is drawn diagonally: a quarter turn leaves it diagonal the other
+way and *reads* as dropped, where half a turn lands it vertical and looks cut in half.
+Because the rotation is CSS on one glyph, the pair cannot be two icons that merely
+look related.
+
+`fill` was the wrong weight for the call button too. A filled handset has no interior
+detail, so at 24px and below both ends blur and the shape stops being a handset.
+
+**The Avatar Lab icon was an eye.** It points at *looking at*, and the Avatar Lab is
+where Lumine's expression is built. It is now a face.
+
+## A note on reading files before editing them
+
+Mid-round, `read` returned a stale view of `SettingsDialog.tsx` showing
+`opacity: 0` in **both** branches, when only the motion branch was wrong - which is
+the opposite of the bug, and editing from it would have introduced the very error
+being fixed. `[System.IO.File]::ReadAllText` showed the file as it was.
+
+The general rule that fell out of it: this repository's prose describes intent and the
+executable source is authoritative, and a cached read of a file you have already read
+this session is weaker evidence than a fresh one. Confirm before every edit to a file
+read recently.
+
+## A thinking level the standard Live model refuses
+
+Switching to a realtime profile produced a session that joined, said nothing, and
+closed. The log named the cause exactly:
+
+```text
+APIError('1007 None. Thinking level is not supported for this model.')
+```
+
+`gemini-3.8-live` is not configured by thinking level at all. Google's own Live
+thinking table says so in one cell — "`thinking_level` not supported" — and its
+migration note for 3.8 says to *omit* `thinking_config`. We were sending one
+anyway, as `minimal`.
+
+### The catalog was wrong, and wrong in a way that looked deliberate
+
+The catalog held one constant for the whole family:
+
+```python
+# The Live API takes the same parameter but a wider set, and documents `minimal`
+# as its default for lowest latency.
+_GOOGLE_LIVE_LEVELS = ("minimal", "low", "medium", "high")
+```
+
+applied to all four Live models. The comment cites the LiveKit plugin page, and
+the plugin page does say 3.1 uses `thinkingLevel` with `minimal` available. But
+that is a statement about the *parameter's shape*, and it was read as a statement
+about *which models accept it*. The two are different, and Google's per-model
+table is the authority:
+
+| Model | Levels |
+| --- | --- |
+| `gemini-3.8-live` | none — the parameter is rejected |
+| `gemini-3.8-live-extended-thinking` | `low`, `medium`, `high` (`minimal` unsupported) |
+| `gemini-3.1-flash-live-preview` | `minimal` … `high` |
+
+So the single set was wrong for **two of the three** current models: it sent a
+parameter the first refuses, and a value the second refuses. The comment's
+"lowest latency" reasoning is what made it feel safe — `minimal` sounds like the
+conservative choice. It is the least conservative one available.
+
+### The catalog was only half the bug
+
+Fixing the sets alone would have left the trap armed. `gemini_settings()` seeded
+`thinking_level` with a hardcoded `DEFAULT_GEMINI_THINKING_LEVEL = "minimal"` into
+**every** realtime profile, and `config_store` copied it into the resolved stage
+options whether or not a level had ever been chosen. So a profile with no
+thinking setting carried one anyway, and switching to the extended-thinking model
+would have hit the identical failure on a different value.
+
+The pipeline LLM path had already solved this, and said so. `test_no_level_is_
+invented_for_the_pipeline_llm` is named for the regression it guards: *"a saved
+profile with no level must send no level. The factory used to default to
+`minimal`."* The realtime path never got the same treatment, which is why a
+principle that was already established in this codebase had to be applied to it
+late. `DEFAULT_GEMINI_THINKING_LEVEL` is deleted; `gemini_settings()` reports a
+level only when the environment names one, exactly as it already handled
+`GEMINI_TEMPERATURE`.
+
+**Not sending a level is also the lower-latency option**, which is what made the
+invention hard to see. It is the provider's own default, it is valid for every
+current model, and it costs nothing to omit. The old default bought a latency
+claim and paid for it with a session that could not start.
+
+### The guard existed, and nothing called it
+
+`pipeline_factory._realtime_thinking_level` was written for exactly this problem.
+Its docstring: *"Nothing is invented: a wrong level is a 400 that produces a
+session with no audio."* It was never called from anywhere — the realtime builder
+went through `_declared_options` → `build_options` instead — and its own behaviour
+was to return the model's lowest accepted level when none was requested, which is
+the invention the docstring disclaims.
+
+A helper whose only purpose is to enforce an invariant, tested directly, and
+unreferenced, is not coverage. `RealtimeThinkingLevelTests` asserted
+`_realtime_thinking_level(model, None) == "minimal"` and passed, four lines away
+from the assertion that would have caught the bug. Those tests now drive
+`_build_realtime` and read the kwargs the plugin actually receives, so a future
+regression has to survive the real construction path to be caught.
+
+Removing it left `ModelDefinition.default_thinking_level()` with no production
+caller, and its docstring still argued the case for the bug — *"the lowest
+supported level is the right default for a voice agent: it is the fastest"*. That
+is the trap re-armed for whoever reaches for it next, so it is gone too. A model
+either takes the levels it declares or takes none; there is no default to compute,
+because omitting the level is both valid everywhere and faster than any level we
+could name. `test_no_model_ships_a_default_level` guards the removal.
+
+**The catalog's declared sets are what make this work**, and no factory change was
+needed to stop the crash: `_bind_option_schemas` drops the `thinking_level` option
+entirely for a model with no levels, so `build_options` omits `thinking_config`
+and the plugin holds `NOT_GIVEN`. Verified against the real plugin, not a mock —
+`is_given(thinking_config)` is `False`, and the plugin's setup path passes `None`.
+
+The lesson generalises past this bug: *a rule enforced by a helper nobody calls is
+not enforced*, and a constant that compiles is not the same as a constant that is
+true of the service it names. The second one is only caught by a live call, which
+is why the failing session is the test that mattered.
+
+### One thing deliberately left alone
+
+`gemini-2.5-flash-native-audio-preview-12-2025` still declares
+`_GOOGLE_LIVE_LEVELS`. LiveKit's migration note says 2.5 is configured by
+`thinkingBudget` rather than `thinkingLevel`, which suggests the same class of
+problem, but Google's table for 3.8 does not cover it and no Live thinking page
+states what 2.5 does with a level. Changing it would be guessing at a fact in the
+same way the family-wide constant was, in the opposite direction. It is deprecated,
+and it is worth checking against the 2.5 model page before anyone selects it.
+
 ## References
 
 LiveKit Agents documentation, consulted for the rules above:
@@ -1278,6 +2015,8 @@ LiveKit Agents documentation, consulted for the rules above:
   <https://docs.livekit.io/agents/models/realtime/plugins/gemini>
 * Turn handling and the interruption `ValueError` —
   <https://docs.livekit.io/agents/logic/turns>
+* Live thinking, per-model levels, and the 3.8 migration note —
+  <https://ai.google.dev/gemini-api/docs/live-api/thinking>
 * Cartesia TTS, model lifecycle, and voices —
   <https://docs.livekit.io/agents/models/tts/cartesia>
 * Google STT, including the VAD requirement —

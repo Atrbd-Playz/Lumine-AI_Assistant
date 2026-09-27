@@ -43,10 +43,39 @@ class PipelineConfigTests(unittest.TestCase):
             settings = gemini_settings()
         self.assertEqual(settings["model"], "gemini-3.8-live")
         self.assertEqual(settings["max_output_tokens"], 1024)
-        self.assertEqual(settings["thinking_config"]["thinking_level"], "minimal")
-        self.assertFalse(settings["thinking_config"]["include_thoughts"])
         self.assertEqual(settings["connect_max_retry"], 0)
         self.assertEqual(settings["max_tool_steps"], 1)
+
+    def test_no_thinking_level_is_invented_for_the_environment_profile(self):
+        """The regression: an unset level must produce no level, not `minimal`.
+
+        `minimal` used to be the hardcoded default, which is the lowest-latency
+        *labelled* level and therefore looked like the safe choice. It is not:
+        `gemini-3.8-live` rejects `thinking_config` outright, and
+        `gemini-3.8-live-extended-thinking` rejects `minimal`. Sending nothing is
+        both the fastest option and the only one valid for every current Live
+        model, because the model then applies its own default.
+        """
+        with patch.dict(os.environ, {}, clear=True):
+            settings = gemini_settings()
+        self.assertNotIn("thinking_config", settings)
+
+    def test_an_explicit_thinking_level_is_reported(self):
+        env = {"GEMINI_THINKING_LEVEL": "high", "GEMINI_INCLUDE_THOUGHTS": "true"}
+        with patch.dict(os.environ, env, clear=True):
+            settings = gemini_settings()
+        self.assertEqual(settings["thinking_config"]["thinking_level"], "high")
+        self.assertTrue(settings["thinking_config"]["include_thoughts"])
+
+    def test_include_thoughts_alone_reports_no_level(self):
+        """The companion rides inside `thinking_config` and is meaningless alone.
+
+        Emitting the group with a level the user never set would reintroduce the
+        invented default through the back door.
+        """
+        with patch.dict(os.environ, {"GEMINI_INCLUDE_THOUGHTS": "true"}, clear=True):
+            settings = gemini_settings()
+        self.assertNotIn("thinking_config", settings)
 
     def test_gemini_environment_overrides_are_bounded(self):
         env = {

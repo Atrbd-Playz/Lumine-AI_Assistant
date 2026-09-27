@@ -3,15 +3,22 @@
 A voice session that fails its first LLM request produces no audio and no obvious
 error, so an unsupported thinking level has to be caught before the request is
 sent. Google rejects one with a 400, and the accepted sets are not nested:
-`gemini-3.8-flash` takes low/medium/high but not minimal, while the Live API
-takes minimal too.
+`gemini-3.8-flash` takes low/medium/high but not minimal.
+
+The Live API is not a single set either, which is the point this file had wrong.
+Google's table at https://ai.google.dev/gemini-api/docs/live-api/thinking puts
+`gemini-3.8-live` at "thinking_level not supported" and
+`gemini-3.8-live-extended-thinking` at low/medium/high with minimal unsupported.
+Collapsing both into one "Live API" set sent `minimal` to a model that refuses
+the parameter, which failed at session setup with a 1007 and no audio -- the
+regression these tests exist to prevent.
 """
 
 import unittest
 from unittest import mock
 
 from agent.config_store import resolve_profile
-from agent.pipeline_factory import _build_llm, _realtime_thinking_level
+from agent.pipeline_factory import _build_llm, _build_realtime
 from agent.providers import PROVIDERS, get_model
 from agent.validation import validate_document
 
@@ -85,15 +92,26 @@ class ThinkingLevelCatalogTests(unittest.TestCase):
         self.assertTrue(six.supports_thinking_level("minimal"))
         self.assertFalse(eight.supports_thinking_level("minimal"))
 
-    def test_the_live_api_still_accepts_minimal(self):
-        # The Live plugin documents minimal as its lowest-latency default, so the
-        # realtime path must keep working after the pipeline path was fixed.
-        for model_id in ("gemini-3.8-live", "gemini-3.1-flash-live-preview"):
-            model = get_model("google", model_id, "realtime")
-            self.assertIsNotNone(model, model_id)
-            assert model is not None
-            with self.subTest(model=model_id):
-                self.assertTrue(model.supports_thinking_level("minimal"))
+    def test_the_standard_live_model_takes_no_level(self):
+        # The reported failure. `gemini-3.8-live` is not configured by level at
+        # all, so it must declare none: an empty set makes the factory omit
+        # `thinking_config` entirely rather than send one Google refuses.
+        model = get_model("google", "gemini-3.8-live", "realtime")
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertEqual(model.thinking_levels, ())
+        self.assertFalse(model.accepts("thinking_level"))
+
+    def test_the_live_thinking_model_stops_at_low(self):
+        # The one Live model that does take a level. Google's table excludes
+        # minimal, so the family's `minimal` default was wrong here too.
+        model = get_model("google", "gemini-3.8-live-extended-thinking", "realtime")
+        self.assertIsNotNone(model)
+        assert model is not None
+        self.assertEqual(model.thinking_levels, ("low", "medium", "high"))
+        self.assertFalse(model.supports_thinking_level("minimal"))
+        self.assertTrue(model.supports_thinking_level("low"))
+        self.assertTrue(model.supports_thinking_level("high"))
 
     def test_a_model_not_configured_by_level_says_so(self):
         # Gemini 2.5 uses a token budget, and the plugin only translates a level
@@ -102,12 +120,24 @@ class ThinkingLevelCatalogTests(unittest.TestCase):
         self.assertIsNotNone(model)
         assert model is not None
         self.assertEqual(model.thinking_levels, ())
-        self.assertIsNone(model.default_thinking_level())
+        self.assertFalse(model.accepts("thinking_level"))
 
-    def test_the_default_is_the_lowest_level_the_model_accepts(self):
-        model = get_model("google", "gemini-3.8-flash", "llm")
-        assert model is not None
-        self.assertEqual(model.default_thinking_level(), "low")
+    def test_no_model_ships_a_default_level(self):
+        """Nothing in the catalog picks a level on the user's behalf.
+
+        There used to be a `default_thinking_level()` that answered "the lowest
+        level this model accepts", and it was the reason a profile with no
+        thinking setting still sent one. Omitting the level is both valid for
+        every model and faster than any level we could name, so there is no
+        default to compute. A model either takes the levels it declares or takes
+        none.
+        """
+        for provider in PROVIDERS.values():
+            for model in provider.models:
+                if not model.thinking_levels:
+                    continue
+                with self.subTest(model=model.id):
+                    self.assertFalse(hasattr(model, "default_thinking_level"))
 
     def test_a_level_is_accepted_case_insensitively(self):
         model = get_model("google", "gemini-3.8-flash", "llm")
@@ -229,32 +259,67 @@ class ThinkingLevelFactoryTests(unittest.TestCase):
 
 
 class RealtimeThinkingLevelTests(unittest.TestCase):
-    def test_the_realtime_path_keeps_a_level(self):
-        resolved = resolve_profile(realtime_profile(), interruption_mode="barge_in")
-        self.assertEqual(resolved.realtime.options.get("thinking_level"), "minimal")
+    """The realtime path, tested through the builder that talks to the plugin.
 
-    def test_a_valid_realtime_level_is_kept(self):
-        resolved = resolve_profile(
-            realtime_profile(thinking_level="high"), interruption_mode="barge_in"
+    These used to assert the behaviour of a helper that nothing called, while the
+    real path went through `build_options`. That is how a rule nobody enforced --
+    "default to the lowest level the model accepts" -- sat in the codebase looking
+    tested. Every assertion here therefore goes through `_build_realtime` and
+    reads the kwargs the plugin would actually receive.
+    """
+
+    def _plugin_kwargs(self, profile: dict) -> dict:
+        resolved = resolve_profile(profile, interruption_mode="barge_in")
+        with mock.patch("agent.pipeline_factory.require_module") as require:
+            module = require.return_value
+            import asyncio
+
+            asyncio.run(_build_realtime(resolved.realtime, resolved.interruption_mode))
+        return module.realtime.RealtimeModel.call_args.kwargs
+
+    def test_the_standard_live_model_sends_no_thinking_config(self):
+        """The reported failure, asserted end to end.
+
+        A saved realtime profile with no level must reach the plugin with no
+        `thinking_config`. It used to arrive with `{"thinking_level": "minimal"}`,
+        which `gemini-3.8-live` rejects at setup with a 1007, so the greeting never
+        played and the session closed with no audio.
+        """
+        kwargs = self._plugin_kwargs(realtime_profile())
+        self.assertNotIn("thinking_config", kwargs)
+        self.assertEqual(kwargs["model"], "gemini-3.8-live")
+
+    def test_a_stale_level_on_the_standard_model_is_not_sent(self):
+        # A hand-edited or previously saved profile can hold a level this model
+        # does not take. The session must still start, and validation names it.
+        profile = realtime_profile(thinking_level="minimal")
+        self.assertNotIn("thinking_config", self._plugin_kwargs(profile))
+        self.assertIn("llm.thinking_level_unsupported", codes(as_document(profile)))
+
+    def test_the_thinking_model_sends_nothing_when_no_level_is_saved(self):
+        kwargs = self._plugin_kwargs(
+            realtime_profile(model="gemini-3.8-live-extended-thinking")
         )
-        self.assertEqual(resolved.realtime.options.get("thinking_level"), "high")
+        self.assertNotIn("thinking_config", kwargs)
 
-    def test_the_realtime_default_is_catalogued_not_hardcoded(self):
-        model = get_model("google", "gemini-3.8-live", "realtime")
-        self.assertEqual(_realtime_thinking_level(model, None), "minimal")
-        self.assertEqual(_realtime_thinking_level(model, "medium"), "medium")
-        # An uncatalogued model yields nothing rather than a guess. Inventing a
-        # level here is the bug this whole change exists to remove.
-        self.assertIsNone(_realtime_thinking_level(None, None))
+    def test_an_explicit_level_reaches_the_thinking_model(self):
+        kwargs = self._plugin_kwargs(
+            realtime_profile(
+                model="gemini-3.8-live-extended-thinking", thinking_level="high"
+            )
+        )
+        self.assertEqual(kwargs["thinking_config"]["thinking_level"], "high")
 
-    def test_a_realtime_model_without_levels_yields_nothing(self):
-        model = get_model("google", "gemini-2.5-flash-native-audio-preview-12-2025", "realtime")
-        self.assertIsNotNone(model)
-        assert model is not None
-        # This one does take levels, so the point is the guard: a model with an
-        # empty set must not be handed one.
-        stripped = type(model)(**{**model.__dict__, "thinking_levels": ()})
-        self.assertIsNone(_realtime_thinking_level(stripped, None))
+    def test_a_stale_minimal_is_downgraded_on_the_thinking_model(self):
+        # `minimal` is the level Google's table excludes. It must be corrected
+        # rather than forwarded, or the thinking model fails exactly as the
+        # standard one did.
+        profile = realtime_profile(
+            model="gemini-3.8-live-extended-thinking", thinking_level="minimal"
+        )
+        kwargs = self._plugin_kwargs(profile)
+        self.assertEqual(kwargs["thinking_config"]["thinking_level"], "low")
+        self.assertIn("llm.thinking_level_unsupported", codes(as_document(profile)))
 
 
 class ProviderOptionIsolationTests(unittest.TestCase):

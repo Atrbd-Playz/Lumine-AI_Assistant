@@ -33,11 +33,13 @@ from typing import Any, Mapping
 try:
     from .llm_config import llm_config
     from .pipeline_config import cartesia_tts_settings, gemini_settings, pipeline_name
+    from .providers import Capability, get_model
     from .session_preferences import normalize_interruption_mode
     from .validation import CONFIG_VERSION, Diagnostic, diagnostic, validate_document
 except ImportError:  # running as a top-level module
     from llm_config import llm_config
     from pipeline_config import cartesia_tts_settings, gemini_settings, pipeline_name
+    from providers import Capability, get_model
     from session_preferences import normalize_interruption_mode
     from validation import CONFIG_VERSION, Diagnostic, diagnostic, validate_document
 
@@ -352,10 +354,34 @@ class ResolvedProfile:
         return tuple(sorted(found))
 
 
-def _stage_options(stage: Mapping[str, Any]) -> dict[str, Any]:
-    """Only the keys the factory knows how to forward."""
-    allowed = ("language", "speed", "temperature", "thinking_level", "max_output_tokens")
-    return {key: stage[key] for key in allowed if key in stage and stage[key] is not None}
+def _stage_options(
+    stage: Mapping[str, Any],
+    provider: str,
+    capability: Capability,
+) -> dict[str, Any]:
+    """Only the settings the chosen model declares, dropped if it is unknown.
+
+    The allowlist used to be a hand-written tuple of five names. That is the same
+    list the provider catalog already holds, kept by hand in a second place, so
+    it drifted: it still allowed `temperature` for a TTS that has no such
+    parameter, and it silently discarded `emotion`, `volume`, `max_completion_tokens`,
+    `top_p` and `reasoning_effort` -- settings a profile could save, validate and
+    then never send. Deriving the answer from the catalog removes the duplicate
+    rather than reconciling it.
+
+    A stage naming a model the catalog does not know passes through untouched.
+    Refusing to resolve a profile would break a locally-run model the catalog
+    cannot know about, and `build_options` drops undeclared keys downstream
+    anyway, so an unknown model loses nothing by not being filtered here.
+    """
+    model = get_model(provider, str(stage.get("model") or ""), capability)
+    if model is None:
+        return {key: value for key, value in stage.items() if value is not None}
+    return {
+        key: value
+        for key, value in stage.items()
+        if value is not None and model.accepts(key)
+    }
 
 
 def resolve_profile(
@@ -387,19 +413,26 @@ def resolve_profile(
         output = realtime.get("output") or {}
         settings = gemini_settings()
         # A realtime profile carries provider-specific options, so they are read
-        # from the environment as the base and overridden by the profile.
+        # from the environment as the base and overridden by the profile. A
+        # thinking level is included only when the environment names one: the
+        # accepted set is per-model, and seeding a level nobody asked for sends a
+        # parameter Google rejects on models that take no level at all.
         options: dict[str, Any] = {
-            "thinking_level": settings["thinking_config"]["thinking_level"],
-            "include_thoughts": settings["thinking_config"]["include_thoughts"],
             "max_output_tokens": settings["max_output_tokens"],
             "connect_max_retry": settings["connect_max_retry"],
             "connect_timeout": settings["connect_timeout"],
             "language": settings["language"],
             "silence_duration_ms": 800 if mode == "finish_response" else 700,
         }
+        thinking = settings.get("thinking_config")
+        if thinking:
+            options["thinking_level"] = thinking["thinking_level"]
+            options["include_thoughts"] = thinking["include_thoughts"]
         if "temperature" in settings:
             options["temperature"] = settings["temperature"]
-        options.update(_stage_options(realtime))
+        options.update(
+            _stage_options(realtime, str(realtime.get("provider") or "google"), "realtime")
+        )
         return ResolvedProfile(
             kind="realtime",
             name=str(profile.get("name") or "Realtime"),
@@ -433,37 +466,45 @@ def resolve_profile(
     # Groq retry policy.
     llm_base = groq_llm if llm_provider == "groq" else {}
 
+    tts_provider = str(tts_source.get("provider") or "cartesia")
+    stt_provider = str(stt_source.get("provider") or "groq")
+    vad_provider = str(vad_source.get("provider") or "silero")
+
     return ResolvedProfile(
         kind="pipeline",
         name=str(profile.get("name") or "Pipeline"),
         interruption_mode=mode,
         profile_id=str(profile.get("id") or "pipeline"),
         stt=ResolvedStage(
-            provider=str(stt_source.get("provider") or "groq"),
+            provider=stt_provider,
             model=str(stt_source.get("model") or "whisper-large-v3-turbo"),
-            options=_stage_options(stt_source),
+            options=_stage_options(stt_source, stt_provider, "stt"),
         ),
         llm=ResolvedStage(
             provider=llm_provider,
             model=str(llm_source.get("model") or (groq_llm if llm_provider == "groq" else {}).get("model", "")),
-            options={**llm_base, **_stage_options(llm_source)},
+            options={**llm_base, **_stage_options(llm_source, llm_provider, "llm")},
         ),
         tts=ResolvedStage(
-            provider=str(tts_source.get("provider") or "cartesia"),
+            provider=tts_provider,
             model=str(tts_source.get("model") or tts_env["model"]),
             # Environment values are the base; an explicit profile value wins.
             # Order matters here, so the spread comes last.
-            options={"language": tts_env["language"], "speed": tts_env["speed"], **_stage_options(tts_source)},
+            options={
+                "language": tts_env["language"],
+                "speed": tts_env["speed"],
+                **_stage_options(tts_source, tts_provider, "tts"),
+            },
             voice=str(tts_source.get("voice") or tts_env["voice"]),
         ),
         vad=ResolvedStage(
-            provider=str(vad_source.get("provider") or "silero"),
+            provider=vad_provider,
             model=str(vad_source.get("model") or "silero"),
             # The legacy cascade has always used this value; changing it would
             # alter turn-taking for the working pipeline.
             options={"min_speech_duration": 0.4},
         )
-        if str(vad_source.get("provider") or "silero")
+        if vad_provider
         else None,
         max_tool_steps=3,
     )

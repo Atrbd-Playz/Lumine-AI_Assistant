@@ -41,7 +41,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r agent\requirements.txt
 ```
 
-Create ignored local config files from `agent/.env.example` and `lumine-ui/.env.example`, then fill in real values. The backend file needs the LiveKit URL/key/secret plus Groq and Cartesia credentials; `GROQ_MODEL` is optional and defaults to `openai/gpt-oss-20b`.
+Create ignored local config files from `agent/.env.example` and `lumine-ui/.env.example`, then fill in real values. Every credential line in the example ships **empty**, and an empty line is a real absence -- a `your-…` placeholder reads as a working key to every presence check, which is the same class of bug as the credential-injection one. `agent/tests/test_env_example.py` derives the credential list from the catalog, so it fails when the file and the code disagree.
+
+The default pipeline is `gemini_live`, so a working install needs **LiveKit's three values plus `GOOGLE_API_KEY`** -- four entries, one provider. Groq and Cartesia are only needed for `LUMINE_PIPELINE=legacy_cascade`; `GROQ_MODEL` is optional and defaults to `openai/gpt-oss-20b`.
 
 ```powershell
 # terminal 1: Tauri plus its Vite dev server. It starts the Python worker itself

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import lumineAvatar from "../../../assets/lumine_face.svg";
 import { LumineAvatarEngine } from "../../../components/avatar/emotionEngine";
+import { useAvatarMontage } from "../../../components/avatar/useAvatarMontage";
 import { recommendedEyeMode } from "../../../components/avatar/expressiveEyePaths";
 import { expressionSpec } from "../../../components/avatar/expressions";
 import { ExpressionEffects } from "../../../components/avatar/ExpressionEffects";
@@ -32,7 +33,13 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
     if (!avatar) return;
     const engine = new LumineAvatarEngine(avatar);
     engineRef.current = engine;
-    const setup = () => engine.connect();
+    // Published so the montage can start. `connect()` is what discovers the eyes,
+    // and a montage that begins before that plays into a face with no eyes to
+    // move.
+    setEngine(engine);
+    const setup = () => {
+      if (engine.connect()) setEngine(engine);
+    };
     avatar.addEventListener("load", setup);
     if (avatar.contentDocument) setup();
 
@@ -85,6 +92,7 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
       if (rafRef.current) window.cancelAnimationFrame(rafRef.current);
       engine.destroy();
       engineRef.current = null;
+      setEngine(null);
     };
   }, [cursorGaze]);
 
@@ -108,6 +116,21 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
     engineRef.current?.setActivity(activity);
     engineRef.current?.setEyeMode(recommendedEyeMode(emotion));
   }, [emotion, activity, state, reaction?.intensity]);
+
+  // The montage, which is what makes the face move with nobody asking.
+  //
+  // `engineRef.current` is a ref and so does not re-render when the engine is
+  // created, which is why `engine` is a piece of state as well: the hook needs to
+  // restart when the avatar connects, and it cannot see a ref change.
+  const [engine, setEngine] = useState<LumineAvatarEngine | null>(null);
+  useAvatarMontage({
+    engine,
+    kind: state,
+    // A held reaction is a thing the agent said. A gesture starting on top of it
+    // reads as the face disagreeing with itself.
+    paused: reaction !== null,
+    cursorGaze,
+  });
 
   return <div className={`presence presence--${state} ${showAvatarColor ? "" : "presence--no-color"}`} aria-label={`Lumine is ${state}`}>
     <div className="presence-halo halo-one" /><div className="presence-halo halo-two" />

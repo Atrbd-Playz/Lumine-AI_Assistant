@@ -36,6 +36,15 @@ export type AppearancePreset = Pick<Appearance, "accent" | "icon" | "canvas" | "
 export type ThemePalettes = Record<ThemeMode, AppearancePreset>;
 export type ThemePresetCollection = Partial<Record<ThemeMode, Record<string, AppearancePreset>>>;
 
+/**
+ * Every icon the app draws.
+ *
+ * One set, one library, one map. The union is closed on purpose: a name that is
+ * not on this list is a typo the compiler catches, rather than a name that maps to
+ * nothing and renders an empty box. The call controls are here for the same reason
+ * the rest are — a call bar with hand-drawn SVGs next to Phosphor glyphs reads as
+ * two apps.
+ */
 export type IconName =
   | "home"
   | "avatar"
@@ -54,11 +63,17 @@ export type IconName =
   | "more"
   | "music"
   | "bell"
-  | "activity"
   | "waveform"
   | "trash"
   | "plus"
   | "copy"
   | "reset"
   | "close"
-  | "presentation";
+  | "presentation"
+  | "phone"
+  | "phone-down"
+  | "video"
+  | "video-off"
+  | "monitor"
+  | "speaker"
+  | "speaker-off";

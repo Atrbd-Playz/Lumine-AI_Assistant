@@ -52,32 +52,60 @@ type ProvidersPageProps = {
 };
 
 /**
- * What the UI knows about one provider's credential. A discriminated shape rather
- * than loose strings, so "stored" can never be confused with a provider that
- * simply needs no key.
+ * What the UI knows about one provider's credential, per variable.
+ *
+ * `slots` is keyed by environment variable name, so a provider with three values
+ * has three independent entries and a partially-filled one is visible as
+ * partially-filled. The previous shape was a single status per provider, which is
+ * what let a LiveKit install with only an API key read as complete.
  */
-type ProviderStatus =
-  | { kind: "loading" }
-  | { kind: "unavailable" }
-  | { kind: "local" }
-  | { kind: "stored"; last4: string | null }
-  | { kind: "absent" };
+type ProviderStatus = {
+  /** Set when the OS credential store itself could not be reached. */
+  kind: "loading" | "unavailable" | "local" | "ready";
+  /** By variable name. A variable absent from this map has no value. */
+  slots: Record<string, { present: boolean; last4: string | null }>;
+};
 
 const STATUS_LABEL: Record<ProviderStatus["kind"], string> = {
   loading: "Checking…",
   unavailable: "Unavailable",
   local: "On device",
-  stored: "Stored",
-  absent: "Not set",
+  ready: "Stored",
 };
 
 const STATUS_TONE: Record<ProviderStatus["kind"], string> = {
   loading: "pending",
   unavailable: "unknown",
   local: "ok",
-  stored: "ok",
-  absent: "missing",
+  ready: "ok",
 };
+
+/**
+ * Collapse a provider's per-variable statuses into one headline state.
+ *
+ * `partial` is the case worth having: a provider needs every one of its values,
+ * so two of LiveKit's three is not a credential that can connect. Reporting it as
+ * either "Stored" or "Not set" is what made the original bug invisible.
+ */
+function summarise(status: ProviderStatus, keyEnv: string[]): "stored" | "partial" | "absent" {
+  if (status.kind === "local") return "stored";
+  if (status.kind !== "ready") return "absent";
+  const present = keyEnv.filter((env) => status.slots[env]?.present).length;
+  if (present === 0) return "absent";
+  return present === keyEnv.length ? "stored" : "partial";
+}
+
+const SUMMARY_LABEL = {
+  stored: "Stored",
+  partial: "Incomplete",
+  absent: "Not set",
+} as const;
+
+const SUMMARY_TONE = {
+  stored: "ok",
+  partial: "missing",
+  absent: "missing",
+} as const;
 
 /**
  * Provider credentials.
@@ -105,12 +133,20 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
   const refresh = useCallback(async () => {
     const entries = await Promise.all(
       catalog.providers.map(async (provider): Promise<[string, ProviderStatus]> => {
-        if (!provider.requiresKey) return [provider.id, { kind: "local" }];
+        if (!provider.requiresKey) return [provider.id, { kind: "local", slots: {} }];
         try {
-          const status = await getCredentialStatus(provider.id);
-          return [provider.id, status.present ? { kind: "stored", last4: status.last4 } : { kind: "absent" }];
+          // One read per variable. A provider with three values is asked about
+          // each of them separately, which is the only way to tell "all three are
+          // stored" from "one is, and it is the wrong one".
+          const pairs = await Promise.all(
+            provider.keySlots.map(async (slot): Promise<[string, { present: boolean; last4: string | null }]> => {
+              const status = await getCredentialStatus(provider.id, slot.env);
+              return [slot.env, { present: status.present, last4: status.last4 }];
+            }),
+          );
+          return [provider.id, { kind: "ready", slots: Object.fromEntries(pairs) }];
         } catch {
-          return [provider.id, { kind: "unavailable" }];
+          return [provider.id, { kind: "unavailable", slots: {} }];
         }
       }),
     );
@@ -121,33 +157,36 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
     void refresh();
   }, [refresh]);
 
-  const store = async (providerId: string, secret: string) => {
+  const store = async (providerId: string, secret: string, slot: string, label: string) => {
     setPending(providerId);
     setFieldError(null);
     try {
-      await setCredential(providerId, secret);
-      notify({ tone: "success", message: "Key stored in the system credential store." });
+      await setCredential(providerId, secret, slot);
+      notify({ tone: "success", message: `${label} stored in the system credential store.` });
       setEditing(null);
       await refresh();
     } catch (cause) {
-      const text = cause instanceof Error ? cause.message : "Could not store the key.";
+      const text = cause instanceof Error ? cause.message : "Could not store the value.";
       setFieldError(text);
     } finally {
       setPending(null);
     }
   };
 
-  const remove = async (providerId: string) => {
+  const remove = async (providerId: string, slot: string, label: string) => {
     setPending(providerId);
     try {
-      await deleteCredential(providerId);
-      notify({ tone: "success", message: "Key removed." });
+      await deleteCredential(providerId, slot);
+      notify({ tone: "success", message: `${label} removed.` });
+      // A probe verdict was about the credential as a whole. Once one part is gone
+      // the verdict describes something that no longer exists, so it is cleared
+      // rather than left sitting next to a now-incomplete provider.
       setResults((current) => omit(current, providerId));
       await refresh();
     } catch (cause) {
       notify({
         tone: "error",
-        message: cause instanceof Error ? cause.message : "Could not remove the key.",
+        message: cause instanceof Error ? cause.message : "Could not remove the value.",
       });
     } finally {
       setPending(null);
@@ -178,10 +217,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
 
   return (
     <div className="settings-page">
-      <SettingsPageHeader
-        section="providers"
-        description="Each service Lumine can speak through has its own credential, stored once and referenced by every profile."
-      />
+      <SettingsPageHeader section="providers" />
 
       {isEnvironmentBacked && (
         <p className="notice">
@@ -193,8 +229,9 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
 
       <div className="provider-list">
         {catalog.providers.map((provider) => {
-          const status: ProviderStatus = statuses[provider.id] ?? { kind: "loading" };
-          const stored = status.kind === "stored";
+          const status: ProviderStatus = statuses[provider.id] ?? { kind: "loading", slots: {} };
+          const summary = summarise(status, provider.keyEnv);
+          const multiple = provider.keySlots.length > 1;
           return (
             <article className="provider-card" key={provider.id}>
               <header>
@@ -202,8 +239,10 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                   <h2>{provider.label}</h2>
                   {provider.local && <span className="provider-tag">On device</span>}
                 </div>
-                <span className={`provider-status is-${STATUS_TONE[status.kind]}`}>
-                  {STATUS_LABEL[status.kind]}
+                <span
+                  className={`provider-status is-${status.kind === "ready" ? SUMMARY_TONE[summary] : STATUS_TONE[status.kind]}`}
+                >
+                  {status.kind === "ready" ? SUMMARY_LABEL[summary] : STATUS_LABEL[status.kind]}
                 </span>
               </header>
 
@@ -220,62 +259,174 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
               {provider.notes && <p className="provider-note">{provider.notes}</p>}
 
               {provider.requiresKey ? (
-                <footer>
-                  <small className="field-hint">
-                    {stored && status.last4
-                      ? `Key on file, ending in ${status.last4}`
-                      : status.kind === "absent"
-                        ? `The worker reads ${provider.keyEnv.join(", ")}`
-                        : status.kind === "unavailable"
+                <>
+                  {/*
+                    A provider with several values gets a row per value. This is
+                    the shape the original bug needed and did not have: one field
+                    named "LiveKit key" cannot hold a URL, a key and a secret, and
+                    the worker used to receive the same value in all three.
+                  */}
+                  {multiple ? (
+                    <ul className="key-slots">
+                      {provider.keySlots.map((slot) => {
+                        const slotStatus = status.slots[slot.env];
+                        return (
+                          <li key={slot.env} className="key-slot">
+                            <div className="key-slot-text">
+                              <span className="field-label">{slot.label}</span>
+                              <small className="field-hint">
+                                {status.kind === "unavailable"
+                                  ? "The system credential store could not be reached."
+                                  : status.kind === "loading"
+                                    ? "Checking…"
+                                    : slotStatus?.present
+                                      ? `Set${slotStatus.last4 ? `, ending in ${slotStatus.last4}` : ""}`
+                                      : `Not set — reads ${slot.env}`}
+                              </small>
+                            </div>
+                            <div className="provider-actions">
+                              <button
+                                type="button"
+                                className="settings-secondary"
+                                onClick={() =>
+                                  setEditing(editing === slotKey(provider.id, slot.env) ? null : slotKey(provider.id, slot.env))
+                                }
+                                disabled={pending === provider.id || status.kind === "unavailable"}
+                              >
+                                {editing === slotKey(provider.id, slot.env)
+                                  ? "Close"
+                                  : slotStatus?.present
+                                    ? "Replace"
+                                    : "Add"}
+                              </button>
+                              {slotStatus?.present && (
+                                <button
+                                  type="button"
+                                  className="settings-quiet"
+                                  onClick={() => void remove(provider.id, slot.env, slot.label)}
+                                  disabled={pending === provider.id}
+                                >
+                                  Remove
+                                </button>
+                              )}
+                            </div>
+                            {editing === slotKey(provider.id, slot.env) && (
+                              <SecretField
+                                label={slot.label}
+                                kind={slot.kind}
+                                // Stated per variable, so this row and the
+                                // quickstart row for the same value cannot
+                                // disagree about whether it is already there.
+                                stored={slotStatus?.present ?? false}
+                                storedLast4={slotStatus?.last4 ?? null}
+                                help={
+                                  slot.help ||
+                                  (provider.setupUrl
+                                    ? `From ${provider.setupUrl.replace(/^https?:\/\//, "")}. Stored in your system credential store and never shown again.`
+                                    : "Stored in your system credential store and never shown again.")
+                                }
+                                onSubmit={(secret) => store(provider.id, secret, slot.env, slot.label)}
+                                onCancel={() => {
+                                  setEditing(null);
+                                  setFieldError(null);
+                                }}
+                                busy={pending === provider.id}
+                                error={pending === provider.id ? null : fieldError}
+                              />
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <footer>
+                      <small className="field-hint">
+                        {status.kind === "unavailable"
                           ? "The system credential store could not be reached."
-                          : "Checking…"}
-                  </small>
-                  <div className="provider-actions">
-                    <button
-                      type="button"
-                      className="settings-secondary"
-                      onClick={() => setEditing(editing === provider.id ? null : provider.id)}
-                      disabled={pending === provider.id || status.kind === "unavailable"}
-                    >
-                      {editing === provider.id ? "Close" : stored ? "Replace key" : "Add key"}
-                    </button>
-                    {provider.probe && (
-                      <button
-                        type="button"
-                        className="settings-secondary"
-                        onClick={() => void test(provider.id)}
-                        disabled={probing === provider.id}
-                        title="Make one authenticated request to check this key works"
-                      >
-                        {probing === provider.id ? "Testing…" : "Test"}
-                      </button>
-                    )}
-                    {stored && (
-                      <button
-                        type="button"
-                        className="settings-quiet"
-                        onClick={() => void remove(provider.id)}
-                        disabled={pending === provider.id}
-                      >
-                        Remove
-                      </button>
-                    )}
-                    {provider.setupUrl && (
-                      <a className="provider-link" href={provider.setupUrl} target="_blank" rel="noreferrer">
-                        Get a key
-                        <Icon name="spark" size={12} />
-                      </a>
-                    )}
-                  </div>
-                  {results[provider.id] && <ProbeResult outcome={results[provider.id]} />}
-                </footer>
+                          : status.kind === "loading"
+                            ? "Checking…"
+                            : status.slots[provider.keyEnv[0]]?.present
+                              ? `Key on file, ending in ${status.slots[provider.keyEnv[0]]?.last4 ?? ""}`
+                              : `The worker reads ${provider.keyEnv.join(", ")}`}
+                      </small>
+                      <div className="provider-actions">
+                        <button
+                          type="button"
+                          className="settings-secondary"
+                          onClick={() => setEditing(editing === provider.id ? null : provider.id)}
+                          disabled={pending === provider.id || status.kind === "unavailable"}
+                        >
+                          {editing === provider.id ? "Close" : summary === "stored" ? "Replace key" : "Add key"}
+                        </button>
+                        {provider.probe && (
+                          <button
+                            type="button"
+                            className="settings-secondary"
+                            onClick={() => void test(provider.id)}
+                            disabled={probing === provider.id}
+                            title="Make one authenticated request to check this key works"
+                          >
+                            {probing === provider.id ? "Testing…" : "Test"}
+                          </button>
+                        )}
+                        {summary !== "absent" && (
+                          <button
+                            type="button"
+                            className="settings-quiet"
+                            onClick={() => void remove(provider.id, provider.keyEnv[0], `${provider.label} key`)}
+                            disabled={pending === provider.id}
+                          >
+                            Remove
+                          </button>
+                        )}
+                        {provider.setupUrl && (
+                          <a className="provider-link" href={provider.setupUrl} target="_blank" rel="noreferrer">
+                            Get a key
+                            <Icon name="spark" size={12} />
+                          </a>
+                        )}
+                      </div>
+                      {results[provider.id] && <ProbeResult outcome={results[provider.id]} />}
+                    </footer>
+                  )}
+
+                  {/*
+                    Test and Get-a-key belong to the credential as a whole, so they
+                    sit below the rows rather than inside one. For a single-value
+                    provider they stay in the footer above.
+                  */}
+                  {multiple && (
+                    <footer>
+                      <div className="provider-actions">
+                        {provider.probe && (
+                          <button
+                            type="button"
+                            className="settings-secondary"
+                            onClick={() => void test(provider.id)}
+                            disabled={probing === provider.id}
+                            title="Check all of this provider's values together"
+                          >
+                            {probing === provider.id ? "Testing…" : "Test all values"}
+                          </button>
+                        )}
+                        {provider.setupUrl && (
+                          <a className="provider-link" href={provider.setupUrl} target="_blank" rel="noreferrer">
+                            Get a key
+                            <Icon name="spark" size={12} />
+                          </a>
+                        )}
+                      </div>
+                      {results[provider.id] && <ProbeResult outcome={results[provider.id]} />}
+                    </footer>
+                  )}
+                </>
               ) : (
                 <footer>
                   <small className="field-hint">No credential needed. This runs locally on this machine.</small>
                 </footer>
               )}
 
-              {editing === provider.id && (
+              {!multiple && editing === provider.id && provider.requiresKey && (
                 <SecretField
                   label={`${provider.label} key`}
                   help={
@@ -283,7 +434,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                       ? `Create one at ${provider.setupUrl.replace(/^https?:\/\//, "")}, then paste it here. It is stored in your system credential store and never shown again.`
                       : "Paste the key. It is stored in your system credential store and never shown again."
                   }
-                  onSubmit={(secret) => store(provider.id, secret)}
+                  onSubmit={(secret) => store(provider.id, secret, provider.keyEnv[0], `${provider.label} key`)}
                   onCancel={() => {
                     setEditing(null);
                     setFieldError(null);
@@ -298,6 +449,17 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
       </div>
     </div>
   );
+}
+
+/**
+ * Identity of one open credential field.
+ *
+ * A provider with three values needs three independent fields, and at most one is
+ * open at a time so two masked inputs never sit on screen with the user unsure
+ * which is which. The slot name is part of the key for exactly that reason.
+ */
+function slotKey(providerId: string, env: string): string {
+  return `${providerId}:${env}`;
 }
 
 /** One connectivity verdict, next to the key it is about. */
