@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "lumine-ui",
+  "productName": "Lumine",
   "version": "0.1.0",
-  "identifier": "com.art.lumine-ui",
+  "identifier": "com.art.lumine",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "lumine-ui",
-        "width": 800,
-        "height": 600
+        "title": "Lumine",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 940,
+        "minHeight": 600
       }
     ],
     "security": {
@@ -23,6 +25,18 @@
   },
   "bundle": {
     "active": false,
-    "targets": "all"
+    "targets": "all",
+    "publisher": "Abdur Rahman Toha",
+    "copyright": "Copyright (c) 2026 Abdur Rahman Toha. Lumine is his app. All rights reserved.",
+    "shortDescription": "Lumine - a local-first AI companion",
+    "longDescription": "Lumine is a local-first AI companion by Abdur Rahman Toha. Voice, memory and tools run on your own machine.",
+    "category": "Productivity",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
   }
 }

@@ -244,6 +244,51 @@ class PrecedenceTests(unittest.TestCase):
         config = json.loads(manifest.read_text(encoding="utf-8"))
         self.assertEqual(config.get("identifier"), APP_IDENTIFIER)
 
+    @staticmethod
+    def _data_root(base: str) -> dict:
+        """The environment variable ``app_local_data_dir`` reads on this platform.
+
+        The search is skipped entirely when its platform variable is absent --
+        which is the point of ``test_the_search_survives_a_stripped_environment``
+        -- so a test that wants to inspect the desktop candidates has to supply
+        one. macOS derives the directory from ``$HOME`` instead of a variable,
+        so it gets both set.
+        """
+        root = Path(base)
+        if sys.platform == "win32":
+            return {"LOCALAPPDATA": str(root)}
+        if sys.platform == "darwin":
+            return {"HOME": str(root)}
+        return {"XDG_DATA_HOME": str(root)}
+
+    def test_the_pre_rename_directory_is_still_searched(self):
+        """A settings file saved before the rename must not become invisible.
+
+        The identifier moved from ``com.art.lumine-ui`` to ``com.art.lumine``,
+        which moved ``app_local_data_dir()`` with it. Tauri's setup hook copies
+        the file forward, but a worker started outside Tauri never runs that, so
+        without this candidate it would find nothing and fall through to
+        ``agent/.env`` -- while the app's settings screen showed the values the
+        user actually saved. Two halves disagreeing is the failure this is for.
+        """
+        with tempfile.TemporaryDirectory() as base:
+            with mock.patch.dict(os.environ, self._data_root(base), clear=True):
+                candidates = config_path_candidates()
+        names = [c.parent.name for c in candidates if c.parent.name]
+        self.assertIn(APP_IDENTIFIER, names)
+        self.assertIn(config_store.LEGACY_APP_IDENTIFIER, names)
+        # Current before legacy, so a migrated file wins over an abandoned one.
+        self.assertLess(names.index(APP_IDENTIFIER), names.index(config_store.LEGACY_APP_IDENTIFIER))
+        # And the agent directory is still the last resort.
+        self.assertEqual(candidates[-1].parent, config_store.AGENT_DIR)
+
+    def test_an_explicit_override_still_wins_over_every_directory(self):
+        with mock.patch.dict(
+            os.environ, {CONFIG_PATH_ENV: "somewhere/else.json"}, clear=True
+        ):
+            candidates = config_path_candidates()
+        self.assertEqual([Path("somewhere/else.json")], candidates)
+
     def test_the_search_survives_a_stripped_environment(self):
         """A missing home directory must not stop the worker from starting.
 

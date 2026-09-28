@@ -96,18 +96,51 @@ provides idempotent start, stop, restart, and a readiness gate that blocks until
 registration. There is still no explicit sleep/wake command and no crash
 auto-restart.
 
-## Video is not wired
+## Video input
 
-`agent.py` has no video input. There is no `RoomInputOptions(video=...)` and no frame
-handler, so nothing publishes camera or screenshare frames. The desktop camera control
-is a **local preview only** — deliberately, because publishing nothing is also what
-means the OS lights no recording indicator.
+The agent receives video frames. `agent.py` passes `room_options=components.room_options`
+to `session.start`, and the factory derives that option from the catalog rather than
+from configuration.
 
-Until it is wired, `ModelDefinition.input_modalities` is what keeps the two honest:
-it means "what Lumine can hand this model on the path it is reached by", and a
-camera turned on beside a pipeline stage that declares no video input is offering
-itself to nowhere. All four Gemini Live models declare
-`(text, audio, image, video)`; `transport` declares none.
+This section used to say the opposite, and it was wrong in a way that would have
+produced a larger and broken implementation. It described `RoomInputOptions(video=...)`
+and a "frame handler". On the pinned 1.8.3:
+
+- `RoomInputOptions` is **deprecated** — it logs "use RoomOptions instead" on every
+  session — and is no longer importable from `voice.agent_session`. `RoomOptions`
+  lives in `livekit.agents.voice.room_io`. It belongs on `session.start()`, not on
+  `AgentSession()`.
+- **There is no frame handler to write.** `RoomOptions(video_input=True)` plus the
+  built-in sampler is the whole agent-side feature. `AgentSession(video_sampler=...)`
+  takes a `_VideoSampler` protocol — `__call__(frame, session) -> bool` — and the
+  default is `VoiceActivityVideoSampler(speaking_fps=1.0, silent_fps=0.3)`.
+
+The rule that matters, and LiveKit documents it exactly: *"Enabling `video_input`
+with an audio-only realtime model silently ignores the video frames — no error is
+raised but the model won't process video."* So `video_input` is derived from
+`ModelDefinition.input_modalities` via `_stage_sees_frames` and can never be a
+constant. All four Gemini Live models declare `(text, audio, image, video)`;
+`transport` declares none; the cascade's LLM stage declares `("text",)`.
+
+`PipelineComponents.room_options` is **always** a real `RoomOptions`, never `None`,
+because `session.start` treats a supplied-but-wrong type as an error and raises.
+"Off" has to be an options object that says off.
+
+Frame rate is declared explicitly in `_build_realtime_session` rather than
+inherited. The numbers match the library default, so nothing changes — but Gemini
+tokenizes every frame by its dimensions, so a rate nobody chose is a rate nobody can
+reason about when the bill arrives. Video is opt-in from the frontend, which is what
+keeps the cost at zero when nobody is sharing.
+
+The cascade path does **not** subscribe. LiveKit can inject the latest frame into a
+chat conversation as an image message on each user turn, and that genuinely works,
+but its LLM stage is handed a history of strings and declares `("text",)`. Turning
+the room subscription on before that is true would let a profile validate and then
+quietly do nothing with every frame.
+
+macOS cannot screenshare at all (WKWebView has no `getDisplayMedia`), which the
+frontend feature-detects and reports as a platform problem rather than a model one.
+Camera is unaffected.
 
 ## VAD, STT, LLM, and TTS
 
@@ -325,9 +358,17 @@ Platform-specific considerations that should be isolated later include:
 - [x] A locally hosted server is supported as a provider (`ollama`), with a discovery
       action rather than an automatic list
 - [x] The shipped `.env.example` agrees with the code, and that agreement is tested
+- [x] Video input, for a model that declares image input. The subscription is derived
+      from the catalog and cannot be a constant, because LiveKit silently discards
+      frames a model cannot read
+- [x] The persona knows Lumine can see, and `recall_persona` can reach the guidance
+      for the questions that actually arrive
 - [~] dotenv-based configuration still works as a fallback, but is no longer the
       primary path
 - [~] logging exists, but not production-grade
+- [ ] The video frame rate is declared and tested, but is not yet configurable per
+      profile — it is a real recurring cost, and a per-profile option is the honest
+      way to expose it
 
 ### Planned backend work
 
@@ -342,11 +383,13 @@ Platform-specific considerations that should be isolated later include:
 - [ ] cross-platform binary packaging
 - [~] explicit backend-to-front-end state events — failures, tool status and the
       worker's lifecycle are structured and delivered; agent sleep/wake is not
-- [ ] video input, which is what would make the camera control real
+- [x] video input, which is what makes the camera control real
+- [ ] video *output* — Lumine sending frames back. That is `AvatarSession` plus a
+      plugin, and the SVG avatar engine stays the answer for now
 
 The Python agent remains intact and is still the voice service, and the Tauri layer
 owns the development lifecycle contract. `npm run tauri build` now completes and writes
-`src-tauri/target/release/lumine-ui.exe`, with the Windows icon and version resources
+`src-tauri/target/release/lumine.exe`, with the Windows icon and version resources
 correctly embedded.
 
 There was never a Windows resource icon problem, and this file claimed there was for a

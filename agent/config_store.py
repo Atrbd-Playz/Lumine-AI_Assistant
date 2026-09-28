@@ -51,7 +51,25 @@ CONFIG_PATH_ENV = "LUMINE_CONFIG_PATH"
 
 #: The Tauri application identifier. This has to match ``tauri.conf.json``, because
 #: the desktop app is what writes the file and this module is what reads it.
-APP_IDENTIFIER = "com.art.lumine-ui"
+#:
+#: The app was renamed from ``lumine-ui`` to ``Lumine`` and the identifier with it,
+#: so this is no longer the old ``com.art.lumine-ui``. It matters more than it looks:
+#: the two names are two different directories under ``%LOCALAPPDATA%``, and a
+#: mismatch does not fail — the old one still exists, so the worker finds a stale
+#: config there and cheerfully runs on settings the UI stopped writing. The
+#: `test_the_app_identifier_matches_the_tauri_bundle` test exists to catch exactly
+#: that, and it is the reason this value is a test failure rather than a surprise.
+APP_IDENTIFIER = "com.art.lumine"
+
+#: The identifier in use before the rename, still searched as a fallback.
+#:
+#: ``settings_store.migrate_legacy_config`` copies the file into the current
+#: directory when Tauri starts, so after a normal launch this is inert. It is not
+#: inert for a worker started outside Tauri -- the documented ``agent.py dev``
+#: workflow -- which never runs that setup and would otherwise find nothing, then
+#: quietly run on ``agent/.env`` while the app's settings screen showed different
+#: values. Searching here keeps the two halves agreeing about the same file.
+LEGACY_APP_IDENTIFIER = "com.art.lumine-ui"
 
 # Provenance labels, so the UI can say where the active configuration came from.
 SOURCE_UI = "ui"
@@ -117,6 +135,10 @@ def config_path_candidates(identifier: str = APP_IDENTIFIER) -> list[Path]:
     still reads the settings a user just saved. Without it, the two halves
     disagree and the worker silently falls back to the environment.
 
+    The pre-rename directory comes next, for the same reason: the identifier
+    moved, so a settings file the user saved before the rename sits in a
+    directory this module no longer looks at by default.
+
     The agent directory is last, so a hand-placed file keeps working.
     """
     override = (os.getenv(CONFIG_PATH_ENV) or "").strip()
@@ -127,6 +149,10 @@ def config_path_candidates(identifier: str = APP_IDENTIFIER) -> list[Path]:
     data_dir = app_local_data_dir(identifier)
     if data_dir is not None:
         candidates.append(data_dir / DEFAULT_CONFIG_FILENAME)
+    if identifier != LEGACY_APP_IDENTIFIER:
+        legacy_dir = app_local_data_dir(LEGACY_APP_IDENTIFIER)
+        if legacy_dir is not None:
+            candidates.append(legacy_dir / DEFAULT_CONFIG_FILENAME)
     candidates.append(AGENT_DIR / DEFAULT_CONFIG_FILENAME)
     return candidates
 

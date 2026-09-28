@@ -56,6 +56,7 @@ export type IconName =
   | "check"
   | "clock"
   | "settings"
+  | "info"
   | "mic"
   | "mic-off"
   | "send"

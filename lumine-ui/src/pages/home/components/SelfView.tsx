@@ -4,26 +4,29 @@ import { Icon } from "./Icon";
 /**
  * The user's own picture, beside Lumine.
  *
- * ## Why the caption is not optional
+ * ## Why the badge states a fact rather than a reassurance
  *
- * The frames here are not reaching Lumine. `agent.py` starts its session with no
- * video options and no frame handler, so a live preview in the corner of the
- * window would read as a video call with one participant who cannot see you. The
- * caption is the difference between "your camera is on" and "you are being
- * filmed by an app you cannot check", and it is a fact rather than a warning: the
- * badge turns to "Shared with Lumine" the moment the agent can receive frames,
- * and nothing else about this card changes.
+ * A live preview in the corner of a window is the exact shape of a video call
+ * with one participant who cannot see you, and there is no way to tell the two
+ * apart by looking. So the badge says which one this is, and it says it from a
+ * fact -- whether the track is in the room -- rather than from whether the model
+ * *could* read it.
+ *
+ * Those two are not the same, and the difference is the whole point. A model
+ * that declares no image input leaves the picture here and nothing else, which
+ * is what "Only you can see this" means. A model that can see, whose publish
+ * failed, also gets "Only you can see this" rather than a claim it is not making.
  */
 export type SelfViewProps = {
-  /** A camera or screen-capture track, or null when neither is on. */
-  stream: MediaStream | null;
+  /** The live capture, or null. Never both camera and screen. */
+  stream: MediaStream;
   /** Which one it is. Decides the badge and the label. */
   source: "camera" | "screen";
-  /** Whether the active model could actually consume frames. */
-  canReachLumine: boolean;
+  /** Whether this track is actually published to the room. */
+  isPublished: boolean;
 };
 
-export function SelfView({ stream, source, canReachLumine }: SelfViewProps) {
+export function SelfView({ stream, source, isPublished }: SelfViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // The element has to be told about the stream after it exists, and the stream
@@ -49,8 +52,8 @@ export function SelfView({ stream, source, canReachLumine }: SelfViewProps) {
           <Icon name={source === "camera" ? "video" : "monitor"} size={12} />
           {source === "camera" ? "Camera" : "Screen"}
         </span>
-        <span className={"self-view-badge" + (canReachLumine ? " is-shared" : "")}>
-          {canReachLumine ? "Shared with Lumine" : "Only you can see this"}
+        <span className={"self-view-badge" + (isPublished ? " is-shared" : "")}>
+          {isPublished ? "Shared with Lumine" : "Only you can see this"}
         </span>
       </div>
     </aside>

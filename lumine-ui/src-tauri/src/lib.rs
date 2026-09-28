@@ -458,7 +458,23 @@ pub fn run() {
             credential_probe::test_provider_credential,
             voice_preview::preview_voice
         ])
-        .setup(|_app| {
+        .setup(|app| {
+            // The identifier moved from `com.art.lumine-ui` to `com.art.lumine`,
+            // which moved `app_local_data_dir()` and with it the saved settings.
+            // Converge on the new location once, so the user's profiles do not
+            // read as a fresh install. Reads already fall back to the old path,
+            // so a failure here is logged rather than fatal.
+            use tauri::Manager;
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                match settings_store::migrate_legacy_config(&dir) {
+                    Ok(true) => eprintln!(
+                        "[LUMINE][CONFIG] moved saved settings into {}",
+                        dir.display()
+                    ),
+                    Ok(false) => {}
+                    Err(err) => eprintln!("[LUMINE][CONFIG] settings migration skipped: {err}"),
+                }
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

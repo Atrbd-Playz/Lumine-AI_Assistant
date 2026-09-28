@@ -508,6 +508,11 @@ async def entrypoint(ctx: JobContext):
     await session.start(
         room=ctx.room,
         agent=Lumine(tools, profile=components.profile),
+        # Resolved by the factory from the catalog, not decided here. `video_input`
+        # is what turns a published camera or screenshare track into frames this
+        # session can actually read, and the factory is the only place that knows
+        # whether the selected model is one that can.
+        room_options=components.room_options,
     )
     latency.mark(
         "session_started",

@@ -35,7 +35,21 @@
 use std::fmt;
 
 /// Service name used for every Lumine credential in the OS store.
-const SERVICE: &str = "com.art.lumine-ui";
+const SERVICE: &str = "com.art.lumine";
+
+/// The service name earlier builds wrote to.
+///
+/// The app identifier moved from `com.art.lumine-ui` to `com.art.lumine` when
+/// Lumine took on its own name and ownership. That identifier is what the OS
+/// keyring namespaces entries by, so renaming it would silently orphan every
+/// stored key: the app would report "not configured" and ask for four API keys
+/// the user had already entered.
+///
+/// Reads therefore fall back here and promote the value forward on first hit,
+/// which is the same shape as `secrets_for_worker` falling back from a slotted
+/// account name to the bare provider id. A delete clears both, so a credential
+/// the user removed cannot come back from the fallback.
+const LEGACY_SERVICE: &str = "com.art.lumine-ui";
 
 /// The keyring account name for one (provider, slot) pair.
 ///
@@ -144,12 +158,22 @@ pub trait CredentialStore {
 /// OS-native implementation backed by the `keyring` crate.
 pub struct OsCredentialStore;
 
-fn entry(provider_id: &str, slot: Option<&str>) -> Result<keyring::Entry, CredentialError> {
+/// An entry under one specific service name.
+fn entry_for(
+    service: &str,
+    provider_id: &str,
+    slot: Option<&str>,
+) -> Result<keyring::Entry, CredentialError> {
     if provider_id.trim().is_empty() {
         return Err(CredentialError::Failed("empty provider id".into()));
     }
-    keyring::Entry::new(SERVICE, &account_name(provider_id, slot))
+    keyring::Entry::new(service, &account_name(provider_id, slot))
         .map_err(|err| CredentialError::Unavailable(err.to_string()))
+}
+
+/// An entry under the current service name.
+fn entry(provider_id: &str, slot: Option<&str>) -> Result<keyring::Entry, CredentialError> {
+    entry_for(SERVICE, provider_id, slot)
 }
 
 fn map_get_error(who: &str, err: keyring::Error) -> CredentialError {
@@ -171,12 +195,19 @@ impl CredentialStore for OsCredentialStore {
     }
 
     fn delete(&self, provider_id: &str, slot: Option<&str>) -> Result<(), CredentialError> {
-        match entry(provider_id, slot)?.delete_credential() {
-            Ok(()) => Ok(()),
-            // Deleting something that was never there is the desired end state.
-            Err(keyring::Error::NoEntry) => Ok(()),
-            Err(err) => Err(CredentialError::Failed(format!("{provider_id}: {err}"))),
+        // Both names, because `secret_for_worker` reads the legacy one as a
+        // fallback. Clearing only the current service would let a credential the
+        // user just removed reappear on the next read, which reads as a store
+        // that ignores deletes.
+        for service in [SERVICE, LEGACY_SERVICE] {
+            match entry_for(service, provider_id, slot)?.delete_credential() {
+                Ok(()) => {}
+                // Deleting something that was never there is the desired end state.
+                Err(keyring::Error::NoEntry) => {}
+                Err(err) => return Err(CredentialError::Failed(format!("{provider_id}: {err}"))),
+            }
         }
+        Ok(())
     }
 
     fn status(
@@ -212,9 +243,27 @@ impl CredentialStore for OsCredentialStore {
         slot: Option<&str>,
     ) -> Result<String, CredentialError> {
         let who = account_name(provider_id, slot);
-        entry(provider_id, slot)?
-            .get_password()
-            .map_err(|err| map_get_error(&who, err))
+        match entry(provider_id, slot)?.get_password() {
+            Ok(secret) => Ok(secret),
+            Err(keyring::Error::NoEntry) => {
+                // Fall back to the pre-rekey service, then promote. The value is
+                // the user's own key either way; only the namespace moved.
+                let legacy = entry_for(LEGACY_SERVICE, provider_id, slot)?;
+                let secret = legacy
+                    .get_password()
+                    .map_err(|err| map_get_error(&who, err))?;
+                // Promotion is best effort. Failing to write the new copy leaves
+                // the fallback to do its job next time, which is a slower path,
+                // not a broken one -- so a write failure must not fail the read.
+                let _ = entry(provider_id, slot).and_then(|current| {
+                    current
+                        .set_password(&secret)
+                        .map_err(|err| CredentialError::Failed(err.to_string()))
+                });
+                Ok(secret)
+            }
+            Err(err) => Err(map_get_error(&who, err)),
+        }
     }
 }
 
@@ -429,5 +478,67 @@ mod tests {
         store.set(&id, None, "gsk-legacy").unwrap();
         let resolved = store.secrets_for_worker(&id, &["GROQ_API_KEY".to_string()]);
         assert_eq!(resolved, vec![("GROQ_API_KEY".to_string(), "gsk-legacy".to_string())]);
+    }
+
+    /// The rekey regression test.
+    ///
+    /// Renaming the app identifier renames the keyring service, so every key
+    /// saved before the rename sits under a name the app no longer looks at.
+    /// Without the fallback in `secret_for_worker` the app reports "not
+    /// configured" for credentials the user did configure, which reads as data
+    /// loss and sends them to re-enter four API keys.
+    #[test]
+    fn a_credential_under_the_previous_service_name_is_found_and_promoted() {
+        let store = OsCredentialStore;
+        let id = probe("service-rekey");
+        let (_guard, _cleanup) = fresh(&[(&id, None)]);
+
+        // Write only to the old name, bypassing the store's own write path.
+        keyring::Entry::new(LEGACY_SERVICE, &account_name(&id, None))
+            .expect("legacy entry")
+            .set_password("legacy-secret-value")
+            .expect("write legacy");
+
+        // The read path the app actually uses has to find it.
+        assert_eq!(
+            store.secret_for_worker(&id, None).expect("read should fall back"),
+            "legacy-secret-value"
+        );
+        assert!(
+            store.status(&id, None).expect("status").present,
+            "status goes through secret_for_worker, so it inherits the fallback"
+        );
+
+        // Promoted on read, so the fallback stops being load-bearing.
+        let promoted = keyring::Entry::new(SERVICE, &account_name(&id, None))
+            .expect("current entry")
+            .get_password()
+            .expect("value should have been copied forward");
+        assert_eq!(promoted, "legacy-secret-value");
+    }
+
+    /// The other half: a delete must clear the old name too, or the fallback
+    /// hands back a credential the user just removed.
+    #[test]
+    fn deleting_clears_the_previous_service_name_too() {
+        let store = OsCredentialStore;
+        let id = probe("service-rekey-delete");
+        let (_guard, _cleanup) = fresh(&[(&id, None)]);
+
+        keyring::Entry::new(LEGACY_SERVICE, &account_name(&id, None))
+            .expect("legacy entry")
+            .set_password("should-be-gone")
+            .expect("write legacy");
+
+        store.delete(&id, None).expect("delete should clear both names");
+
+        assert!(
+            keyring::Entry::new(LEGACY_SERVICE, &account_name(&id, None))
+                .expect("legacy entry")
+                .get_password()
+                .is_err(),
+            "the legacy copy must be gone, or delete silently does nothing"
+        );
+        assert!(!store.status(&id, None).expect("status").present);
     }
 }

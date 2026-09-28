@@ -84,6 +84,8 @@ def _normalise(topic: str) -> str:
 #: Heading matching is literal, so "how do you show happiness" would find nothing
 #: even though Emotional Awareness is exactly the answer. Each entry is a phrase
 #: that points at a section, and the first one that appears in the question wins.
+#: Entries are single words because the lookup tests membership of a word set --
+#: a two-word hint could never match.
 _INTENT_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     # Apology before emotion: "sorry" is a more specific signal than "down".
     (("sorry", "apolog", "wrong", "mistake", "correct"), "Encouragement Style"),
@@ -95,6 +97,12 @@ _INTENT_HINTS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("joke", "funny", "humor", "humour", "playful"), "Humor"),
     (("face", "expression", "emote", "show"), "Expression Showcase"),
     (("example", "demonstrate", "sample"), "Example Conversation"),
+    # Sight before code, because "you are looking at my code" is a question
+    # about being looked at, not about coding. Emotion entries above still win
+    # where the two genuinely compete -- "I can see how happy you are" is about
+    # feelings, and the section is about how she looks at things.
+    (("see", "seeing", "seen", "sight", "look", "looking", "camera", "screenshare",
+      "screenshot", "sharing", "shared", "wearing", "picture"), "Sight"),
     (("code", "coding", "program", "bug", "debug"), "Coding Personality"),
     (("think", "problem", "solve", "decide", "advice"), "Problem Solving"),
     (("habit", "routine", "daily", "morning"), "Daily Companion"),

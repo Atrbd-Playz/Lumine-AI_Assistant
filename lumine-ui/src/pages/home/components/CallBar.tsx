@@ -11,7 +11,7 @@ import type { LumineVoiceConnectionState } from "../../../features/voice/useLumi
  * two controls for one thing in the same state — pressing the big one when already
  * in a call ended the call, and the small one next to it muted it, and the only
  * thing distinguishing them was size. A call has a beginning and an end, and the
- * interface should show that: nothing but a handset while off, and the four
+ * interface should show that: nothing but the call mark while off, and the four
  * controls that exist during a call once there is one.
  *
  * The end call is last and is the only red thing on screen. A row of four identical
@@ -35,11 +35,21 @@ export type CallBarProps = {
   onCameraToggle: () => void;
   screenOn: boolean;
   onScreenToggle: () => void;
-  /** Why camera and screen are unavailable. Their accessible names when off. */
-  mediaDisabledReason?: string;
+  /**
+   * Why camera and screen are unavailable, as their accessible names when off.
+   *
+   * Two separate reasons rather than one, because the two failures have nothing
+   * to do with each other and different fixes: the model may be unable to read
+   * frames, or the platform may be unable to capture. A single string has to
+   * pick one, and whichever it picks is wrong on the other machine -- "choose a
+   * realtime model" is nonsense advice to someone on macOS, where no realtime
+   * model can capture a screen at all.
+   */
+  cameraDisabledReason?: string;
+  screenDisabledReason?: string;
   /** Epoch ms the current call started, or null while offline. */
   startedAt: number | null;
-  /** Why the call cannot start. The handset's accessible name when off. */
+  /** Why the call cannot start. The call mark's accessible name when off. */
   blockedReason?: string;
 };
 
@@ -71,7 +81,8 @@ export function CallBar({
   onCameraToggle,
   screenOn,
   onScreenToggle,
-  mediaDisabledReason,
+  cameraDisabledReason,
+  screenDisabledReason,
   startedAt,
   blockedReason,
 }: CallBarProps) {
@@ -79,7 +90,6 @@ export function CallBar({
   const connecting = status === "connecting" || status === "initializing" || status === "waiting" || status === "reconnecting";
   const ending = status === "disconnecting" || status === "ending";
   const blocked = Boolean(blockedReason);
-  const mediaBlocked = Boolean(mediaDisabledReason);
 
   // Ticks only while a call is up. An interval that runs on the home page for no
   // reason is a wake-up a laptop notices and a person does not.
@@ -128,9 +138,9 @@ export function CallBar({
           type="button"
           className={`call-control ${cameraOn ? "is-off" : ""}`}
           onClick={onCameraToggle}
-          disabled={mediaBlocked && !cameraOn}
+          disabled={Boolean(cameraDisabledReason) && !cameraOn}
           aria-pressed={cameraOn}
-          aria-label={mediaBlocked && !cameraOn ? mediaDisabledReason : cameraOn ? "Turn camera off" : "Turn camera on"}
+          aria-label={cameraDisabledReason && !cameraOn ? cameraDisabledReason : cameraOn ? "Turn camera off" : "Turn camera on"}
         >
           <Icon name={cameraOn ? "video" : "video-off"} size={19} />
         </button>
@@ -138,9 +148,9 @@ export function CallBar({
           type="button"
           className={`call-control ${screenOn ? "is-off" : ""}`}
           onClick={onScreenToggle}
-          disabled={mediaBlocked && !screenOn}
+          disabled={Boolean(screenDisabledReason) && !screenOn}
           aria-pressed={screenOn}
-          aria-label={mediaBlocked && !screenOn ? mediaDisabledReason : screenOn ? "Stop sharing the screen" : "Share the screen"}
+          aria-label={screenDisabledReason && !screenOn ? screenDisabledReason : screenOn ? "Stop sharing the screen" : "Share the screen"}
         >
           <Icon name="monitor" size={19} />
         </button>
@@ -150,8 +160,9 @@ export function CallBar({
           onClick={onDisconnect}
           aria-label="End call"
         >
-          {/* The same handset as the call button, dropped. CSS rotates it, so the
-              two are provably one icon rather than two that happen to look close. */}
+          {/* The call button's waveform, barred. The two are the same glyph rather
+              than two that happen to look related, and the bar is what makes this
+              one the destructive control — which the red circle behind it repeats. */}
           <Icon name="phone-down" size={20} weight="bold" />
         </button>
       </div>

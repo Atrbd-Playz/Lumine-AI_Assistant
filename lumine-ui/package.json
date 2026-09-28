@@ -1,7 +1,10 @@
 {
-  "name": "lumine-ui",
+  "name": "lumine",
   "private": true,
   "version": "0.1.0",
+  "description": "Lumine - a local-first AI companion, by Abdur Rahman Toha",
+  "author": "Abdur Rahman Toha",
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "vite",

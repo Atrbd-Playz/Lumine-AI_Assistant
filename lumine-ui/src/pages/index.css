@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Lumine UI — design tokens
+   Lumine UI â€” design tokens
    Keep component styles below these variables. Add new colors here first.
 
    This file is the single source of truth for the palette. Tailwind is
@@ -31,7 +31,14 @@
   --color-stage-border: #706860;
 
   --color-control-icon: #aaa39b;
-  --voice-button-icon: #0B0B12;
+  /* White on the accent, for the call button. This was #0B0B12 and the `#ffffff`
+     fallback four hundred lines below never fired, because this declaration is
+     unconditional: `:root` sets it and `.theme-light` does not override it. So
+     the glyph was near-black on orange in both themes, and the fallback read
+     like a working default rather than the bug it was. The end-call control
+     never used this token â€” it is pinned to white on red â€” which is why the two
+     handsets disagreed about what colour they were. */
+  --voice-button-icon: #ffffff;
 
   /* The one error color the app has. Previously referenced four times with a
      hardcoded #c0392b fallback because no mode ever defined it. */
@@ -195,6 +202,10 @@ input {
 
 .lumine-app svg {
   color: var(--color-icon);
+}
+
+.call-button-contents svg {
+  color: white;
 }
 
 .route-home {
@@ -608,7 +619,7 @@ input {
 
 /* The count is what turns a tab from a word into an answer. "Web" says where the
    tools are; "Web 3" says whether anything is. Small, muted, and never in the
-   accent — the selection is already carried by the tab's fill, and a second
+   accent â€” the selection is already carried by the tab's fill, and a second
    accent in the same control competes with it. */
 .tab-count {
   margin-left: 7px;
@@ -1011,7 +1022,7 @@ input {
 }
 
 /* Chips are flat at rest, raised on hover, and raised further with the accent
-   painted in when selected — the same three steps the settings rail uses, so the
+   painted in when selected â€” the same three steps the settings rail uses, so the
    two screens read as one system.
 
    Scoped to the three places that hold chips on purpose. The previous rule was
@@ -2012,7 +2023,7 @@ input {
 /* The Avatar Lab is a full page (`AvatarLabPage.tsx`) and styles its own panel.
    What was left here were the old overlay's box, drag handle and trigger pill,
    none of which match anything, plus a *second* copy of the emotion-chip rules
-   that the panel block above had already replaced — the two copies disagreed on
+   that the panel block above had already replaced â€” the two copies disagreed on
    `margin-top` and on which element a caption styled, so which one applied
    depended on source order rather than on intent.
 
@@ -2143,7 +2154,7 @@ input {
 /*
  * The call controls, in the shape a call has.
  *
- * This replaced a dock with a microphone button and a mute button side by side —
+ * This replaced a dock with a microphone button and a mute button side by side â€”
  * two controls for one thing, in the same state, told apart only by size. What is
  * here now is one handset while off, and the four controls that exist once there
  * is a call. The bar's own background is a shadow cast upward, so it fades
@@ -2176,8 +2187,8 @@ input {
  *
  * A single large circle, centred, with no label. The handset is the whole
  * instruction, and a caption under it would be the same thing in words. The ring
- * is an inset shadow rather than a border, so that the states below — which
- * replace `box-shadow` wholesale — cannot silently lose it.
+ * is an inset shadow rather than a border, so that the states below â€” which
+ * replace `box-shadow` wholesale â€” cannot silently lose it.
  */
 .call-button {
   width: 56px;
@@ -2225,7 +2236,7 @@ input {
  *
  * Distinct from `.is-connecting` on purpose: a connecting button is doing
  * something that will finish, a blocked one needs the person. So it drops to a
- * neutral fill and loses the accent halo — the loudest thing on the screen stops
+ * neutral fill and loses the accent halo â€” the loudest thing on the screen stops
  * asking for a press it cannot honour. The gate on the command stage says what
  * is missing.
  */
@@ -2294,7 +2305,7 @@ input {
  *
  * A muted microphone is a microphone with a slash through it, and a plain greyed
  * circle next to three live ones is not a state anybody has to read twice. So the
- * off state takes the surface colour and the icon takes the accent — the same
+ * off state takes the surface colour and the icon takes the accent â€” the same
  * "you are looking at the thing that is off" answer the toggles elsewhere in the
  * app give, arrived at from the other direction.
  */
@@ -2315,7 +2326,7 @@ input {
  * circles leaves the destructive one to be found by hovering, and the answer to
  * "which one ends this" should not need a tooltip. The red is a hard stop rather
  * than the theme accent, because a hang-up is not an action in this app's
- * vocabulary — it is the absence of the conversation.
+ * vocabulary â€” it is the absence of the conversation.
  */
 .call-control--end {
   margin-left: 8px;
@@ -2323,19 +2334,8 @@ input {
   background: #d64545;
   box-shadow: 0 4px 14px -6px rgb(214 69 69 / 0.7);
 }
-
-/*
- * The hang-up, as the call button's handset turned through 135 degrees.
- *
- * 135 rather than 180: a handset is drawn diagonally, so rotating by a quarter
- * turn leaves it diagonal the other way and *reads* as dropped, where 180 would
- * land it vertical and look like it had been cut in half. It is also why the
- * glyph is the plain handset rather than a slashed one — a slash drawn through a
- * filled handset merges with it at this size and comes out looking like a
- * "blocked" sign.
- */
 .call-control--end svg {
-  transform: rotate(135deg);
+  color: #ffffff;
 }
 
 .call-control--end:hover:not(:disabled) {
@@ -2398,7 +2398,7 @@ input {
 }
 
 /* A screen share is already the right way round, and mirroring it would make text
-   on the shared screen unreadable — which is the one thing a screenshare is for. */
+   on the shared screen unreadable â€” which is the one thing a screenshare is for. */
 .self-view--screen .self-view-video {
   transform: none;
 }
@@ -2716,7 +2716,7 @@ input {
    writes the id straight into the profile without a second control.
 
    The current model is marked by its fill, like every other selected state in
-   this app, and is still clickable — re-picking it is harmless and better than a
+   this app, and is still clickable â€” re-picking it is harmless and better than a
    disabled row that looks broken.
    ========================================================================== */
 
@@ -2822,255 +2822,866 @@ input {
   animation: settings-in 0.2s ease-out;
 }
 
-/* Padding only. The scroll container is `.settings-content-scroll`, one level up,
-   and this used to declare `overflow: auto` as well — two nested scrollers in the
-   same pane, which is how a wheel ends up moving a box that is not the one the
-   pointer is over. */
-.appearance-body {
-  padding: 6px 26px 19px;
+/* ==========================================================================
+   Appearance
+
+   The page used to be seven full-width bands separated by hairlines, each one
+   holding a single control, which is why it read as a form to be endured rather
+   than a set of choices to make. Everything here follows from inverting that:
+   related controls share one raised card, a control sits on the same line as the
+   name of the thing it changes, and anything that can be *shown* instead of
+   named â€” a palette, a typeface, a bubble â€” is shown.
+
+   Two structural notes before the rules.
+
+   The width is the first one. This page opts out of the 780px cap the settings
+   column normally sets, because the two-column rows below (the two typefaces,
+   the two mode cards) are unreadable below about 640px of content, and at the
+   app's 800x600 default window there were 416px. The selector is written
+   `.settings-page.ap-page` rather than `.ap-page` on purpose: `.settings-page`
+   is defined *later* in this file, so a single-class rule here would lose the
+   cascade and silently do nothing.
+
+   The second is that every swatch, typeface and bubble on this page is the real
+   component or the real colour, never a hand-built likeness of one. A preview
+   that resembles a thing is a second thing to keep correct.
+   ========================================================================== */
+
+.settings-page.ap-page {
+  /* The footer's `::before` bleeds by -40px to meet the page's own padding, so
+     the padding has to stay at 40px. Only the cap is lifted. */
+  max-width: 100%;
 }
 
-.setting-group {
-  padding: 19px 0;
-  border-bottom: 1px solid var(--color-border);
+.ap-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.setting-title {
+/* --------------------------------------------------------------------------
+   Cards
+   -------------------------------------------------------------------------- */
+
+.ap-card {
+  padding: 18px 20px 20px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-muted);
+  box-shadow: var(--elevation-1);
+}
+
+.ap-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
+  gap: 16px;
+  margin-bottom: 15px;
 }
 
-/* A setting's name sits beside a `?` that holds its explanation, so the name is
-   a flex item rather than a block stacked over a paragraph. The rule for `p` that
-   used to live here is gone: every one of these explanations is on hover now, and
-   the six pages that shared it had all been converted. */
-.setting-title strong {
-  color: var(--color-text);
-  font-size: 14px;
-  letter-spacing: -0.02em;
+.ap-card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
 }
 
-/* A segmented control is gone. There were four of them — the colour mode here,
-   the profile switch, the lighting toggle and a diagnostics filter — and they
-   disagreed on whether the chosen key carried an accent fill, a border, or
-   nothing but a raised shadow. The dropdown now owns every choice, so a
-   two-option question is asked with the same control as a six-option one and
-   the selected state is one thing in the app instead of three. */
-
-.switch {
-  width: 39px;
-  height: 22px;
-  padding: 3px;
-  background: var(--color-text-faint);
-  border-radius: 30px;
-  cursor: pointer;
-  transition: 0.2s ease;
-}
-
-.switch span {
-  display: block;
-  width: 16px;
-  height: 16px;
-  background: #ffffff;
-  border-radius: 50%;
-  transition: 0.2s ease;
-}
-
-.switch.on {
-  background: var(--color-accent);
-}
-
-.switch.on span {
-  transform: translateX(17px);
-}
-
-/*
- * The bubble preview.
- *
- * The bubble style is the one setting whose options are invisible in the control
- * that holds them: "Tinted" and "Secondary" differ in a way no label or swatch
- * can convey, so the sample below the dropdown is not a flourish — it is the only
- * part of this setting that actually shows the choice. It is inset rather than
- * full-bleed so it reads as a picture of the panel instead of a second panel.
- */
-.bubble-preview {
-  margin-top: 10px;
-  padding: 12px 14px;
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-muted);
-  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.14);
-}
-
-.bubble-preview [data-slot="bubble-content"] {
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.setting-subheading {
-  margin: 18px 0 0;
+/* The caption above a group of swatches or fields. */
+.ap-subhead {
+  margin: 0 0 9px;
+  /* Captions read as captions by being 10px, uppercase and tracked, not by being
+     too faint to read. `--color-text-faint` was 3.81:1 on the light card; soft is
+     5.38:1 there and still sits a clear step below the 12px descriptions. */
   color: var(--color-text-soft);
-  font: 500 9px var(--font-mono);
+  font: 500 10px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
 }
 
-.reset-link {
-  color: var(--color-accent);
+.ap-swatch-group + .ap-swatch-group {
+  margin-top: 18px;
+}
+
+.ap-empty {
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+}
+
+.ap-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ap-field-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+}
+
+/* --------------------------------------------------------------------------
+   The palette proof
+
+   A miniature of the app, used twice: full size under the colour-mode cards, and
+   compact inside each of them. Every one of the twelve colours is placed on the
+   surface it actually paints, so a palette that does not hold together looks
+   wrong here rather than in the window behind the dialog.
+
+   The two sizes are one set of rules with different custom properties, rather
+   than two drawings that have to be kept in step.
+   -------------------------------------------------------------------------- */
+
+.ap-proof {
+  --ap-pad: 12px;
+  --ap-rail-w: 30px;
+  --ap-dot: 10px;
+  --ap-halo: 26px;
+  --ap-stage-h: 62px;
+  --ap-line-h: 5px;
+  --ap-radius: 9px;
+
+  display: flex;
+  gap: 10px;
+  padding: var(--ap-pad);
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
+}
+
+.ap-proof-compact {
+  --ap-pad: 9px;
+  --ap-rail-w: 22px;
+  --ap-dot: 7px;
+  --ap-halo: 17px;
+  --ap-stage-h: 40px;
+  --ap-line-h: 3.5px;
+  --ap-radius: 7px;
+  gap: 7px;
+}
+
+.ap-proof-rail {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: var(--ap-rail-w);
+  padding: 8px 0;
+  border-radius: var(--ap-radius);
+}
+
+.ap-proof-dot {
+  width: var(--ap-dot);
+  height: var(--ap-dot);
+  border-radius: 3px;
+}
+
+.ap-proof-dot.is-accent {
+  margin-top: auto;
+  border-radius: 50%;
+}
+
+.ap-proof-dot.is-tiny {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.ap-proof-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The stage takes the height the proof has rather than a fixed one, so the large
+   preview fills the column beside the mode cards instead of leaving dead space
+   under a 62px band. `min-height` keeps the compact variant's proportion when
+   nothing is stretching it. */
+.ap-proof-stage {
+  display: grid;
+  flex: 1 1 auto;
+  place-items: center;
+  min-height: var(--ap-stage-h);
+  border-radius: var(--ap-radius);
+}
+
+/* Lumine's ring, drawn as a glowing disc because that is what the avatar
+   component does with this colour. */
+.ap-proof-halo {
+  width: var(--ap-halo);
+  height: var(--ap-halo);
+  border-radius: 50%;
+}
+
+.ap-proof-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ap-proof-line {
+  width: 64%;
+  height: var(--ap-line-h);
+  border-radius: 3px;
+  opacity: 0.4;
+}
+
+.ap-proof-line.is-strong {
+  width: 40%;
+  opacity: 0.82;
+}
+
+.ap-proof-line.is-tight {
+  width: 72%;
+  height: 3px;
+  opacity: 0.55;
+}
+
+.ap-proof-chat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  align-items: flex-start;
+  padding: 8px;
+  border-radius: var(--ap-radius);
+}
+
+.ap-proof-bubble {
+  display: block;
+  padding: 4px 7px;
+  border-radius: 6px;
+}
+
+/* --------------------------------------------------------------------------
+   Colour mode
+
+   A narrow column of the two mode cards, and a wide live preview beside them.
+
+   The mode cards are two miniature renderings of the app, one per mode, and the
+   preview is the same rendering at size. Placing them side by side answers two
+   different questions at one height: the cards are "which one", the preview is
+   "what does mine look like now". Stacked, they were 340px of column and the
+   second was a smaller copy of the first.
+
+   This section deliberately departs from the app's "one picker" rule, which
+   sends every chooser to `Dropdown`. The rule exists because native popups are
+   drawn by the OS and read as a different application — but its reach, taken
+   literally, made the most-used control on this page a two-option dropdown. That
+   is a click to read the current answer and a second to change it, for a
+   question whose options are pictures. The other pickers here stay in `Dropdown`;
+   this one is a visual choice, and a list of two words cannot answer it.
+   -------------------------------------------------------------------------- */
+
+.ap-themes {
+  display: grid;
+  grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.ap-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ap-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ap-preview-label {
+  color: var(--color-text-soft);
+  font: 500 10px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* The preview takes the column's height. Without this it was a 164px drawing
+   floating at the top of a 368px column, with 183px of bare card below it — and
+   the mode cards, not the preview, were what set the row's height. */
+.ap-preview .ap-proof {
+  flex: 1 1 auto;
+}
+
+/* Below the width where the settings pane can still hold both columns, they
+   stack. The pane is 636px at the window's 940px minimum, which left the
+   preview a 202px sliver with a 138px stage inside it. */
+@media (max-width: 1100px) {
+  .ap-themes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Stacked, the preview no longer inherits the mode cards' 442px row height, so
+     it collapses to its own content: 164px tall with a 62px stage, which reads as
+     a coloured strip rather than as the app. Once the preview is the full width of
+     the card, it can afford to be the tall one instead. */
+  .ap-preview .ap-proof {
+    --ap-pad: 18px;
+    --ap-rail-w: 44px;
+    --ap-dot: 14px;
+    --ap-halo: 38px;
+    --ap-stage-h: 108px;
+    --ap-line-h: 8px;
+    --ap-radius: 12px;
+    min-height: 210px;
+  }
+}
+
+.ap-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 9px;
+  text-align: left;
+  border: 0;
+  border-radius: var(--radius-lg);
   background: transparent;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+
+.ap-mode:hover {
+  box-shadow: var(--elevation-2);
+}
+
+.ap-mode.is-active {
+  box-shadow: 0 0 0 2px var(--color-surface-muted), 0 0 0 4px var(--color-accent);
+}
+
+.ap-mode-name {
+  padding-left: 3px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* --------------------------------------------------------------------------
+   Typefaces
+   -------------------------------------------------------------------------- */
+
+.ap-types {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.ap-type {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-canvas);
+  box-shadow: var(--elevation-1);
+}
+
+.ap-type-label {
+  color: var(--color-text-soft);
+  font: 500 10px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* A real sentence in the chosen face. An "Aa" cannot show how six words will
+   look, and six words is what the setting is actually for. */
+.ap-type-sample {
+  margin: 4px 0 0;
+  font-size: 21px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+/* --------------------------------------------------------------------------
+   Rows and switches
+
+   A row puts the name and the control on one line, so two on/off switches cost
+   the height of two lines rather than of two full-width sections.
+   -------------------------------------------------------------------------- */
+
+.ap-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 13px 0;
+}
+
+.ap-row + .ap-row {
+  border-top: 1px solid var(--color-border);
+}
+
+.ap-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ap-row-label {
+  font-size: 13.5px;
+}
+
+.ap-row-desc {
+  color: var(--color-text-soft);
   font-size: 12px;
+  line-height: 1.5;
+}
+
+.ap-row-control {
+  flex: 0 0 auto;
+}
+
+.ap-switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  /* The off track is a control boundary, not decoration, so it is held to the
+     3:1 non-text bar. `text-faint` at 50% was well under it, and 62% of soft
+     was 2.55:1 against the light card — still a line rather than a control.
+     78% clears the bar in both modes (3.15:1 dark, 3.0:1 light). */
+  background: color-mix(in srgb, var(--color-text-soft) 78%, transparent);
+  cursor: pointer;
+  transition: background 0.18s ease;
+}
+
+.ap-switch.is-on {
+  background: var(--color-accent);
+}
+
+.ap-switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ap-switch.is-on .ap-switch-knob {
+  transform: translateX(18px);
+}
+
+/* --------------------------------------------------------------------------
+   The swatch strip
+
+   All twelve colours stay on screen at once, and the editor below handles
+   whichever one is selected. The page used to show twenty-four controls — a
+   swatch and a ten-pixel hex field for each colour, across two grids — which
+   was the least usable part of the tab: nothing said what any of the colours
+   did, and the two columns were near-identical rows.
+
+   The column count comes from the row's own length rather than from `auto-fit`,
+   which chose six tracks for the seven interface colours and left the seventh
+   alone on a second row beside five empty cells. A count cannot orphan a
+   swatch. The narrow override exists because "cannot orphan" and "fits" pull
+   against each other at the window's 940px minimum, where seven columns are
+   67px and clip "Lumine's bubbles" to an ellipsis; splitting seven into 4 + 3
+   and leaving the five alone keeps every name whole.
+   -------------------------------------------------------------------------- */
+
+.ap-swatches {
+  display: grid;
+  grid-template-columns: repeat(var(--ap-count, 7), minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .ap-swatches {
+    grid-template-columns: repeat(var(--ap-count-narrow, 4), minmax(0, 1fr));
+  }
+}
+
+.ap-swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px;
+  text-align: left;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.ap-swatch:hover {
+  background: color-mix(in srgb, var(--color-text) 5%, transparent);
+}
+
+/* The selection ring is drawn on the chip rather than the tile, so the tile's
+   own padding does not move when the selection changes. */
+.ap-swatch.is-active .ap-swatch-chip {
+  box-shadow: 0 0 0 2px var(--color-surface-muted), 0 0 0 4px var(--color-accent);
+}
+
+.ap-swatch-chip {
+  display: block;
+  height: 40px;
+  border-radius: 8px;
+  box-shadow: var(--elevation-1);
+  transition: box-shadow 0.15s ease;
+}
+
+/* Two lines, in a box two lines tall, rather than one line and an ellipsis.
+   At the window's 940px minimum a swatch is 97px wide, and "Lumine's bubbles"
+   overflowed that by about three pixels — so it either lost its name or the hex
+   below it was the only readable thing left. Fixing the height keeps every
+   hex in the row on the same baseline whether its label wrapped or not. */
+.ap-swatch-name {
+  display: -webkit-box;
+  /* Stated rather than inherited. Inheriting gave 3.37:1 in light mode, and a
+     name you cannot read is not a quieter name. */
+  color: var(--color-text-soft);
+  min-height: 2.5em;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.25;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* The selected swatch is marked by the offset ring, the raised chip, and a bolder
+   name — not by colouring the name. Accent text on the accent-tinted selected
+   tile measured 3.37:1 in light mode, and the ring already says which swatch is
+   selected at any colour a user can reach. */
+.ap-swatch.is-active .ap-swatch-name {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.ap-swatch-hex {
+  /* The hex is not decoration — it is the value this tile is offering to change —
+     so it is `--color-text-soft` rather than `--color-text-faint`. Faint measured
+     3.81:1 on the light card, under the 4.5:1 bar for 10px text. */
+  color: var(--color-text-soft);
+  font: 10px var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* --------------------------------------------------------------------------
+   The selected colour's editor
+   -------------------------------------------------------------------------- */
+
+.ap-editor {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 18px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-canvas);
+  box-shadow: var(--elevation-1);
+}
+
+/* The label is painted in the colour and the native input is stretched over it
+   invisibly, which makes the whole 64px square the target. A native swatch is
+   about 24px and sits in a row of text; this is the control the page is about,
+   so it is the largest thing on it. */
+.ap-editor-picker {
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  overflow: hidden;
+  border-radius: 14px;
+  box-shadow: var(--elevation-1);
   cursor: pointer;
 }
 
-.color-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-top: 14px;
+.ap-editor-picker input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
-.color-grid label > span {
-  display: block;
-  margin-bottom: 5px;
+.ap-editor-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ap-editor-name {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.ap-editor-desc {
+  color: var(--color-text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ap-editor-hex {
+  width: 116px;
+  margin-top: 4px;
+  padding: 7px 9px;
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  font: 12.5px var(--font-mono);
+  text-transform: uppercase;
+}
+
+.ap-editor-hex:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+/* --------------------------------------------------------------------------
+   Saved palettes
+   -------------------------------------------------------------------------- */
+
+.ap-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ap-preset {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 14px 7px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-canvas);
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+
+.ap-preset:hover {
+  box-shadow: var(--elevation-2);
+}
+
+.ap-preset.is-active {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+/* Three overlapping dots rather than one: a palette's identity is the
+   relationship between its canvas, its panels and its accent, and a single
+   swatch cannot show that. */
+.ap-preset-dots {
+  display: flex;
+}
+
+.ap-preset-dots span {
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid var(--color-canvas);
+  border-radius: 50%;
+}
+
+.ap-preset-dots span + span {
+  margin-left: -5px;
+}
+
+.ap-preset-name {
+  font-size: 12.5px;
+}
+
+.ap-applied {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 0;
   color: var(--color-text-soft);
   font-size: 12px;
 }
 
-.color-grid label > div {
+.ap-applied > span {
+  flex: 1;
+}
+
+.ap-preset-save {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 5px;
-  background: var(--color-canvas);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+  gap: 10px;
+  margin-top: 16px;
 }
 
-.color-grid input[type="color"] {
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  overflow: hidden;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.color-grid input[type="text"],
-.color-grid input:not([type]) {
-  width: 100%;
-  color: var(--color-text);
-  outline: 0;
-  background: transparent;
-  border: 0;
-  font: 10px var(--font-mono);
-}
-
-.preset-save {
-  display: flex;
-  gap: 7px;
-  margin-top: 14px;
-}
-
-.preset-save input {
-  min-width: 0;
+.ap-preset-save input {
   flex: 1;
-  padding: 9px 10px;
+  min-width: 0;
+  padding: 9px 11px;
   color: var(--color-text);
   background: var(--color-canvas);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  outline: 0;
+  font-size: 13px;
 }
 
-.preset-save button {
-  padding: 0 12px;
+.ap-preset-save input:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.ap-tweaked {
+  color: var(--color-text-soft);
+  font: 11px var(--font-mono);
+}
+
+/* --------------------------------------------------------------------------
+   Buttons
+   -------------------------------------------------------------------------- */
+
+.ap-ghost-button,
+.ap-solid-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 13px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+
+.ap-ghost-button {
   color: var(--color-text);
   background: var(--color-surface-muted);
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  cursor: pointer;
+  border: 1px solid var(--color-border);
 }
 
-.preset-save button:disabled {
+.ap-ghost-button:hover {
+  box-shadow: var(--elevation-2);
+}
+
+.ap-solid-button {
+  color: var(--color-stage-text);
+  background: var(--color-accent);
+  border: 0;
+  font-weight: 500;
+}
+
+.ap-ghost-button:disabled,
+.ap-solid-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
 
-/* Saved palettes are applied from a dropdown now, so the per-preset rows this
-   section used to hold are gone. The swatch survived as an option on
-   `Dropdown`: a palette is a colour, and a list of names with no colour in it is
-   a list of things to try in turn. */
-
-.palette-import {
-  margin-top: 18px;
+/* One focus treatment for every control this page adds. The app's other
+   primitives each carry their own, and a page that invents a third kind of
+   focus ring is the inconsistency this is here to prevent. */
+.ap-modes :focus-visible,
+.ap-mode:focus-visible,
+.ap-swatch:focus-visible,
+.ap-preset:focus-visible,
+.ap-ghost-button:focus-visible,
+.ap-solid-button:focus-visible,
+.ap-switch:focus-visible,
+.ap-editor-picker:focus-within,
+.ap-preset-save input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
-.file-button {
+/* --------------------------------------------------------------------------
+   Conversation sample and import
+   -------------------------------------------------------------------------- */
+
+.ap-bubble-preview {
+  margin-top: 12px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: var(--color-canvas);
+  box-shadow: var(--elevation-1);
+}
+
+.ap-bubble-preview [data-slot="bubble-content"] {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.ap-import {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ap-import-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.ap-import-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+/* The file input covers its label rather than hiding inside it, so the whole
+   button is the drop target instead of a 1px target somewhere inside it. */
+.ap-import-head .ap-ghost-button {
   position: relative;
-  padding: 7px 10px;
-  color: var(--color-text);
-  background: var(--color-surface-muted);
-  border-radius: var(--radius-sm);
-  font-size: 11px;
+  overflow: hidden;
+}
+
+.ap-import-head .ap-ghost-button input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
   cursor: pointer;
 }
 
-.file-button input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-
-.palette-import textarea {
+.ap-import textarea {
+  box-sizing: border-box;
   width: 100%;
   min-height: 150px;
-  box-sizing: border-box;
-  margin-top: 12px;
-  padding: 10px;
+  padding: 12px;
   resize: vertical;
   color: var(--color-text);
   background: var(--color-canvas);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   outline: 0;
-  font: 10px / 1.5 var(--font-mono);
+  font: 11.5px/1.6 var(--font-mono);
 }
 
-.palette-import textarea:focus {
+.ap-import textarea:focus {
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 10%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
 }
 
-.palette-import-actions {
+.ap-import-actions {
   display: flex;
-  gap: 7px;
-  margin-top: 8px;
+  gap: 8px;
 }
 
-.palette-import-actions button {
-  padding: 7px 10px;
-  color: var(--color-text);
-  background: var(--color-surface-muted);
-  border-radius: var(--radius-sm);
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.palette-import-actions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.import-message {
-  margin: 8px 0 0;
+.ap-import-message {
+  margin: 0;
   color: var(--color-accent);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* ==========================================================================
@@ -3439,6 +4050,83 @@ input {
   text-wrap: pretty;
 }
 
+/* The About screen: who made the app, stated plainly.
+   A definition list rather than paragraphs, so "owner / copyright / licence" read
+   as labelled facts instead of as three more blocks of marketing prose. */
+/* The mark in the page header. The large one below is the page's subject; this is
+   the same file at nav scale, so the app's icon is visible from every tab. */
+.about-mark-sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  box-shadow: 0 3px 12px rgb(0 0 0 / 16%);
+}
+
+.about-identity {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.about-mark {
+  width: 96px;
+  height: 96px;
+  flex: 0 0 auto;
+  border-radius: 22px;
+  object-fit: cover;
+  background: var(--color-surface);
+  box-shadow: 0 8px 26px rgb(0 0 0 / 18%);
+}
+
+.about-identity-text {
+  min-width: 0;
+}
+
+.about-name {
+  margin: 0;
+  font: 400 28px/1.15 var(--font-display);
+  letter-spacing: -0.04em;
+}
+
+.about-tagline {
+  margin: 4px 0 0;
+  color: var(--color-text-soft);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.about-version {
+  margin: 8px 0 0;
+  color: var(--color-text-soft);
+  font: 400 12px/1.4 var(--font-mono);
+}
+
+.about-facts {
+  display: grid;
+  gap: 14px;
+  margin: 0;
+}
+
+.about-fact {
+  display: grid;
+  grid-template-columns: minmax(120px, 170px) 1fr;
+  gap: 16px;
+  align-items: baseline;
+}
+
+.about-fact dt {
+  color: var(--color-text-soft);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.about-fact dd {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
 /* Stands in for a page whose data never arrived. Quiet and contained, so it
    reads as "nothing to show" rather than as a broken screen. */
 .settings-empty {
@@ -3790,7 +4478,7 @@ input {
  *
  * A credential is write-only, so the input is always empty and there is no way to
  * fill it from the keyring. That makes an empty box beside a stored value
- * genuinely ambiguous from the outside — which is how "it saved all three but two
+ * genuinely ambiguous from the outside â€” which is how "it saved all three but two
  * were empty" and "reopening it showed three empty fields" were the same report.
  * So the state is said in words above the box, per variable, and a stored value
  * ends in a dot and a tone rather than a tick alone: a tick is a shape, and this
@@ -3825,7 +4513,7 @@ input {
  * How far through setup you are, in one thin bar.
  *
  * A number alone ("2 of 5") is work to interpret; a bar is read instantly and
- * costs one row of vertical space. It is deliberately not a ring or a spinner —
+ * costs one row of vertical space. It is deliberately not a ring or a spinner â€”
  * this is a position, not a process, and the process is already visible because
  * every unfilled field is sitting right underneath it.
  */

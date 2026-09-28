@@ -1,6 +1,12 @@
 import type { IconName } from "../home/types";
 
-export type SettingsSection = "appearance" | "voice" | "models" | "providers" | "diagnostics";
+export type SettingsSection =
+  | "appearance"
+  | "voice"
+  | "models"
+  | "providers"
+  | "diagnostics"
+  | "about";
 
 /**
  * A second level of navigation, for a section that is really several screens.
@@ -97,6 +103,14 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     label: "Diagnostics",
     description: "What each model can do, and whether it is reachable",
     icon: "clock",
+    group: "System",
+    tabs: [],
+  },
+  {
+    id: "about",
+    label: "About Lumine",
+    description: "Who made Lumine, and what it is",
+    icon: "info",
     group: "System",
     tabs: [],
   },

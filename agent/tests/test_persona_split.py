@@ -101,5 +101,63 @@ class PersonaRecallTests(unittest.TestCase):
         self.assertEqual(PERSONA_PATH, FULL_PATH)
 
 
+class PersonaSightTests(unittest.TestCase):
+    """Lumine can now see, and the persona has to know it.
+
+    The feature is worthless if the model still says "I can't see anything". That
+    is not a hypothetical: the core used to say she "never pretends to have a
+    camera", which was true when the camera was a local preview and became a
+    direct contradiction of the feature on the day it shipped. Nothing failed,
+    because a persona is prose and prose does not raise.
+
+    So the two halves are asserted rather than assumed -- that the core carries
+    the rule, and that the recall tool can actually reach the long-form guidance.
+    A section nothing retrieves is a section that can be deleted silently.
+    """
+
+    def test_the_core_admits_sight(self):
+        core = CORE_PATH.read_text(encoding="utf-8").lower()
+        self.assertIn("sight", core, "the core is sent on every turn and must carry the rule")
+        self.assertIn("share", core, "what she can see depends on the user sharing it")
+
+    def test_the_core_does_not_claim_to_be_blind(self):
+        """The exact sentence that had to be removed, as a regression guard.
+
+        Worth pinning rather than trusting, because it was not wrong when it was
+        written and nothing about editing the file would have flagged it.
+        """
+        core = CORE_PATH.read_text(encoding="utf-8").lower()
+        self.assertNotIn("never pretends to have a body, a camera", core)
+
+    def test_the_full_persona_documents_sight(self):
+        full = FULL_PATH.read_text(encoding="utf-8")
+        self.assertIn("# Sight", full)
+
+    def test_recall_finds_the_sight_section(self):
+        # The phrasings are the ones a turn actually arrives as. "Sight" alone
+        # would pass while every real question missed, which is the shape of the
+        # bug this guards.
+        for question in (
+            "what can you see",
+            "can you see my screen",
+            "you are looking at my code",
+            "what am i wearing",
+        ):
+            with self.subTest(question=question):
+                self.assertIn("Sight", find_sections(question))
+
+    def test_sight_says_she_does_not_guess(self):
+        """The honesty rule, which is the part that matters most.
+
+        A model that can see and cannot say "I can't" will invent a description
+        of an unshared screen, and a confident wrong answer about what someone
+        looks like is worse than no answer.
+        """
+        full = FULL_PATH.read_text(encoding="utf-8").lower()
+        section = full.split("# sight", 1)[1].split("\n# ", 1)[0]
+        self.assertIn("can't see anything", section)
+        self.assertIn("never", section)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,12 +23,13 @@ import {
   Trash,
   Waveform,
   X,
-  Phone,
+  WaveformSlash,
   VideoCamera,
   VideoCameraSlash,
   MonitorArrowUp,
   SpeakerHigh,
   SpeakerSlash,
+  Info,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import type { IconName } from "../types";
@@ -42,6 +43,7 @@ const iconMap: Record<IconName, PhosphorIcon> = {
   check: Check,
   clock: Clock,
   settings: GearSix,
+  info: Info,
   mic: Microphone,
   "mic-off": MicrophoneSlash,
   send: PaperPlaneTilt,
@@ -60,17 +62,20 @@ const iconMap: Record<IconName, PhosphorIcon> = {
   reset: ArrowCounterClockwise,
   close: X,
   presentation: StackSimple,
-  // The call bar. A handset rather than a square, because the control starts a
-  // conversation rather than toggling a state.
+  // The call bar. A waveform rather than a handset, because the control starts a
+  // voice conversation and this is the app's own mark for one — the same glyph the
+  // transcript and the activity page use. Reaching for a handset put a second
+  // visual language on the only control that begins a call.
   //
-  // The end-call mark is the *same* handset, rotated, not `PhoneDisconnect`. A
-  // slash drawn through a filled handset produces a heavy blob at 20px — the
-  // earpiece, the mouthpiece and the bar all merge into one silhouette — and it
-  // reads as a "blocked" sign rather than a hang-up. Dropping the handset 135
-  // degrees is the convention every call app uses, and it makes the pair
-  // obviously related: same object, two positions.
-  phone: Phone,
-  "phone-down": Phone,
+  // The end-call mark is the *same* waveform with a bar through it, not a second
+  // unrelated symbol. Two details make that work where the handset version did
+  // not: a waveform is drawn as thin strokes, so a bar across it stays a bar
+  // instead of merging into a filled blob at 20px — which is exactly why the
+  // handset was never `PhoneDisconnect` — and "the voice, stopped" is legible
+  // without the pair having to be related by rotation. Nothing is rotated here,
+  // so nothing depends on the two glyphs sharing a bounding box.
+  phone: Waveform,
+  "phone-down": WaveformSlash,
   video: VideoCamera,
   "video-off": VideoCameraSlash,
   // Arrow up out of a screen, which is the direction a screenshare travels and
@@ -92,11 +97,12 @@ export function Icon({
    * Phosphor draws the same glyph in several weights, and the choice is part of
    * the icon rather than a separate asset.
    *
-   * The call handsets are `bold` rather than `fill`. A filled handset is a solid
-   * silhouette with no interior detail, so at 24px and below the earpiece and
-   * mouthpiece blur into a single blob and the shape stops being a handset. A
-   * bold outline keeps both ends legible inside a small filled circle, and it
-   * matches the toolbar controls beside it, which are outlines too.
+   * The call waveforms are `bold` rather than `fill`. A filled waveform is a
+   * solid block of vertical bars with no gaps left between them, so at 24px and
+   * below the bars merge and the shape stops reading as audio at all. A bold
+   * outline keeps the gaps — which *are* the waveform — legible inside a small
+   * filled circle, and it matches the toolbar controls beside it, which are
+   * outlines too.
    */
   weight?: "thin" | "light" | "regular" | "bold" | "fill" | "duotone";
 }) {

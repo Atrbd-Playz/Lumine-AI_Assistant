@@ -67,6 +67,30 @@ export function usePreferences() {
     appearance,
     setAppearance: (nextAppearance: Appearance) => setPreferences((current) => ({ ...current, appearance: nextAppearance, palettes: { ...current.palettes, [current.mode]: toPalette(nextAppearance) } })),
     resetAppearance: () => setPreferences((current) => ({ ...current, appearance: { ...current.appearance, ...(current.mode === "light" ? DEFAULT_LIGHT_PALETTE : DEFAULT_DARK_PALETTE) }, palettes: { ...current.palettes, [current.mode]: current.mode === "light" ? DEFAULT_LIGHT_PALETTE : DEFAULT_DARK_PALETTE } })),
+    /**
+     * Returns every appearance setting to what shipped.
+     *
+     * This exists because the footer's "Reset all appearance" was wired to
+     * `resetAppearance`, which only restores the twelve colours for the mode
+     * currently on screen. The interface typeface, the chat typeface, the bubble
+     * style and the avatar-colour toggle all survived a click on a button named
+     * after them — the label described something the function did not do. So the
+     * two are now distinct and each is named for what it does: `resetAppearance`
+     * is the palette editor's Reset, and this is the footer's.
+     *
+     * Both modes' palettes are restored, because "all" means all and a user who
+     * tuned light as well as dark asked for the app to go back to how it
+     * shipped. Saved presets are deliberately untouched: a named palette is
+     * something the user made, and forgetting your settings is not a request to
+     * delete your work.
+     */
+    resetAllAppearance: () => setPreferences((current) => ({
+      ...current,
+      mode: "dark",
+      cursorGaze: true,
+      appearance: { ...DEFAULT_APPEARANCE, ...DEFAULT_DARK_PALETTE },
+      palettes: { light: DEFAULT_LIGHT_PALETTE, dark: DEFAULT_DARK_PALETTE },
+    })),
     presets: preferences.themePresets[preferences.mode],
     savePreset: (name: string, preset: AppearancePreset) => setPreferences((current) => ({ ...current, themePresets: { ...current.themePresets, [current.mode]: { ...current.themePresets[current.mode], [name]: preset } } })),
     importPresets: (collection: ThemePresetCollection) => setPreferences((current) => ({

@@ -1,4 +1,4 @@
-import { ParticipantKind, Room, RoomEvent, Track, type Participant, type RemoteParticipant, type RemoteTrack, type RemoteTrackPublication, type TranscriptionSegment } from "livekit-client";
+import { LocalVideoTrack, ParticipantKind, Room, RoomEvent, Track, type Participant, type RemoteParticipant, type RemoteTrack, type RemoteTrackPublication, type TranscriptionSegment } from "livekit-client";
 import { invoke } from "@tauri-apps/api/core";
 import { LIVEKIT_URL, getLiveKitToken } from "../../lib/livekit";
 import { resolveEmotionIntent } from "../emotion/emotion-controller";
@@ -88,6 +88,16 @@ type SessionContext = {
   agentTimer?: number;
   agentConnected: boolean;
   muted: boolean;
+  /**
+   * The video track this session published, and which source it came from.
+   *
+   * Held rather than re-derived because LiveKit uses only the most recently
+   * published video track: unpublishing the wrong one leaves the previous
+   * source live in the room, and the self-view card would then be showing a
+   * track the model cannot see. One published track, tracked by name.
+   */
+  publishedVideo?: LocalVideoTrack;
+  publishedVideoSource?: "camera" | "screen";
   disposed: boolean;
 };
 
@@ -289,6 +299,10 @@ export class LumineVoiceManager {
     try {
       session.room.removeAllListeners();
       await session.room.localParticipant.setMicrophoneEnabled(false).catch(() => undefined);
+      // Before the publications sweep below, and against *this* session: the
+      // sweep only stops audio, so a published video track would otherwise
+      // survive teardown with its camera still lit.
+      await this.unpublishFrom(session).catch(() => undefined);
       session.room.localParticipant.trackPublications.forEach((publication) => {
         if (publication.kind === Track.Kind.Audio) {
           publication.track?.stop();
@@ -775,6 +789,85 @@ export class LumineVoiceManager {
     session.muted = muted;
     this.muted = muted;
     this.publish();
+  }
+
+  /**
+   * Put a captured stream into the room, replacing whatever video was there.
+   *
+   * The caller owns the `MediaStream` -- it came from `useLocalMedia`, which is
+   * also what stops it. This only wraps and publishes, so there is one capture
+   * and one teardown rather than a second one hidden inside LiveKit's own
+   * `setScreenShareEnabled`, whose tracks this module would not be able to
+   * release.
+   *
+   * Publishing the previous source first would be the more polite order, but it
+   * would also leave a window where both are live and the model is looking at
+   * the outgoing one. Unpublishing first costs a frame of nothing.
+   */
+  async publishVideo(source: "camera" | "screen", stream: MediaStream): Promise<boolean> {
+    const session = this.activeSession;
+    if (!session || session.disposed || this.state === "disconnecting") {
+      return false;
+    }
+    // Nothing to publish if the capture produced no video track. A `MediaStream`
+    // with only audio is a legal thing to hand this function, and wrapping its
+    // `undefined` would fail somewhere less obvious than here.
+    const mediaTrack = stream.getVideoTracks()[0];
+    if (!mediaTrack) {
+      this.error = "The capture produced no video to share.";
+      this.callbacks.onError(this.error);
+      this.publish();
+      return false;
+    }
+    try {
+      await this.unpublishFrom(session);
+      // `userProvidedTrack` is true because the track was captured by
+      // `useLocalMedia` rather than created by LiveKit, which is what tells the
+      // SDK not to try to manage its lifecycle itself.
+      const track = new LocalVideoTrack(mediaTrack, undefined, true);
+      await session.room.localParticipant.publishTrack(track, { source: source === "screen" ? Track.Source.ScreenShare : Track.Source.Camera });
+      session.publishedVideo = track;
+      session.publishedVideoSource = source;
+      return true;
+    } catch {
+      // The message names the camera even for a screen share, because this is
+      // reached when the room rejected the track rather than when the capture
+      // failed -- and the capture's own failures are reported by
+      // `useLocalMedia`, which is the only thing that can tell them apart.
+      this.error = "The capture could not be shared with Lumine.";
+      this.callbacks.onError(this.error);
+      this.publish();
+      return false;
+    }
+  }
+
+  /**
+   * Take the published video back out and stop the track.
+   *
+   * `unpublish` does not stop the underlying media, so the `stop()` here is what
+   * actually turns the camera light off. Skipping it is how a desktop app ends
+   * up recording to nobody.
+   *
+   * Takes the session explicitly rather than reading `activeSession`, because
+   * teardown runs against a captured session that may already have been
+   * replaced. Reading the field there would unpublish the *new* session's
+   * camera, or nothing at all, depending on timing.
+   */
+  private async unpublishFrom(session: SessionContext | null): Promise<void> {
+    const track = session?.publishedVideo;
+    if (!session || !track) return;
+    session.publishedVideo = undefined;
+    session.publishedVideoSource = undefined;
+    try {
+      await session.room.localParticipant.unpublishTrack(track, true);
+    } catch {
+      // The room may already be gone. The track still has to be stopped, so this
+      // is swallowed rather than propagated -- there is nothing left to publish to.
+    }
+  }
+
+  async unpublishVideo(): Promise<void> {
+    await this.unpublishFrom(this.activeSession);
   }
 
   private async handleFailure(message: string) {

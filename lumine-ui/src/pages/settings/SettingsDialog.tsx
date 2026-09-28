@@ -64,6 +64,19 @@ export function SettingsDialog({
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        // Escape means "cancel the thing I am in", and inside a text field that
+        // is the field — not the screen containing it. The Appearance tab's import
+        // panel is a textarea, and a dialog that closes the moment you press the
+        // key you reach for to back out of a paste throws away every appearance
+        // change made since the dialog opened, silently and without an undo.
+        //
+        // Popups are excluded by the same logic for the opposite reason: base-ui
+        // closes a `listbox` on Escape and stops it reaching here, so a select
+        // never got this far anyway, and a dialog-shaped overlay is a thing the
+        // user is *inside*, not a thing they are typing into.
+        if ((event.target as HTMLElement | null)?.closest("input, textarea, [contenteditable]:not([contenteditable='false'])")) {
+          return;
+        }
         event.preventDefault();
         onClose();
         return;

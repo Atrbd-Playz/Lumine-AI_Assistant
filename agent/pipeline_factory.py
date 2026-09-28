@@ -127,6 +127,11 @@ class PipelineComponents:
     llm: Any
     response_token_limit: int | None = None
     session_kwargs: dict[str, Any] = field(default_factory=dict)
+    #: What the room should subscribe this session to, resolved from the catalog
+    #: rather than configured. Always a real ``RoomOptions`` and never ``None``:
+    #: ``session.start`` treats ``None`` as a supplied-but-wrong type and raises,
+    #: so "off" has to be an options object that says off.
+    room_options: Any = None
     vad: Any | None = None
     stt: Any | None = None
     tts: Any | None = None
@@ -195,6 +200,48 @@ def _voice_keyword(stage: ResolvedStage) -> str:
         return "voice"
     definition = model.option("voice")
     return definition.plugin_keyword if definition is not None else "voice"
+
+
+def _stage_sees_frames(stage: ResolvedStage, capability: Capability) -> bool:
+    """Whether a camera frame published to the room would reach this stage.
+
+    Read from the catalog's own ``input_modalities`` rather than decided here,
+    because the alternative is the exact failure this file already had once: a
+    constant that compiles is not a constant that is true of the service it names.
+
+    An uncatalogued model answers ``False``, which is the safe direction. LiveKit
+    documents that turning on ``video_input`` for a model that cannot read frames
+    *silently ignores them* -- no error, no warning, and a session that looks
+    healthy while the frames go nowhere. Refusing to subscribe is the only answer
+    that cannot be mistaken for working.
+
+    This is also why the cascade path answers ``False`` without consulting
+    anything: its LLM stage is handed a chat history of strings, and a frame
+    injected into that history is a separate feature with its own modality story.
+    """
+    model = get_model(stage.provider, stage.model, capability)
+    return model is not None and model.sees
+
+
+def _room_options(video_input: bool) -> Any:
+    """A ``RoomOptions`` that subscribes to video exactly when it can be read.
+
+    Not ``RoomInputOptions``: LiveKit deprecated it, and passing one logs
+    "use RoomOptions instead" on every session. It is also no longer importable
+    from ``voice.agent_session`` -- the two live in different modules now, which
+    is a rename that fails loudly rather than silently, so it is worth naming.
+
+    ``video_input`` defaults to False, so a session that cannot use frames
+    subscribes to nothing and the cost of saying so is zero.
+    """
+    try:
+        from livekit.agents.voice.room_io import RoomOptions
+    except ImportError as exc:  # pragma: no cover - depends on the installed SDK
+        raise RuntimeError(
+            "Video input requires a livekit-agents version that provides "
+            "livekit.agents.voice.room_io.RoomOptions."
+        ) from exc
+    return RoomOptions(video_input=video_input)
 
 
 async def _build_llm(stage: ResolvedStage) -> Any:
@@ -310,6 +357,25 @@ async def _build_realtime_session(resolved: ResolvedProfile) -> PipelineComponen
     if tts is not None:
         session_kwargs["tts"] = tts
 
+    # Whether a frame reaches the model at all, decided by the catalog. The two
+    # reasons this is not simply `True` are both quiet: LiveKit drops frames from
+    # a model that cannot read them without saying so, and a native-audio model
+    # that declares no image input would look identical while doing it.
+    can_see = _stage_sees_frames(resolved.realtime, "realtime")
+
+    if can_see:
+        # Declared rather than inherited. The library default is exactly these
+        # numbers, so this is not a behaviour change -- it is a behaviour change
+        # that has to be *read*, because a frame rate nobody chose is a frame
+        # rate nobody can reason about when the bill arrives. Gemini tokenizes
+        # every frame by its dimensions, so this is money.
+        from livekit.agents.voice.agent_session import VoiceActivityVideoSampler
+
+        session_kwargs["video_sampler"] = VoiceActivityVideoSampler(
+            speaking_fps=1.0,
+            silent_fps=0.3,
+        )
+
     return PipelineComponents(
         profile=resolved.profile_id,
         model_name=resolved.realtime.model,
@@ -318,6 +384,7 @@ async def _build_realtime_session(resolved: ResolvedProfile) -> PipelineComponen
         response_token_limit=options.get("max_output_tokens"),
         tts=tts,
         session_kwargs=session_kwargs,
+        room_options=_room_options(can_see),
     )
 
 
@@ -380,6 +447,13 @@ async def _build_cascade_session(resolved: ResolvedProfile) -> PipelineComponent
             "max_tool_steps": resolved.max_tool_steps,
             "min_endpointing_delay": resolved.min_endpointing_delay,
         },
+        # Said off, and said deliberately. LiveKit can inject a frame into a
+        # cascade conversation as an image message on each user turn, and that
+        # genuinely works -- but the LLM stage here is a chat model handed a
+        # history of strings, and it declares `("text",)` input modalities in
+        # the catalog. Turning the subscription on before that is true would let
+        # a profile validate, and then quietly do nothing with every frame.
+        room_options=_room_options(False),
     )
 
 

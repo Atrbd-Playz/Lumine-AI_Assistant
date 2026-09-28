@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { DEFAULT_APPEARANCE } from "./home/constants";
 import { AppearanceDialog } from "./home/components/AppearanceDialog";
 import { MainSpace } from "./home/components/MainSpace";
@@ -23,6 +23,7 @@ import { ProvidersPage } from "./settings/ai/ProvidersPage";
 import { VoicePage } from "./settings/ai/VoicePage";
 import { ModelsPage } from "./settings/ai/ModelsPage";
 import { DiagnosticsPage } from "./settings/system/DiagnosticsPage";
+import { AboutPage } from "./settings/system/AboutPage";
 import { CONFIG_VERSION } from "../features/settings/aiConfigTypes";
 import { useAiConfig } from "../features/settings/useAiConfig";
 import { useSetupStatus } from "../features/settings/useSetupStatus";
@@ -37,7 +38,7 @@ export default function Home() {
   const [conversationOpen, setConversationOpen] = useState(false);
   const notify = useNotify();
   const conversation = useConversation();
-  const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
+  const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, resetAllAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
   const aiConfig = useAiConfig();
   // Read once here and refreshed by the gate, so a key pasted in the wizard is
   // reflected in the voice button without a second round-trip on every render.
@@ -215,8 +216,8 @@ export default function Home() {
   useDocumentTheme(mode, variables);
 
   // The camera and the screen, released the moment the call ends. Owned here
-  // rather than in the voice hook because neither is part of the voice session:
-  // nothing is published, and the two lifecycles are genuinely different.
+  // because the capture and the publication have different owners: this hook
+  // holds the device, and the voice session holds the track in the room.
   const media = useLocalMedia({ enabled: session.isActive });
   // Whether the selected model could consume frames, read from the same
   // `inputModalities` the Diagnostics matrix draws.
@@ -230,6 +231,68 @@ export default function Home() {
       ?.models.find((entry) => entry.id === stage.model);
     return Boolean(model?.inputModalities.includes("image"));
   }, [aiConfig.activeProfile, aiConfig.catalog]);
+
+  // Capture is local; publication is what Lumine sees. The model is the gate,
+  // because LiveKit silently discards frames from a model that cannot read them
+  // -- no error, and a recording indicator that is lit for nothing.
+  const [isPublished, setIsPublished] = useState(false);
+  const publishedRef = useRef(false);
+  const { publishVideo, unpublishVideo } = session;
+
+  const dropPublished = useCallback(() => {
+    if (!publishedRef.current) return;
+    publishedRef.current = false;
+    setIsPublished(false);
+    void unpublishVideo();
+  }, [unpublishVideo]);
+
+  /**
+   * Unpublish whenever anything the publication depended on stops being true.
+   *
+   * Three ways that happens, and none of them involve the user pressing the
+   * control -- which is the whole reason this is an effect rather than a branch
+   * inside the toggle:
+   *
+   * * the model changes to one that declares no image input;
+   * * the call ends, so there is no session left to publish into;
+   * * the capture ends on its own, because the user pressed the browser's own
+   *   "Stop sharing" bar or revoked the device from the system tray. The
+   *   preview card simply disappears in that case, so without this the track
+   *   stays in the room and `isPublished` keeps claiming a share that ended.
+   *
+   * A track left in the room after the thing that could read it is gone is
+   * exactly the silent failure this feature is built to avoid.
+   */
+  useEffect(() => {
+    if (canReceiveVideo && session.isActive && media.active) return;
+    dropPublished();
+  }, [canReceiveVideo, session.isActive, media.active, dropPublished]);
+
+  const toggleSource = useCallback(
+    async (source: "camera" | "screen") => {
+      const result = source === "camera" ? await media.toggleCamera() : await media.toggleScreen();
+      if (result.kind === "failed") {
+        // The capture never started, so whatever was already live is still live.
+        // Unpublishing here would stop a camera the user never asked to stop --
+        // the error field is what reports this, and it is already set.
+        return;
+      }
+      if (result.kind === "stopped") {
+        dropPublished();
+        return;
+      }
+      if (!canReceiveVideo) {
+        // Captured, previewed, and deliberately not published: the model cannot
+        // read frames and would discard them without a word. The self-view still
+        // shows the user their own picture, and its badge says so.
+        return;
+      }
+      const published = await publishVideo(result.media.source, result.media.stream);
+      publishedRef.current = published;
+      setIsPublished(published);
+    },
+    [media, canReceiveVideo, publishVideo, dropPublished],
+  );
 
   return <div className={`lumine-app theme-${mode} route-${nav} ${glassMode ? "visual-glass" : "visual-classic"} ${conversationOpen && nav === "home" ? "conversation-open" : ""}`} style={variables}>
     <Sidebar active={conversationOpen ? "conversation" : nav} onChange={handleNavigation} onSettings={() => setSettingsOpen(true)} />
@@ -247,6 +310,8 @@ export default function Home() {
       muted={session.muted}
       onMuteToggle={() => { void session.toggleMute(); }}
       media={media}
+      isVideoPublished={isPublished}
+      onMediaToggle={(source) => { void toggleSource(source); }}
       startedAt={session.startedAt}
       emotion={session.emotion}
       showEmotionDebug={import.meta.env.VITE_LUMINE_DEBUG_EMOTION === "true"}
@@ -259,7 +324,7 @@ export default function Home() {
       {(route) => {
         const section = route.section;
         if (section === "appearance") {
-          return <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={() => { setMode("dark"); setCursorGaze(true); resetAppearance(); }} onClose={() => setSettingsOpen(false)} />;
+          return <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={resetAllAppearance} onClose={() => setSettingsOpen(false)} />;
         }
         if (aiConfig.state === "loading") {
           return <div className="settings-page"><p className="validation is-pending">Loading the AI configuration…</p></div>;
@@ -292,6 +357,12 @@ export default function Home() {
         }
         if (section === "diagnostics") {
           return <DiagnosticsPage catalog={aiConfig.catalog} isEnvironmentBacked={aiConfig.isEnvironmentBacked} validating={aiConfig.validating} diagnostics={aiConfig.diagnostics} />;
+        }
+        // Ahead of the catalog loading gate on purpose: who made the app and what
+        // it is does not depend on the provider catalog, and an About screen that
+        // says "the catalog is unavailable" would be a strange first impression.
+        if (section === "about") {
+          return <AboutPage />;
         }
         if (!aiConfig.activeProfile) {
           return <div className="settings-page"><p className="validation is-error">No active profile. Check Diagnostics.</p></div>;

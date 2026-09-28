@@ -26,12 +26,23 @@ The app is configured in [lumine-ui/src-tauri/tauri.conf.json](lumine-ui/src-tau
 
 Verified implementation details:
 
-- Tauri app identifier: `com.art.lumine-ui`
-- app title: `lumine-ui`
+- Tauri app identifier: `com.art.lumine`
+- app title: `Lumine`
 - window dimensions: `800x600`
 - Vite dev server on `http://localhost:1420`
 - `bundle.active: false`. Do not assume `npm run tauri build` produces an installer.
 - default build runs `npm run build` before packaging
+- `bundle.publisher` / `bundle.copyright` name the owner, and reach the binary's
+  Windows version resource rather than only the installer. The Cargo package is
+  `lumine`, so the executable is `lumine.exe`.
+
+The identifier moved from `com.art.lumine-ui`. It is not cosmetic: it names
+`app_local_data_dir()` and the OS keyring service, so a rename orphans both. Each
+half reads the old name as a fallback instead — `credentials.rs` promotes a hit on
+`LEGACY_SERVICE`, `settings_store` resolves to the legacy file, and
+`config_store.py` searches `LEGACY_APP_IDENTIFIER`. `tauri build` writes
+`lumine.exe`; a stale `lumine-ui.exe` in `target/release` is an abandoned artifact,
+not a second app.
 
 ### Rust layer
 
@@ -82,7 +93,7 @@ The home experience is organized as follows:
 - [lumine-ui/src/pages/Home.tsx](lumine-ui/src/pages/Home.tsx) — page shell
 - [lumine-ui/src/pages/home/components/MainSpace.tsx](lumine-ui/src/pages/home/components/MainSpace.tsx) — command surface, call bar, self-view
 - [lumine-ui/src/pages/home/components/CallBar.tsx](lumine-ui/src/pages/home/components/CallBar.tsx) — idle handset, then mute / camera / screen / end
-- [lumine-ui/src/pages/home/components/SelfView.tsx](lumine-ui/src/pages/home/components/SelfView.tsx) — the user's camera, locally only
+- [lumine-ui/src/pages/home/components/SelfView.tsx](lumine-ui/src/pages/home/components/SelfView.tsx) - the user's camera, and whether Lumine can see it
 - [lumine-ui/src/pages/home/components/Presence.tsx](lumine-ui/src/pages/home/components/Presence.tsx) — animated avatar and state mapping
 - [lumine-ui/src/pages/home/components/ConversationPanel.tsx](lumine-ui/src/pages/home/components/ConversationPanel.tsx) — conversation activity panel
 - [lumine-ui/src/pages/home/components/WorkspaceView.tsx](lumine-ui/src/pages/home/components/WorkspaceView.tsx) — Memory, Activity and the tools grid
@@ -91,10 +102,29 @@ The home experience is organized as follows:
 - [lumine-ui/src/pages/home/constants.ts](lumine-ui/src/pages/home/constants.ts) — default theme values
 - [lumine-ui/src/components/avatar/useAvatarMontage.ts](lumine-ui/src/components/avatar/useAvatarMontage.ts) — the shared idle-montage queue driver
 
-`Camera and screenshare are a local preview.` `agent.py` has no video input, so
-nothing is published, no frames reach the agent, and the OS lights no recording
-indicator. `inputModalities` from the provider catalog is what stops the control
-offering itself to a stack that could not use the result.
+`Camera and screenshare are published to the room.` The frontend owns the capture
+and `voice-manager.ts` owns the publication, and the split is deliberate: LiveKit's
+own `setScreenShareEnabled` calls `getDisplayMedia` itself, which would mean a second
+capture with a second permission prompt and a teardown this app cannot see. One
+capture, one teardown, one `ended` handler.
+
+Three rules hold it together:
+
+- **One source, not two.** `useLocalMedia` exposes a single `active`, never two.
+  LiveKit uses *only the most recently published video track*, so two independently
+  toggleable sources have a state where the app shows the camera while Lumine looks
+  at the screen — and the badge would be true of the track and false of the picture
+  beside it.
+- **The model gates publication, and the platform gates capture.** These are two
+  different failures and `CallBar` takes two reasons for them. "This operating system
+  cannot share a screen" is nonsense advice to fix by changing model, which is what a
+  single combined reason would tell someone on macOS.
+- **`SelfView`'s badge is driven by `isPublished`, not by what the model *can* do.**
+  A model that cannot see leaves the preview honest about being local; a publish that
+  failed must not claim a share it is not making.
+
+`inputModalities` from the provider catalog is what decides both, and it is the same
+field the Diagnostics matrix draws.
 
 ## UI state model
 
@@ -294,7 +324,7 @@ The frontend invokes Tauri agent lifecycle commands and listens for high-level
 runtime events. `useLumineVoice` drives a real LiveKit session; the transcript,
 emotion, notice and tool events reach the panel and the toasts.
 
-`npm run tauri build` completes and writes `src-tauri/target/release/lumine-ui.exe`,
+`npm run tauri build` completes and writes `src-tauri/target/release/lumine.exe`,
 with the Windows icon and version resources correctly embedded.
 
 The Windows resource icon step was never the blocker, and this file claimed it was

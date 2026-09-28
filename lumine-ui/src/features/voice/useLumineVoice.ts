@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConversationMessage, ConversationToolEvent } from "../../pages/home/conversation/types";
 import { LumineVoiceManager, type LumineVoiceStatus, type VoiceNotice, type VoiceToolEvent } from "./voice-manager";
 import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
@@ -147,6 +147,21 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
 
   const status: LumineVoiceConnectionState = CONNECTION_STATE_BY_VOICE_STATUS[snapshot.state];
 
+  /**
+   * The room's video controls, memoised rather than inlined.
+   *
+   * These are dependencies of an effect in `Home.tsx` that reconciles what is
+   * published against what is actually captured. An inline arrow is a new
+   * function every render, so that effect would run on every render too, and a
+   * teardown guard that re-evaluates constantly is one keystroke away from
+   * publishing something the user turned off.
+   */
+  const publishVideo = useCallback(
+    (source: "camera" | "screen", stream: MediaStream) => managerRef.current!.publishVideo(source, stream),
+    [],
+  );
+  const unpublishVideo = useCallback(() => managerRef.current!.unpublishVideo(), []);
+
   return {
     state: snapshot.state,
     status,
@@ -162,6 +177,17 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
     stop: () => managerRef.current!.stop(),
     setMuted: (muted: boolean) => managerRef.current!.setMuted(muted),
     toggleMute: () => managerRef.current!.setMuted(!snapshot.muted),
+    /**
+     * Video goes to the room, not just to the preview.
+     *
+     * The two halves are separate calls on purpose: `useLocalMedia` owns the
+     * capture and its teardown, this owns the publication, and the caller
+     * decides whether a model that cannot read frames should be sent any. A
+     * single combined call would have to trust that decision, and LiveKit's
+     * answer to being sent one it cannot use is silence.
+     */
+    publishVideo,
+    unpublishVideo,
     isListening: snapshot.state === "listening",
     isSpeaking: snapshot.state === "speaking",
     isThinking: snapshot.state === "thinking",

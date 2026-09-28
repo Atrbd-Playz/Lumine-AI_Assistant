@@ -24,6 +24,17 @@ pub const CONFIG_PATH_ENV: &str = "LUMINE_CONFIG_PATH";
 pub const CONFIG_FILENAME: &str = "lumine.config.json";
 pub const CONFIG_VERSION: i64 = 1;
 
+/// The app data directory name used before Lumine took its own name.
+///
+/// `app_local_data_dir()` is named after the Tauri identifier, so moving the
+/// identifier from `com.art.lumine-ui` to `com.art.lumine` moved this file
+/// too. Without handling that, every saved profile silently reverts to
+/// defaults and the app looks like a fresh install.
+///
+/// The legacy directory is a *sibling* of the current one, so locating it this
+/// way is correct on Windows, macOS and Linux without naming any of them.
+const LEGACY_DIR_NAME: &str = "com.art.lumine-ui";
+
 const MAX_DOCUMENT_BYTES: u64 = 512 * 1024;
 
 #[derive(Debug)]
@@ -58,11 +69,56 @@ pub fn config_path(app_data_dir: &Path) -> PathBuf {
 ///
 /// Split out so the precedence rule can be tested without mutating a
 /// process-global environment variable, which races under parallel `cargo test`.
+///
+/// A file that exists under the pre-rename directory still wins over an absent
+/// file in the current one. That is deliberate: a path with nothing at it would
+/// report a fresh install, and the user's saved profiles would read as deleted.
+/// [`migrate_legacy_config`] moves the file, after which this arm is inert.
 pub fn resolve_config_path(app_data_dir: &Path, override_value: Option<&str>) -> PathBuf {
     match override_value.map(str::trim) {
         Some(non_empty) if !non_empty.is_empty() => PathBuf::from(non_empty),
-        _ => app_data_dir.join(CONFIG_FILENAME),
+        _ => {
+            let current = app_data_dir.join(CONFIG_FILENAME);
+            if current.exists() {
+                return current;
+            }
+            legacy_config_path(app_data_dir).unwrap_or(current)
+        }
     }
+}
+
+/// The pre-rename config file, if it is still there.
+fn legacy_config_path(app_data_dir: &Path) -> Option<PathBuf> {
+    let candidate = app_data_dir
+        .parent()?
+        .join(LEGACY_DIR_NAME)
+        .join(CONFIG_FILENAME);
+    candidate.exists().then_some(candidate)
+}
+
+/// Copy a pre-rename config file into the current app data directory.
+///
+/// Called once during setup. Reads fall back to the old location anyway, so this
+/// is about convergence rather than correctness: after it runs, the current
+/// directory is authoritative and the old one is left untouched as a backup.
+///
+/// A failure is not fatal. The read fallback already keeps the user's settings
+/// readable, so refusing to start over a copy would trade a cosmetic problem
+/// for a real one.
+pub fn migrate_legacy_config(app_data_dir: &Path) -> Result<bool, ConfigError> {
+    let Some(legacy) = legacy_config_path(app_data_dir) else {
+        return Ok(false);
+    };
+    let current = app_data_dir.join(CONFIG_FILENAME);
+    if current.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = app_data_dir.parent() {
+        fs::create_dir_all(parent).map_err(|err| ConfigError::Io(err.to_string()))?;
+    }
+    fs::create_dir_all(app_data_dir).map_err(|err| ConfigError::Io(err.to_string()))?;
+    fs::copy(&legacy, &current).map_err(|err| ConfigError::Io(err.to_string()))?;
+    Ok(true)
 }
 
 /// Read and shape-check the configuration.

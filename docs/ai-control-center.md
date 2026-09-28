@@ -82,7 +82,7 @@ Recorded so later phases do not relitigate them:
 | Settings navigation | `Appearance · Voice · Models · Providers · Diagnostics`, with `Models` carrying a sub-tab per stage. One route object, not two pieces of state. |
 | `local` vs `ollama` | `local` stays **reserved** for weights that ship with the app. `ollama` promises a server the user started, and shipping the first under the second's name would be a promise the app cannot keep. |
 | Local model discovery | A button, not an automatic list. A network round trip on a tab somebody came to for something else, against a server that may not be running, is not a list. |
-| Camera and screenshare | Local preview only. Nothing is published, so no frames reach the agent and the OS lights no recording indicator. |
+| Camera and screenshare | Published to the room, but **opt-in**: the button is the only thing that spends tokens and the only thing that lights the OS indicator. One source at a time, because LiveKit uses only the most recently published video track. |
 | Model capabilities | `inputModalities` means "what Lumine can hand this model on the path it is reached by" — not what it could accept in principle. |
 
 ## What exists today
@@ -516,8 +516,14 @@ halves were looking in different places.
 
 | Side | Default path when `LUMINE_CONFIG_PATH` is unset |
 | --- | --- |
-| Rust — the UI **writes** | `%LOCALAPPDATA%\com.art.lumine-ui\lumine.config.json` |
+| Rust — the UI **writes** | `%LOCALAPPDATA%\com.art.lumine\lumine.config.json` |
 | Python — the worker **reads** | `agent\lumine.config.json` |
+
+The identifier is `com.art.lumine`, previously `com.art.lumine-ui`, and it names
+the directory. Both sides therefore also search the pre-rename directory
+(`LEGACY_APP_IDENTIFIER` in `config_store.py`, `LEGACY_DIR_NAME` in
+`settings_store.rs`) so a file saved before the rename stays reachable to a worker
+started outside Tauri.
 
 `agent_manager.rs` passes `LUMINE_CONFIG_PATH` to the worker, but only when
 **Tauri** starts it. The documented development workflow is to run
@@ -969,12 +975,30 @@ for the rest of this repo: **no relative imports below module scope, ever.**
 * No bundled local model. The `local` id stays reserved and undefined, because
   shipping weights in the app is a packaging decision nobody has taken. `ollama`
   is the honest version of the same idea: a server the user started.
-* The camera and screenshare controls are a **local preview only**.
-  `agent.py` has no video input — no `RoomInputOptions(video=...)`, no frame
-  handler — so nothing is published and the frames go nowhere. The self-view is
-  labelled for what it is, and `inputModalities` is what stops the control
-  offering itself to a stack that could not use the result. When the agent gains
-  video input, the change is to publish what `useLocalMedia` already captures.
+* Video input is wired, and the design decisions behind it are:
+  * The subscription is **derived from the catalog**, never a constant. LiveKit
+    documents that `video_input` on a model that cannot read frames *silently
+    ignores them* — no error, no warning, a session that looks healthy while the
+    frames go nowhere. A constant that compiles is not a constant that is true of
+    the service it names.
+  * Video is **opt-in**. `RoomOptions(video_input=True)` costs nothing without a
+    track, so the agent always subscribes when the model can see and the button is
+    the only thing that spends anything.
+  * One source at a time. LiveKit uses only the most recently published video
+    track, so two independently toggleable sources produce a state where the app
+    shows the camera and Lumine is looking at the screen.
+  * The frontend publishes the stream `useLocalMedia` already owns, via
+    `LocalVideoTrack` + `publishTrack`, rather than LiveKit's
+    `setScreenShareEnabled` — which would mean a second capture and a teardown the
+    app cannot see.
+  * The badge on the self-view is driven by `isPublished`, not by what the model
+    *can* do, so a failed publish does not claim a share it is not making.
+  * **macOS cannot screenshare at all** (WKWebView has no `getDisplayMedia`). That
+    is a platform problem and is reported as one, separately from "this model
+    cannot see", because the two have different fixes. Camera is unaffected.
+  * The frame rate is declared and tested rather than inherited, but is not yet
+    configurable per profile. Gemini tokenizes every frame by its dimensions, so
+    this is a real recurring cost.
 * The frontend has no listener for the worker's own `LUMINE_EVENT` stream beyond
   the two records it acts on. `lib/agentRuntime.ts` passes the whole stream
   through, so nothing is lost, but per-turn records are not yet rendered.
