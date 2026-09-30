@@ -30,7 +30,7 @@ use crate::credentials::CredentialStore;
 
 /// The provider ids to environment variable names, as the catalog defines them.
 ///
-/// The mapping is catalog knowledge — it lives in `agent/providers.py` next to the
+/// The mapping is catalog knowledge — it lives in `agent/settings/providers.py` next to the
 /// models it belongs to — so it is read from there rather than duplicated in
 /// Rust. A provider added on the Python side needs no change here.
 pub fn key_env_by_provider(catalog: &Value) -> BTreeMap<String, Vec<String>> {

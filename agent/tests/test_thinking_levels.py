@@ -17,10 +17,10 @@ regression these tests exist to prevent.
 import unittest
 from unittest import mock
 
-from agent.config_store import resolve_profile
-from agent.pipeline_factory import _build_llm, _build_realtime
-from agent.providers import PROVIDERS, get_model
-from agent.validation import validate_document
+from agent.settings.config_store import resolve_profile
+from agent.pipeline.pipeline_factory import _build_llm, _build_realtime
+from agent.settings.providers import PROVIDERS, get_model
+from agent.settings.validation import validate_document
 
 ALL_PRESENT = {provider_id: True for provider_id in PROVIDERS}
 
@@ -216,7 +216,7 @@ class ThinkingLevelFactoryTests(unittest.TestCase):
         """
         resolved = resolve_profile(pipeline_profile(), interruption_mode="barge_in")
         self.assertNotIn("thinking_level", resolved.llm.options)
-        with mock.patch("agent.pipeline_factory.require_module") as require:
+        with mock.patch("agent.pipeline.pipeline_factory.require_module") as require:
             module = require.return_value
             import asyncio
 
@@ -232,7 +232,7 @@ class ThinkingLevelFactoryTests(unittest.TestCase):
             ),
             interruption_mode="barge_in",
         )
-        with mock.patch("agent.pipeline_factory.require_module") as require:
+        with mock.patch("agent.pipeline.pipeline_factory.require_module") as require:
             module = require.return_value
             import asyncio
 
@@ -249,7 +249,7 @@ class ThinkingLevelFactoryTests(unittest.TestCase):
             ),
             interruption_mode="barge_in",
         )
-        with mock.patch("agent.pipeline_factory.require_module") as require:
+        with mock.patch("agent.pipeline.pipeline_factory.require_module") as require:
             module = require.return_value
             import asyncio
 
@@ -270,7 +270,7 @@ class RealtimeThinkingLevelTests(unittest.TestCase):
 
     def _plugin_kwargs(self, profile: dict) -> dict:
         resolved = resolve_profile(profile, interruption_mode="barge_in")
-        with mock.patch("agent.pipeline_factory.require_module") as require:
+        with mock.patch("agent.pipeline.pipeline_factory.require_module") as require:
             module = require.return_value
             import asyncio
 

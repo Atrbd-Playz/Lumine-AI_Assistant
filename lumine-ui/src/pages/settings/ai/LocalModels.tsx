@@ -71,43 +71,52 @@ export function LocalModels({ baseUrl, onPick, selected }: LocalModelsProps) {
         </Hint>
       </div>
 
-      <div className="local-models">
+      <div className="local-models flex flex-col gap-2.5 items-start">
         <button type="button" className="settings-secondary" onClick={look} disabled={busy}>
           {busy ? "Looking…" : result ? "Look again" : "Look for local models"}
         </button>
 
         {result && (
-          <div className="local-models-result" role="status">
+          <div className="local-models-result w-full flex flex-col gap-2 py-2.5 px-3 rounded-sm bg-surface-muted shadow-elev-1" role="status">
             {result.models.length > 0 ? (
               <>
-                <p className="field-hint">
+                <p className="field-hint text-faint text-[11.5px] leading-[1.5]">
                   {result.models.length} model{result.models.length === 1 ? "" : "s"} at {result.baseUrl}
                   {result.route === "/v1/models" ? ", from the OpenAI-compatible list." : "."}
                 </p>
-                <ul className="local-models-list">
-                  {result.models.map((model) => (
-                    <li key={model.id}>
-                      <button
-                        type="button"
-                        className={model.id === selected ? "is-current" : ""}
-                        aria-current={model.id === selected || undefined}
-                        onClick={() => onPick(model.id)}
-                      >
-                        <span className="local-model-id">{model.id}</span>
-                        {model.size !== undefined && <span className="local-model-size">{formatBytes(model.size)}</span>}
-                      </button>
-                    </li>
-                  ))}
+                <ul className="local-models-list flex flex-col gap-0.5 m-0 p-0 list-none">
+                  {result.models.map((model) => {
+                    // Hoisted so the guard and the render read the same value.
+                    // The old line checked `size !== undefined` and then handed
+                    // it straight to a formatter built on division: a server
+                    // that sends `null`, a string or a negative arrives as
+                    // `NaN` or `-12 B`, neither of which is undefined, and both
+                    // went on screen as a size.
+                    const size = formatBytes(model.size);
+                    return (
+                      <li key={model.id}>
+                        <button
+                          type="button"
+                          className={model.id === selected ? "is-current" : ""}
+                          aria-current={model.id === selected || undefined}
+                          onClick={() => onPick(model.id)}
+                        >
+                          <span className="local-model-id min-w-0 overflow-hidden text-ellipsis whitespace-nowrap font-mono">{model.id}</span>
+                          {size !== null && <span className="local-model-size">{size}</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
                 {selected && !result.models.some((model) => model.id === selected) && (
-                  <p className="field-hint">
+                  <p className="field-hint text-faint text-[11.5px] leading-[1.5]">
                     {selected} is selected but this server is not serving it. It may have been pulled somewhere
                     else, or removed.
                   </p>
                 )}
               </>
             ) : (
-              <p className="field-hint">{result.detail || "No models were reported."}</p>
+              <p className="field-hint text-faint text-[11.5px] leading-[1.5]">{result.detail || "No models were reported."}</p>
             )}
           </div>
         )}
@@ -124,7 +133,12 @@ export function LocalModels({ baseUrl, onPick, selected }: LocalModelsProps) {
  * answers "will this fit" and one that does not. A 1.0 GB and a 1.07 GB model are
  * the same disk to everybody and different numbers here.
  */
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number | undefined): string | null {
+  // The units below are arithmetic, and arithmetic on a value the server chose
+  // does not fail loudly — it produces `NaN`, which then prints. So the shape is
+  // checked first and an unusable size renders as *no* size, which is the only
+  // honest answer to a number we cannot read.
+  if (typeof bytes !== "number" || !Number.isFinite(bytes) || bytes < 0) return null;
   const gigabytes = bytes / 1e9;
   if (gigabytes >= 1) return `${gigabytes.toFixed(1)} GB`;
   const megabytes = bytes / 1e6;

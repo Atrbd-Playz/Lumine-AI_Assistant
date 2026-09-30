@@ -1,6 +1,6 @@
 """Environment-backed configuration for Lumine's selectable voice pipelines.
 
-The Groq/Silero/Cartesia settings remain in :mod:`agent.llm_config`; this module
+The Groq/Silero/Cartesia settings remain in :mod:`agent.settings.llm_config`; this module
 only describes the new Gemini Live profile and the small profile selector.
 Keeping the provider settings here lets the runtime choose a pipeline without
 loading every provider plugin at import time.

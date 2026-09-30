@@ -134,10 +134,10 @@ export function SettingsDialog({
   // you between them.
   useEffect(() => {
     if (railRef.current?.contains(document.activeElement)) {
-      railRef.current?.querySelector<HTMLElement>(`[data-section="${section}"]`)?.focus();
+      railRef.current?.querySelector<HTMLElement>(`[data-section="${CSS.escape(section)}"]`)?.focus();
     }
     if (tab && tabRef.current?.contains(document.activeElement)) {
-      tabRef.current?.querySelector<HTMLElement>(`[data-tab="${tab}"]`)?.focus();
+      tabRef.current?.querySelector<HTMLElement>(`[data-tab="${CSS.escape(tab)}"]`)?.focus();
     }
   }, [section, tab]);
 
@@ -218,7 +218,7 @@ export function SettingsDialog({
                       <span className="settings-rail-icon">
                         <Icon name={entry.icon} size={16} />
                       </span>
-                      <span className="settings-rail-copy">
+                      <span className="settings-rail-copy flex flex-col gap-px min-w-0">
                         <span className="settings-rail-name">{entry.label}</span>
                         <span className="settings-rail-note">{entry.description}</span>
                       </span>
@@ -237,7 +237,7 @@ export function SettingsDialog({
           </footer>
         </aside>
 
-        <div className="settings-content">
+        <div className="settings-content flex flex-col min-w-0 min-h-0">
           {tabs.length > 0 && (
             <TabStrip
               ref={tabRef}
@@ -255,7 +255,7 @@ export function SettingsDialog({
                 // whole route, so a tab with the same name in another section
                 // still counts as a move.
                 key={`${section}:${tab ?? ""}`}
-                className="settings-content-inner"
+                className="settings-content-inner min-h-full"
                 initial={transition.initial}
                 animate={transition.animate}
                 exit={transition.exit}

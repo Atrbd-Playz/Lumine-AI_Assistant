@@ -376,8 +376,8 @@ function SlotSummary({ slots }: { slots: CredentialSlotStatus[] }) {
         const done = slot.stored || slot.inEnv;
         return (
           <li key={slot.env} className={done ? "is-done" : "is-owed"}>
-            <span className="setup-slot-mark" aria-hidden="true" />
-            <span className="setup-slot-label">{slot.label}</span>
+            <span className="setup-slot-mark w-1.5 h-1.5 shrink-0 rounded-full bg-accent" aria-hidden="true" />
+            <span className="setup-slot-label text-soft">{slot.label}</span>
             <span className="setup-slot-state">
               {slot.stored
                 ? slot.storedLast4

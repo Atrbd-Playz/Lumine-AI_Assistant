@@ -33,9 +33,9 @@ import sys
 from typing import Any
 
 try:
-    from .providers import get_provider
+    from .settings.providers import get_provider
 except ImportError:  # running as `python agent/local_models.py`
-    from providers import get_provider
+    from settings.providers import get_provider
 
 #: A request to a process on this machine should be instant. Anything slower than
 #: this is a wrong address or a server that is not listening, and waiting longer

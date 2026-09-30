@@ -23,7 +23,7 @@ from typing import Any, Callable
 try:
     from .llm_errors import LlmFailure, classify
 except ImportError:  # running as a top-level module, which is how the worker loads it
-    from llm_errors import LlmFailure, classify
+    from runtime.llm_errors import LlmFailure, classify
 
 #: Consecutive failures before the circuit opens. Three is enough to distinguish
 #: a real problem from one unlucky request, and few enough that a single blip

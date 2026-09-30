@@ -12,9 +12,9 @@ from pathlib import Path
 from unittest import mock
 
 from agent import agent as agent_module
-from agent.config_store import SOURCE_UI
+from agent.settings.config_store import SOURCE_UI
 from agent.validate_config import describe, main, validate_text
-from agent.validation import CONFIG_VERSION
+from agent.settings.validation import CONFIG_VERSION
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -112,8 +112,8 @@ class SessionConfigWiringTests(unittest.TestCase):
 
     def test_a_rejected_saved_profile_falls_back_to_the_environment(self):
         # A saved document that cannot build must not cost the user their voice.
-        from agent.pipeline_factory import ConfigurationRejected
-        from agent.validation import diagnostic
+        from agent.pipeline.pipeline_factory import ConfigurationRejected
+        from agent.settings.validation import diagnostic
 
         document = json.loads((FIXTURES / "lumine.config.example.json").read_text(encoding="utf-8"))
         publisher = RecordingPublisher()
@@ -155,19 +155,19 @@ class SessionConfigWiringTests(unittest.TestCase):
 
 class JobMetadataWiringTests(unittest.TestCase):
     def test_the_entrypoint_reads_the_profile_reference_from_metadata(self):
-        from agent.session_preferences import job_preferences_from_metadata
+        from agent.settings.session_preferences import job_preferences_from_metadata
 
         preferences = job_preferences_from_metadata(json.dumps({"profile_id": "custom", "interruption_mode": "barge_in"}))
         self.assertEqual(preferences.profile_id, "custom")
 
     def test_metadata_without_a_profile_still_resolves(self):
-        from agent.session_preferences import interruption_mode_from_metadata
+        from agent.settings.session_preferences import interruption_mode_from_metadata
 
         self.assertEqual(interruption_mode_from_metadata(json.dumps({"interruption_mode": "barge_in"})), "barge_in")
 
 
 def _components(profile: str):
-    from agent.pipeline_factory import PipelineComponents
+    from agent.pipeline.pipeline_factory import PipelineComponents
 
     return PipelineComponents(
         profile=profile,

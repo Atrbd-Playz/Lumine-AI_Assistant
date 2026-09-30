@@ -63,7 +63,16 @@ CAPABILITIES: tuple[Capability, ...] = ("stt", "llm", "tts", "realtime", "vad", 
 # Version 11 declared each model's input modalities, so the settings screen can
 # report what a model can actually be given -- and, more usefully, refuse to offer
 # a camera to a stack whose frames would arrive nowhere.
-CATALOG_VERSION = 12
+# Version 12 added the per-option ``hidden`` flag and ``default``, so a setting
+# can exist without being drawn, and a required argument can arrive with the
+# value the provider expects rather than with nothing.
+# Version 13 added per-option ``models`` and ``integer``. ``models`` says which
+# model ids the option does anything on: Cartesia honours ``speed``, ``emotion``
+# and ``volume`` only on the sonic-3 family, and without the field the settings
+# screen offered sliders that moved and a voice that did not change. ``integer``
+# states the wire type of a bounded or enumerated value, which is what the worker
+# needs to send ``sample_rate`` as ``24000`` rather than as ``"24000"``.
+CATALOG_VERSION = 13
 
 ModelStatus = Literal["available", "deprecated", "retired"]
 
@@ -261,11 +270,102 @@ class OptionDefinition:
     advanced: bool = False
     default: str | float | bool | None = None
     hidden: bool = False
+    models: tuple[str, ...] = ()
+    integer: bool = False
 
     @property
     def plugin_keyword(self) -> str:
         """The keyword to hand the plugin. Usually the same as `name`."""
         return self.keyword or self.name
+
+    def applies_to(self, model_id: str) -> bool:
+        """Whether this option does anything at all on `model_id`.
+
+        Declared rather than inferred, because whether a setting is honoured is
+        a fact about the plugin, not about the setting's name. Cartesia is the
+        case that made this necessary: its request builder sends `speed`,
+        `emotion` and `volume` only on the sonic-3 path, so a profile on
+        `sonic-2` can save all three, pass validation, and have the API ignore
+        every one of them. The user then turns a slider and hears nothing change,
+        which is worse than not offering the slider -- the control has started
+        lying.
+
+        An empty tuple means "every model that declares it", which is the case
+        for every option except those a plugin gates on the model id.
+        """
+        return not self.models or model_id in self.models
+
+    def coerce(self, raw: object) -> object | None:
+        """The value to hand the plugin, or `None` to send nothing at all.
+
+        Settings reach here from three places that type them differently. The
+        settings screen writes JSON, so every number and every flag it saves
+        arrives as a *string*. The environment writes floats. A catalog default
+        is whatever the declaration said. The plugin tolerates none of that
+        spread: Cartesia raises `ValueError: speed must be a float for sonic-3`
+        the moment a profile-built `TTS` is constructed, and a stage that throws
+        during session setup is indistinguishable, to the person waiting for a
+        reply, from a microphone that never worked.
+
+        So the coercion lives here rather than in the settings screen: this is
+        the one place every path passes through, including the environment-derived
+        profile that never sees the UI at all.
+
+        Three rules, in the order they can apply:
+
+        - an enumerated value is matched case-insensitively but returned in the
+          *declared* spelling. Cartesia's emotions are `Happy`, not `happy`, and
+          the old lowercasing sent the API a word it does not have.
+        - a bounded value is parsed, clamped to the bound, and rounded to an int
+          when the option is declared `integer`. Clamping rather than dropping:
+          "replaced with the closest one it does" is what the docstring on
+          `build_options` has always promised, and a rate that snaps back to
+          0.6 is a better answer to an impossible 0.1 than silence.
+        - a switch parses the words a checkbox can be saved as. Any other string
+          is not a boolean, and guessing would turn a typo into a feature that
+          is on.
+
+        Anything left over is forwarded untouched: free-form options are strings
+        by nature, and `voice` ids must not be reinterpreted.
+        """
+        if self.values:
+            declared = {candidate.lower(): candidate for candidate in self.values}
+            found = declared.get(str(raw).strip().lower())
+            value = found if found is not None else self.first_allowed()
+            if value is None:
+                return None
+            if not self.integer:
+                return value
+            # An enumerated option can still be an integer on the wire --
+            # Cartesia's sample rates are a fixed set of *numbers*, and handing
+            # the API `"24000"` is the same mistake as handing it a float.
+            try:
+                return int(float(value))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return None
+
+        if self.minimum is not None or self.maximum is not None:
+            try:
+                number = float(raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return None
+            if self.minimum is not None:
+                number = max(self.minimum, number)
+            if self.maximum is not None:
+                number = min(self.maximum, number)
+            return int(round(number)) if self.integer else number
+
+        if self.control_kind == "switch":
+            if isinstance(raw, bool):
+                return raw
+            text = str(raw).strip().lower()
+            if text in {"1", "true", "yes", "on"}:
+                return True
+            if text in {"0", "false", "no", "off", ""}:
+                return False
+            return None
+
+        return raw
 
     @property
     def control_kind(self) -> str:
@@ -315,10 +415,18 @@ class OptionDefinition:
         return isinstance(value, (str, int, float, bool))
 
     def first_allowed(self) -> str | None:
-        """The lowest-cost value this option accepts, or ``None`` if free-form."""
+        """The lowest-cost value this option accepts, or ``None`` if free-form.
+
+        Returned in the spelling the catalog declared. The scan is over lowercase
+        names because the preference order is a fact about cost, not about
+        capitalisation, but the answer has to come back as the provider spells
+        it -- `coerce`'s whole contract is that an enumerated value leaves here
+        the way it was written down.
+        """
         for candidate in ("minimal", "low", "medium", "high"):
-            if candidate in {v.lower() for v in self.values}:
-                return candidate
+            for declared in self.values:
+                if declared.lower() == candidate:
+                    return declared
         return self.values[0] if self.values else None
 
 
@@ -461,11 +569,25 @@ class ModelDefinition:
         does, or left out. Silently sending a rejected value produces a 400 at
         request time, which in a voice session is indistinguishable from a muted
         microphone; validation reports it separately.
+
+        Two gates run before anything is forwarded, and both exist because of
+        failures that were silent rather than loud:
+
+        - an option that `applies_to` rejects is not sent even though the model
+          declares it. This is the Cartesia case -- `speed` is real on sonic-3
+          and ignored everywhere else -- and the alternative was a slider that
+          moved and a voice that did not change.
+        - every value goes through `coerce`, because the settings screen hands
+          over strings and the plugin hands those strings straight to an API
+          that wants numbers and the declared spelling of its enums.
         """
         options: dict[str, Any] = {}
         nested: dict[str, dict[str, Any]] = {}
 
         for definition in self.options:
+            if not definition.applies_to(self.id):
+                continue
+
             raw = settings.get(definition.name)
             if raw is None:
                 # Absent means the provider applies its own default, which is
@@ -476,15 +598,12 @@ class ModelDefinition:
                     continue
                 raw = definition.default
 
-            value = raw
-            if definition.values:
-                text = str(raw).strip().lower()
-                if text not in {v.lower() for v in definition.values}:
-                    value = definition.first_allowed()
-                    if value is None:
-                        continue
-                else:
-                    value = text
+            value = definition.coerce(raw)
+            if value is None:
+                # Not interpretable as this option's type. The provider's own
+                # default is the honest answer: sending the uninterpreted value
+                # is what raised at construction time.
+                continue
 
             if definition.nest:
                 group = nested.setdefault(definition.nest, {})
@@ -638,6 +757,23 @@ _GEMINI_LIVE_VOICES = (
     VoiceDefinition(id="Kore", label="Kore"),
     VoiceDefinition(id="Aoede", label="Aoede"),
 )
+
+
+#: The Cartesia models that actually forward ``speed``, ``emotion`` and
+#: ``volume``.
+#:
+#: This is a fact about the plugin's request builder, not about those settings.
+#: Its sonic-3 path writes them into ``generation_config``; every other model
+#: falls through to a legacy body that is only built when the API version is the
+#: 2024 one, which it never is by default. A profile on ``sonic-2`` can therefore
+#: save all three, validate cleanly, and have the API ignore every one of them --
+#: which turns the settings screen's sliders into decoration. Declaring the gate
+#: here lets ``build_options`` leave them out and let the settings screen say
+#: why, instead of offering a control that does nothing.
+#:
+#: ``test_providers.py`` asserts the set matches the plugin's own
+#: ``_is_sonic_3`` predicate.
+_CARTESIA_SONIC_3_MODELS: tuple[str, ...] = ("sonic-3", "sonic-3.5", "sonic-3.6")
 
 
 #: Cartesia sonic-3's named emotions, transcribed from the plugin's own
@@ -860,26 +996,79 @@ _OPTION_SETS: dict[tuple[str, Capability], tuple[OptionDefinition, ...]] = {
             minimum=0.6,
             maximum=2.0,
             step=0.05,
+            models=_CARTESIA_SONIC_3_MODELS,
             notes="Rate of speech. Must be a number for sonic-3 -- the named "
-            "speeds are a legacy alias the plugin no longer forwards.",
+            "speeds are a legacy alias the plugin no longer forwards. "
+            "Sent on the sonic-3 family only; older models drop it.",
         ),
         OptionDefinition(
             name="emotion",
             values=_CARTESIA_SONIC_3_EMOTIONS,
-            notes="How the delivery is coloured. Leave unset for the voice's "
-            "own neutral reading.",
+            models=_CARTESIA_SONIC_3_MODELS,
+            # A middle setting rather than a mood. Cartesia's own neutral reading
+            # is a voice with nothing in it, and a companion that answers a quiet
+            # question in a flat register reads as absent -- which is the same
+            # complaint as having no expressiveness at all, one turn later. It is
+            # a default and not a floor: per-turn emotion overrides it while a
+            # reply demonstrates one and returns to it when the reply does not.
+            default="Content",
+            notes="How the delivery is coloured. Content is a warm middle "
+            "setting rather than a mood, so a quiet reply does not sound flat; "
+            "a reply that demonstrates an emotion uses that instead, and comes "
+            "back to this afterwards. Clear the field for Cartesia's own "
+            "neutral reading. sonic-3 family only.",
         ),
         OptionDefinition(
             name="volume",
             minimum=0.5,
             maximum=2.0,
             step=0.05,
+            models=_CARTESIA_SONIC_3_MODELS,
             notes="Loudness relative to 1.0. Best left alone: the room's own "
-            "output gain is the right control for overall level.",
+            "output gain is the right control for overall level. "
+            "sonic-3 family only.",
             advanced=True,
         ),
         OptionDefinition(name="language", notes="Spoken language, as a locale code."),
         OptionDefinition(name="voice", notes="Which voice speaks the reply."),
+        OptionDefinition(
+            name="sample_rate",
+            # Enumerated rather than a slider: Cartesia accepts a fixed set of
+            # rates, and a slider from 8000 to 48000 would let someone pick
+            # 12345, which the API refuses -- at synthesis time, in a session,
+            # for a reason the screen never mentioned.
+            values=("8000", "16000", "22050", "24000", "44100", "48000"),
+            integer=True,
+            control="select",
+            default="24000",
+            notes="Sample rate of the audio the synthesis returns. 24000 is the "
+            "plugin's default and what LiveKit expects; higher rates cost more "
+            "bandwidth for a difference a phone speaker cannot show.",
+            advanced=True,
+        ),
+        OptionDefinition(
+            name="word_timestamps",
+            control="switch",
+            default="true",
+            notes="Ask Cartesia for word-level timing. Useful to anything that "
+            "aligns captions; it does not change how the reply sounds.",
+            advanced=True,
+        ),
+        OptionDefinition(
+            name="text_pacing",
+            control="switch",
+            default="false",
+            notes="Stream the reply through a sentence pacer, so a long answer "
+            "reaches the microphone in pieces instead of one block.",
+            advanced=True,
+        ),
+        OptionDefinition(
+            name="pronunciation_dict_id",
+            control="text",
+            notes="ID of a pronunciation dictionary in your Cartesia account, "
+            "applied on top of the chosen voice.",
+            advanced=True,
+        ),
     ),
     ("groq", "llm"): (
         OptionDefinition(
@@ -1631,6 +1820,20 @@ def _model_public(model: ModelDefinition) -> dict[str, Any]:
                 "minimum": definition.minimum,
                 "maximum": definition.maximum,
                 "step": definition.step,
+                # Whether a bounded or enumerated value leaves the worker as an
+                # integer. Only the worker cares -- the settings screen writes
+                # strings either way -- but the catalog is also read by tests
+                # and diagnostics, and an option the wire type of which is not
+                # stated is an option nobody can check.
+                "integer": definition.integer,
+                # Models this option does anything on. Empty means all of them.
+                #
+                # This is the Cartesia gate: `speed`, `emotion` and `volume` are
+                # real on the sonic-3 family and silently ignored everywhere
+                # else, so the settings screen dims them with a reason rather
+                # than drawing a slider whose turn produces no change. The UI
+                # has no idea what Cartesia does; only the catalog does.
+                "models": list(definition.models),
                 # Whether the settings screen hides this behind a disclosure. The
                 # judgement is made here, in the catalog, because only the catalog
                 # knows what a setting means for the model that accepts it -- a

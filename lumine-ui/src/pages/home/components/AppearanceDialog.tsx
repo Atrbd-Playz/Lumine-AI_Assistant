@@ -135,8 +135,8 @@ function Card({
 }) {
   return (
     <section className="ap-card">
-      <header className="ap-card-head">
-        <h2 className="ap-card-title">
+      <header className="ap-card-head flex items-center justify-between gap-4 mb-[15px]">
+        <h2 className="ap-card-title flex items-center gap-[7px] m-0 text-[14.5px] font-medium tracking-[-0.015em]">
           {title}
           {help && <Hint>{help}</Hint>}
         </h2>
@@ -167,11 +167,11 @@ function Row({
 }) {
   return (
     <div className="ap-row">
-      <div className="ap-row-text">
-        <span className="ap-row-label">{label}</span>
-        <span className="ap-row-desc">{description}</span>
+      <div className="ap-row-text flex flex-1 flex-col gap-0.5 min-w-0">
+        <span className="ap-row-label text-[13.5px]">{label}</span>
+        <span className="ap-row-desc text-soft text-[12px] leading-[1.5]">{description}</span>
       </div>
-      <div className="ap-row-control">{children}</div>
+      <div className="ap-row-control shrink-0">{children}</div>
     </div>
   );
 }
@@ -231,22 +231,22 @@ function PaletteProof({
         <span className="ap-proof-dot" style={{ background: palette.icon }} />
         <span className="ap-proof-dot is-accent" style={{ background: palette.accent }} />
       </div>
-      <div className="ap-proof-main">
+      <div className="ap-proof-main flex flex-1 flex-col gap-2 min-w-0">
         <div className="ap-proof-stage" style={{ background: palette.stage }}>
           <span
             className="ap-proof-halo"
             style={{ background: palette.avatar, boxShadow: `0 0 12px 2px ${palette.avatar}80` }}
           />
         </div>
-        <div className="ap-proof-copy">
+        <div className="ap-proof-copy flex flex-col gap-[5px]">
           <span className="ap-proof-line is-strong" style={{ background: palette.text }} />
           <span className="ap-proof-line" style={{ background: palette.text }} />
         </div>
         <div className="ap-proof-chat" style={{ background: palette.chatSurface }}>
-          <span className="ap-proof-bubble" style={{ background: palette.chatUser }}>
+          <span className="ap-proof-bubble block py-1 px-[7px] rounded-1.5" style={{ background: palette.chatUser }}>
             <span className="ap-proof-line is-tight" style={{ background: palette.chatText }} />
           </span>
-          <span className="ap-proof-bubble" style={{ background: palette.chatAssistant }}>
+          <span className="ap-proof-bubble block py-1 px-[7px] rounded-1.5" style={{ background: palette.chatAssistant }}>
             <span className="ap-proof-line is-tight" style={{ background: palette.chatText }} />
           </span>
           <span className="ap-proof-dot is-tiny" style={{ background: palette.chatAccent }} />
@@ -275,7 +275,7 @@ function TypeSpecimen({
   onChange: (font: InterfaceFont) => void;
 }) {
   return (
-    <div className="ap-type">
+    <div className="ap-type flex flex-col gap-2 p-3.5 rounded-md bg-canvas shadow-elev-1">
       <span className="ap-type-label">{label}</span>
       <Dropdown
         label={`${label} typeface`}
@@ -491,7 +491,7 @@ export function AppearanceDialog({
     <div className="settings-page ap-page">
       <SettingsPageHeader section="appearance" />
 
-      <div className="ap-stack">
+      <div className="ap-stack flex flex-col gap-4">
         {/* ---------------------------------------------------------------- */}
         <Card
           title="Colour mode"
@@ -511,7 +511,7 @@ export function AppearanceDialog({
            * I want" is a visual question, and a list of two words cannot answer it.
            */}
           <div className="ap-themes">
-            <div className="ap-modes">
+            <div className="ap-modes flex flex-col gap-2.5">
               {MODES.map(([value, label]) => {
                 // The active mode is drawn in the palette actually on screen. The
                 // other is drawn in its shipped default, which is what switching to
@@ -526,7 +526,7 @@ export function AppearanceDialog({
                     onClick={() => setMode(value)}
                   >
                     <PaletteProof palette={palette} font={appearance.font} compact />
-                    <span className="ap-mode-name">{label}</span>
+                    <span className="ap-mode-name pl-[3px] text-[13px] font-medium">{label}</span>
                   </button>
                 );
               })}
@@ -542,7 +542,7 @@ export function AppearanceDialog({
              * proof grows to fill the column, so the preview is the large object
              * the page is about instead of a fixed 133px strip.
              */}
-            <div className="ap-preview">
+            <div className="ap-preview flex flex-col gap-2 min-w-0">
               <span className="ap-preview-label">Preview</span>
               <PaletteProof palette={currentPreset} font={appearance.font} />
             </div>
@@ -551,7 +551,7 @@ export function AppearanceDialog({
 
         {/* ---------------------------------------------------------------- */}
         <Card title="Typeface" help="Sets the app, and the conversation panel, in the two faces you choose here.">
-          <div className="ap-types">
+          <div className="ap-types grid grid-cols-[repeat(2,_minmax(0,_1fr))] gap-4">
             <TypeSpecimen label="Interface" font={appearance.font} onChange={(font) => update("font", font)} />
             <TypeSpecimen label="Chat" font={appearance.chatFont} onChange={(font) => update("chatFont", font)} />
           </div>
@@ -559,8 +559,8 @@ export function AppearanceDialog({
 
         {/* ---------------------------------------------------------------- */}
         <Card title="Conversation" help="How Lumine’s messages are drawn in the conversation panel.">
-          <div className="ap-field">
-            <span className="ap-field-label">
+          <div className="ap-field flex flex-col gap-2">
+            <span className="ap-field-label flex items-center gap-1.5 text-[13.5px]">
               Bubble style
               <Hint>Tinted, Ghost and Secondary differ in a way no label can convey — the sample below is the only part of this setting that shows the choice.</Hint>
             </span>
@@ -580,7 +580,7 @@ export function AppearanceDialog({
            * first time either is edited, and the sample is the only evidence the
            * person has.
            */}
-          <div className="ap-bubble-preview">
+          <div className="ap-bubble-preview mt-3 p-4 rounded-md bg-canvas shadow-elev-1">
             <BubbleGroup className="w-full">
               <Bubble
                 variant={appearance.chatBubbleVariant}
@@ -621,7 +621,7 @@ export function AppearanceDialog({
           actions={
             <button
               type="button"
-              className="ap-ghost-button"
+              className="ap-ghost-button text-foreground bg-surface-muted border border-border"
               onClick={() => {
                 onResetPalette();
                 clearLocalPaletteState();
@@ -698,8 +698,8 @@ export function AppearanceDialog({
            * duplicated, because a second hex box next to the first is two answers
            * to "what is this colour" and they can disagree.
            */}
-          <div className="ap-editor">
-            <label className="ap-editor-picker" style={{ background: selectedValue }}>
+          <div className="ap-editor flex items-center gap-4 mt-4.5 p-3.5 rounded-md bg-canvas shadow-elev-1">
+            <label className="ap-editor-picker relative shrink-0 w-16 h-16 overflow-hidden rounded-3.5 shadow-elev-1 cursor-pointer" style={{ background: selectedValue }}>
               <input
                 type="color"
                 value={selectedValue}
@@ -707,9 +707,9 @@ export function AppearanceDialog({
                 onChange={(event) => update(selected, event.target.value)}
               />
             </label>
-            <div className="ap-editor-text">
-              <span className="ap-editor-name">{selectedLabel}</span>
-              <span className="ap-editor-desc">{selectedDescription}</span>
+            <div className="ap-editor-text flex flex-1 flex-col gap-[3px] min-w-0">
+              <span className="ap-editor-name text-[14px] font-medium">{selectedLabel}</span>
+              <span className="ap-editor-desc text-soft text-[12px] leading-[1.5]">{selectedDescription}</span>
               <input
                 className="ap-editor-hex"
                 value={shownHex}
@@ -734,7 +734,7 @@ export function AppearanceDialog({
           <p className="ap-subhead">Saved palettes</p>
           {presetNames.length > 0 ? (
             <>
-              <div className="ap-presets">
+              <div className="ap-presets flex flex-wrap gap-2">
                 {presetNames.map((name) => (
                   <button
                     key={name}
@@ -743,12 +743,12 @@ export function AppearanceDialog({
                     aria-pressed={applied === name}
                     onClick={() => applyPreset(name, presets[name])}
                   >
-                    <span className="ap-preset-dots" aria-hidden="true">
+                    <span className="ap-preset-dots flex" aria-hidden="true">
                       <span style={{ background: presets[name].canvas }} />
                       <span style={{ background: presets[name].surface }} />
                       <span style={{ background: presets[name].accent }} />
                     </span>
-                    <span className="ap-preset-name">{name}</span>
+                    <span className="ap-preset-name text-[12.5px]">{name}</span>
                   </button>
                 ))}
               </div>
@@ -759,7 +759,7 @@ export function AppearanceDialog({
                   </span>
                   <button
                     type="button"
-                    className="settings-quiet"
+                    className="settings-quiet py-[9px] px-1.5 text-soft bg-transparent text-[12px] cursor-pointer"
                     onClick={() => {
                       deletePreset(applied);
                       setApplied(null);
@@ -771,11 +771,11 @@ export function AppearanceDialog({
               )}
             </>
           ) : (
-            <p className="ap-empty">No saved palettes for {mode === "light" ? "light" : "dark"} yet.</p>
+            <p className="ap-empty m-0 text-soft text-[12.5px]">No saved palettes for {mode === "light" ? "light" : "dark"} yet.</p>
           )}
 
           {saving ? (
-            <div className="ap-preset-save">
+            <div className="ap-preset-save flex items-center gap-2.5 mt-4">
               <input
                 value={presetName}
                 placeholder="Name this palette"
@@ -790,12 +790,12 @@ export function AppearanceDialog({
                   }
                 }}
               />
-              <button type="button" className="ap-solid-button" onClick={saveCurrentPreset} disabled={!presetName.trim()}>
+              <button type="button" className="ap-solid-button text-[var(--color-stage-text)] bg-accent border-0 font-medium" onClick={saveCurrentPreset} disabled={!presetName.trim()}>
                 Save
               </button>
               <button
                 type="button"
-                className="ap-ghost-button"
+                className="ap-ghost-button text-foreground bg-surface-muted border border-border"
                 onClick={() => {
                   setSaving(false);
                   setPresetName("");
@@ -805,8 +805,8 @@ export function AppearanceDialog({
               </button>
             </div>
           ) : (
-            <div className="ap-preset-save">
-              <button type="button" className="ap-ghost-button" onClick={() => setSaving(true)}>
+            <div className="ap-preset-save flex items-center gap-2.5 mt-4">
+              <button type="button" className="ap-ghost-button text-foreground bg-surface-muted border border-border" onClick={() => setSaving(true)}>
                 Save current as…
               </button>
               {tweakedColours > 0 && (
@@ -821,13 +821,13 @@ export function AppearanceDialog({
         {/* ---------------------------------------------------------------- */}
         <Card title="Import">
           <Disclosure label="Import palettes from JSON" open={importOpen} onOpenChange={setImportOpen}>
-            <div className="ap-import">
-              <div className="ap-import-head">
-                <span className="ap-import-label">
+            <div className="ap-import flex flex-col gap-2.5">
+              <div className="ap-import-head flex items-center justify-between gap-3.5">
+                <span className="ap-import-label flex items-center gap-1.5 text-[13px]">
                   From a file
                   <Hint>A JSON object with a light and/or dark section, each holding named presets. Every preset needs all twelve colours; a missing one is rejected by name.</Hint>
                 </span>
-                <label className="ap-ghost-button">
+                <label className="ap-ghost-button text-foreground bg-surface-muted border border-border">
                   Choose file
                   <input type="file" accept=".txt,.json,application/json,text/plain" onChange={importFile} />
                 </label>
@@ -841,20 +841,20 @@ export function AppearanceDialog({
                   setImportMessage("");
                 }}
               />
-              <div className="ap-import-actions">
+              <div className="ap-import-actions flex gap-2">
                 <button
                   type="button"
-                  className="ap-solid-button"
+                  className="ap-solid-button text-[var(--color-stage-text)] bg-accent border-0 font-medium"
                   onClick={() => parseImport(importText)}
                   disabled={!importText.trim()}
                 >
                   Import pasted JSON
                 </button>
-                <button type="button" className="ap-ghost-button" onClick={() => setImportText(IMPORT_EXAMPLE)}>
+                <button type="button" className="ap-ghost-button text-foreground bg-surface-muted border border-border" onClick={() => setImportText(IMPORT_EXAMPLE)}>
                   Use example
                 </button>
               </div>
-              {importMessage && <p className="ap-import-message">{importMessage}</p>}
+              {importMessage && <p className="ap-import-message m-0 text-accent text-[12px]">{importMessage}</p>}
             </div>
           </Disclosure>
         </Card>

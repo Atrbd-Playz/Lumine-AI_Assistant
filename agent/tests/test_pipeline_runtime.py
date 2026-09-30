@@ -4,11 +4,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.pipeline_config import gemini_settings, pipeline_name
-import agent.pipeline_factory as pipeline_factory
-from agent.pipeline_factory import build_pipeline
-from agent.runtime_events import ToolEventBridge
-from agent.session_preferences import interruption_mode_from_metadata, normalize_interruption_mode
+from agent.settings.pipeline_config import gemini_settings, pipeline_name
+import agent.pipeline.pipeline_factory as pipeline_factory
+from agent.pipeline.pipeline_factory import build_pipeline
+from agent.runtime.runtime_events import ToolEventBridge
+from agent.settings.session_preferences import interruption_mode_from_metadata, normalize_interruption_mode
 from agent.tools import apps
 from agent.tools.tools_compat import ToolError
 

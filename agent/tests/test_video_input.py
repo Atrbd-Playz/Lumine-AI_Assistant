@@ -23,14 +23,14 @@ import contextlib
 import unittest
 from unittest import mock
 
-from agent.config_store import ResolvedStage, resolve_profile
-from agent.pipeline_factory import (
+from agent.settings.config_store import ResolvedStage, resolve_profile
+from agent.pipeline.pipeline_factory import (
     _build_cascade_session,
     _build_realtime_session,
     _room_options,
     _stage_sees_frames,
 )
-from agent.providers import PROVIDERS, get_model
+from agent.settings.providers import PROVIDERS, get_model
 
 #: Every realtime model the catalog offers. The feature is not allowed to work
 #: for one of them and silently not for another.
@@ -81,7 +81,7 @@ def subscribes_to_video(components) -> bool:
 
 def build_realtime(profile: dict):
     resolved = resolve_profile(profile, interruption_mode="barge_in")
-    with mock.patch("agent.pipeline_factory._build_realtime", new=mock.AsyncMock()):
+    with mock.patch("agent.pipeline.pipeline_factory._build_realtime", new=mock.AsyncMock()):
         return asyncio.run(_build_realtime_session(resolved))
 
 
@@ -95,13 +95,13 @@ def build_cascade(profile: dict):
     """
     resolved = resolve_profile(profile, interruption_mode="barge_in")
     stubs = [
-        mock.patch(f"agent.pipeline_factory.{name}", new=mock.AsyncMock())
+        mock.patch(f"agent.pipeline.pipeline_factory.{name}", new=mock.AsyncMock())
         for name in ("_build_stt", "_build_llm", "_build_tts", "_build_vad")
     ]
     with contextlib.ExitStack() as stack:
         for patch in stubs + [
-            mock.patch("agent.pipeline_factory.provider_module", return_value=object()),
-            mock.patch("agent.pipeline_factory.connect_max_retry", return_value=2),
+            mock.patch("agent.pipeline.pipeline_factory.provider_module", return_value=object()),
+            mock.patch("agent.pipeline.pipeline_factory.connect_max_retry", return_value=2),
         ]:
             stack.enter_context(patch)
         return asyncio.run(_build_cascade_session(resolved))

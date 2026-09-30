@@ -1,18 +1,28 @@
-import type { LumineState } from "./types";
+/** The `#252525` half of this choice, as a relative luminance. */
+const DARK_FOREGROUND_LUMINANCE = 0.0185; // #252525, sRGB -> linear
 
-/** Advances the demo voice state when the main microphone is clicked. */
-export function getNextState(state: LumineState): LumineState {
-  const nextState: Record<LumineState, LumineState> = {
-    idle: "listening",
-    listening: "thinking",
-    thinking: "speaking",
-    speaking: "idle",
-  };
-  return nextState[state];
-}
-
-/** Returns a readable foreground for a user-selected background color. */
-export function getReadableTextColor(background: string): "#ffffff" | "#252525" {
+/**
+ * Returns a readable foreground for a user-selected background color.
+ *
+ * The rule used to be `luminance > 0.48`, which is not a contrast boundary at
+ * all — it is a guess, and it guessed wrong for anything in the middle. White
+ * stops reaching 4.5:1 once the background passes luminance 0.183, and #252525
+ * does not reach it until 0.258, so the old threshold picked white for the whole
+ * band between: Lumine's own default accent (#e86f3d, luminance 0.289) got white
+ * at 3.1:1 where dark would have given 4.9:1, and a stage colour of #8b8882 got
+ * white at 3.4:1 where dark would have given 4.5:1. Both are the app telling a
+ * user their text is fine when it is not.
+ *
+ * `minimumContrast` is now what decides. White is offered first so the call
+ * button — a graphic, and a deliberate white-on-orange — keeps its face; dark is
+ * taken when white cannot clear the bar, and when neither can (the impossible
+ * band between 0.183 and 0.258) the better of the two is returned rather than
+ * either one arbitrarily.
+ */
+export function getReadableTextColor(
+  background: string,
+  minimumContrast = 3,
+): "#ffffff" | "#252525" {
   const normalized = background.replace("#", "");
   if (normalized.length !== 6) return "#ffffff";
   const value = Number.parseInt(normalized, 16);
@@ -24,7 +34,11 @@ export function getReadableTextColor(background: string): "#ffffff" | "#252525" 
       : Math.pow((normalizedChannel + 0.055) / 1.055, 2.4);
   });
   const luminance = channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
-  return luminance > 0.48 ? "#252525" : "#ffffff";
+  const white = 1.05 / (luminance + 0.05);
+  const dark = (luminance + 0.05) / (DARK_FOREGROUND_LUMINANCE + 0.05);
+  if (white >= minimumContrast) return "#ffffff";
+  if (dark >= minimumContrast) return "#252525";
+  return dark >= white ? "#252525" : "#ffffff";
 }
 
 function getLuminance(color: string) {
@@ -92,4 +106,40 @@ export function fontStack(font: string): string {
       // there or the browser uses its default serif for a UI.
       return `"${font}", sans-serif`;
   }
+}
+
+/**
+ * The app's clock format: two-digit hour and minute, in the reader's locale.
+ *
+ * The zero-padding is the whole point. The corner clock is set in tabular
+ * numerals so the figure does not shuffle while it ticks, and `9:57` to `10:00`
+ * moves that figure by a digit every morning while `09:57` to `10:00` does not.
+ * It is also what the activity log already printed, which leaves the transcript
+ * as the one surface rendering `3:07` beside a stage reading `03:07` and giving
+ * the reader no way to tell whether those are the same minute.
+ */
+export const CLOCK_FORMAT: Intl.DateTimeFormatOptions = { hour: "2-digit", minute: "2-digit" };
+
+/**
+ * Every time the UI prints, from one place.
+ *
+ * Three surfaces each assembled their own `Intl.DateTimeFormat`: the stage
+ * clock, the transcript row, the activity log. The helper is not about the
+ * bytes — it is that the disagreement was invisible until two of them stood side
+ * by side, which happens only on the one screen that has all three.
+ *
+ * `options` exists so a surface can ask for more than a glance needs. The log
+ * wants seconds because it is a record of events being ordered; the clock and
+ * the transcript do not, because nobody reading a conversation needs to know
+ * which of two messages in the same minute came first. Asking for them is now
+ * the explicit act it always should have been.
+ *
+ * An instant that does not parse prints nothing rather than `Invalid Date`. The
+ * transcript is the only caller that can hand over something unparseable, and
+ * it keeps its own string branch — see `ConversationMessage`.
+ */
+export function formatClock(at: Date | number, options: Intl.DateTimeFormatOptions = CLOCK_FORMAT): string {
+  const date = at instanceof Date ? at : new Date(at);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat(undefined, options).format(date);
 }

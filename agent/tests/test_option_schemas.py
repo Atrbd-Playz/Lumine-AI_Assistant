@@ -9,11 +9,11 @@ import unittest
 from dataclasses import replace
 from unittest import mock
 
-import agent.providers as providers_module
-import agent.validation as validation_module
-from agent.config_store import ResolvedProfile, ResolvedStage
-from agent.pipeline_factory import _build_llm, _build_stt, _build_tts
-from agent.providers import (
+import agent.settings.providers as providers_module
+import agent.settings.validation as validation_module
+from agent.settings.config_store import ResolvedProfile, ResolvedStage
+from agent.pipeline.pipeline_factory import _build_llm, _build_stt, _build_tts
+from agent.settings.providers import (
     PROVIDERS,
     SESSION_OPTIONS,
     ModelDefinition,
@@ -21,7 +21,7 @@ from agent.providers import (
     ProviderDefinition,
     get_model,
 )
-from agent.validation import validate_document
+from agent.settings.validation import validate_document
 
 ALL_PRESENT = {provider_id: True for provider_id in PROVIDERS}
 
@@ -111,7 +111,7 @@ class SyntheticProviderTests(unittest.TestCase):
 
     def _build(self, capability: str, options: dict, module_name: str = "LLM"):
         stage = ResolvedStage(provider="acme", model="acme-1", options=options)
-        with mock.patch("agent.pipeline_factory.require_module") as require:
+        with mock.patch("agent.pipeline.pipeline_factory.require_module") as require:
             require.return_value = mock.MagicMock(**{module_name: mock.MagicMock()})
             import asyncio
 
@@ -284,6 +284,106 @@ class SharedSchemaBindingTests(unittest.TestCase):
         assert model is not None
         built = model.build_options({"speed": 0.95})
         self.assertEqual(built["speed"], 0.95)
+
+
+class ValueCoercionTests(unittest.TestCase):
+    """What a saved setting looks like by the time the plugin receives it.
+
+    The settings screen writes JSON, so every number and every flag a user
+    changes arrives at the worker as a *string*. The plugins are not tolerant of
+    that spread: Cartesia raises ``ValueError: speed must be a float for
+    sonic-3`` while the ``TTS`` is being constructed, which kills the session
+    before anyone has spoken -- and the person waiting sees a microphone that
+    never worked.
+
+    These are the rules ``OptionDefinition.coerce`` exists to hold. They are
+    asserted against the real catalog rather than a synthetic one, because the
+    failure was in a real option on a real provider.
+    """
+
+    def _model(self, model_id: str = "sonic-3"):
+        model = get_model("cartesia", model_id, "tts")
+        assert model is not None, f"catalog has no cartesia/{model_id}"
+        return model
+
+    def test_a_string_number_becomes_a_float(self):
+        built = self._model().build_options({"speed": "1.2"})
+        self.assertIsInstance(built["speed"], float)
+        self.assertEqual(built["speed"], 1.2)
+
+    def test_an_enumerated_value_keeps_the_declared_case(self):
+        # Cartesia's emotions are `Happy`, not `happy`. A lowercasing pass that
+        # is harmless for `reasoning_effort` sends this API a word it does not
+        # have -- and nothing reports it, because the request still succeeds.
+        self.assertEqual(self._model().build_options({"emotion": "happy"})["emotion"], "Happy")
+
+    def test_an_enumerated_value_the_plugin_does_not_have_is_replaced(self):
+        self.assertEqual(self._model().build_options({"emotion": "chipper"})["emotion"], "Happy")
+
+    def test_an_integer_option_leaves_as_an_integer(self):
+        rate = self._model().build_options({"sample_rate": "44100"})["sample_rate"]
+        self.assertIsInstance(rate, int)
+        self.assertEqual(rate, 44100)
+
+    def test_a_switch_parses_the_words_a_checkbox_can_be_saved_as(self):
+        built = self._model()
+        self.assertIs(built.build_options({"word_timestamps": "false"})["word_timestamps"], False)
+        self.assertIs(built.build_options({"word_timestamps": "on"})["word_timestamps"], True)
+        self.assertIs(built.build_options({"word_timestamps": True})["word_timestamps"], True)
+
+    def test_a_switch_that_is_not_a_boolean_sends_nothing(self):
+        # Guessing would turn a typo into a feature that is on. The provider's
+        # own default is the honest answer.
+        self.assertNotIn(
+            "word_timestamps", self._model().build_options({"word_timestamps": "maybe"})
+        )
+
+    def test_an_out_of_range_number_clamps_to_the_nearest_bound(self):
+        # "Replaced with the closest one it does" is what `build_options` has
+        # always promised. An impossible rate that snaps back is a better
+        # answer than silence or a 400 in the middle of a conversation.
+        built = self._model()
+        self.assertEqual(built.build_options({"speed": "9.9"})["speed"], 2.0)
+        self.assertEqual(built.build_options({"speed": "0.1"})["speed"], 0.6)
+
+    def test_an_unparseable_number_sends_nothing(self):
+        self.assertNotIn("speed", self._model().build_options({"speed": "fast"}))
+
+    def test_a_free_form_option_is_not_reinterpreted(self):
+        # A voice id arrives as the id. Anything a date or a number looks like
+        # is a coincidence of naming, not a type.
+        self.assertEqual(self._model().build_options({"voice": "2025-03-07"})["voice"], "2025-03-07")
+
+    def test_an_option_is_not_sent_to_a_model_that_ignores_it(self):
+        """Cartesia honours `speed` on sonic-3 alone; elsewhere it is noise.
+
+        Sending it anyway would be silent -- the request succeeds and the rate
+        does not change -- so the slider would be decoration.
+        """
+        older = self._model("sonic-2")
+        settings = {"speed": "1.2", "emotion": "happy", "volume": "1.1", "voice": "abc"}
+        for gated in ("speed", "emotion", "volume"):
+            self.assertNotIn(gated, older.build_options(settings))
+        # The gate is about those three, not about the option set as a whole.
+        self.assertEqual(older.build_options(settings)["voice"], "abc")
+        self.assertIn("speed", self._model("sonic-3").build_options(settings))
+
+    def test_an_option_with_no_gate_reaches_every_model(self):
+        definition = OptionDefinition(name="language")
+        self.assertTrue(definition.applies_to("sonic-3"))
+        self.assertTrue(definition.applies_to("anything"))
+
+    def test_the_gate_travels_to_the_settings_screen(self):
+        """The UI dims a control it cannot use, and needs the catalog to say so."""
+        catalog = providers_module.to_public_catalog()
+        cartesia = next(p for p in catalog["providers"] if p["id"] == "cartesia")
+        sonic_3 = next(m for m in cartesia["models"] if m["id"] == "sonic-3")
+        speed = next(o for o in sonic_3["options"] if o["name"] == "speed")
+        self.assertEqual(speed["models"], list(providers_module._CARTESIA_SONIC_3_MODELS))
+        language = next(o for o in sonic_3["options"] if o["name"] == "language")
+        self.assertEqual(language["models"], [])
+        rate = next(o for o in sonic_3["options"] if o["name"] == "sample_rate")
+        self.assertTrue(rate["integer"])
 
 
 if __name__ == "__main__":

@@ -34,21 +34,21 @@ import sys
 from pathlib import Path
 
 try:
-    from .config_store import (
+    from .settings.config_store import (
         CONFIG_PATH_ENV,
         config_path,
         config_path_candidates,
         effective_document,
     )
-    from .validation import env_credential_status, validate_document
+    from .settings.validation import env_credential_status, validate_document
 except ImportError:  # running as `python agent/validate_config.py`
-    from config_store import (
+    from settings.config_store import (
         CONFIG_PATH_ENV,
         config_path,
         config_path_candidates,
         effective_document,
     )
-    from validation import env_credential_status, validate_document
+    from settings.validation import env_credential_status, validate_document
 
 
 def _read(source: str) -> str:

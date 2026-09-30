@@ -26,12 +26,12 @@ export type FieldProps = {
 export function Field({ label, help, hint, children, className }: FieldProps) {
   return (
     <div className={"field" + (className ? ` ${className}` : "")}>
-      <div className="field-row" style={{ alignItems: "center" }}>
-        <span className="field-label">{label}</span>
+      <div className="field-row flex gap-2" style={{ alignItems: "center" }}>
+        <span className="field-label text-soft text-[12px]">{label}</span>
         {help && <Hint>{help}</Hint>}
       </div>
       {children}
-      {hint && <small className="field-hint">{hint}</small>}
+      {hint && <small className="field-hint text-faint text-[11.5px] leading-[1.5]">{hint}</small>}
     </div>
   );
 }

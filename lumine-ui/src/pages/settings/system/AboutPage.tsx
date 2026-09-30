@@ -22,7 +22,7 @@ export function AboutPage() {
       <SettingsPageHeader section="about" actions={<img className="about-mark about-mark-sm" src="/lumine-logo-512.png" width={40} height={40} alt="" aria-hidden="true" />} />
 
       <div className="settings-section">
-        <div className="about-identity">
+        <div className="about-identity flex items-center gap-5">
           <img
             className="about-mark"
             src="/lumine-logo-512.png"
@@ -31,7 +31,7 @@ export function AboutPage() {
             alt=""
             aria-hidden="true"
           />
-          <div className="about-identity-text">
+          <div className="about-identity-text min-w-0">
             <p className="about-name">{APP.name}</p>
             <p className="about-tagline">{APP.tagline}</p>
             <p className="about-version">Version {APP.version}</p>
@@ -41,7 +41,7 @@ export function AboutPage() {
 
       <div className="settings-section">
         <h2 className="settings-section-title">Ownership</h2>
-        <dl className="about-facts">
+        <dl className="about-facts grid gap-3.5 m-0">
           <div className="about-fact">
             <dt>Created and owned by</dt>
             <dd>{APP.author}</dd>
@@ -59,7 +59,7 @@ export function AboutPage() {
 
       <div className="settings-section">
         <h2 className="settings-section-title">What Lumine is</h2>
-        <p className="field-hint">{APP.description}</p>
+        <p className="field-hint text-faint text-[11.5px] leading-[1.5]">{APP.description}</p>
       </div>
     </div>
   );

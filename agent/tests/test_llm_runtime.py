@@ -3,7 +3,7 @@ import unittest
 from unittest import IsolatedAsyncioTestCase
 from unittest import mock
 
-from agent.llm_config import (
+from agent.settings.llm_config import (
     DEFAULT_CONNECT_MAX_RETRY,
     DEFAULT_MAX_COMPLETION_TOKENS,
     DEFAULT_MAX_RETRIES,

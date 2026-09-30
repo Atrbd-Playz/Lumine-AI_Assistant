@@ -9,28 +9,30 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 try:
-    from .config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
-    from .context_trim import max_context_items, trim_context
-    from .emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
-    from .failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
-    from .latency import LatencyTracker
-    from .pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
-    from .pipeline_config import pipeline_name
-    from .runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
-    from .session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
+    from .settings.config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
+    from .runtime.context_trim import max_context_items, trim_context
+    from .runtime.emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
+    from .runtime.emotion_voice import TurnVoiceControls
+    from .runtime.failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
+    from .runtime.latency import LatencyTracker
+    from .pipeline.pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
+    from .settings.pipeline_config import pipeline_name
+    from .runtime.runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
+    from .settings.session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
     from .tools.http_client import acquire as acquire_http_client, release as release_http_client
     from .tools.tools_policy import compose_instructions
     from .tools.tools_registry import get_tools, tool_ids
 except ImportError:
-    from config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
-    from context_trim import max_context_items, trim_context
-    from emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
-    from failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
-    from latency import LatencyTracker
-    from pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
-    from pipeline_config import pipeline_name
-    from runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
-    from session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
+    from settings.config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
+    from runtime.context_trim import max_context_items, trim_context
+    from runtime.emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
+    from runtime.emotion_voice import TurnVoiceControls
+    from runtime.failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
+    from runtime.latency import LatencyTracker
+    from pipeline.pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
+    from settings.pipeline_config import pipeline_name
+    from runtime.runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
+    from settings.session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
     from tools.http_client import acquire as acquire_http_client, release as release_http_client
     from tools.tools_policy import compose_instructions
     from tools.tools_registry import get_tools, tool_ids
@@ -189,6 +191,46 @@ class Lumine(Agent):
             instructions=build_instructions(profile),
             tools=tools if tools is not None else get_tools(),
         )
+
+    async def llm_node(self, chat_ctx, tools, model_settings):
+        """Stream the reply out while teaching the voice how it is being said.
+
+        The override exists for one reason: *when*. The emotion the reply
+        demonstrates is only knowable once some of it has arrived, and the
+        obvious place to look — ``conversation_item_added``, where the avatar
+        already gets its emotion — runs when the reply is finished. Setting the
+        voice there would shape every reply except the one that earned it.
+
+        So it happens here instead, on the way out. Each chunk is observed
+        *before* it is yielded, so the control reaches the synthesizer ahead of
+        the text that revealed it rather than behind it. Text from earlier
+        chunks may already be spoken under the profile's default; there is no
+        way around that without holding the reply back, and a turn that waits
+        to be sure how it feels is a turn that has stopped answering.
+
+        ``chat_ctx``, ``tools`` and ``model_settings`` are passed through
+        untouched — this is a listener, not a replacement for the node.
+        """
+        # No synthesizer of ours here means no control to apply, and the
+        # guard is on the *object* rather than the profile because the profile
+        # only says what was configured.
+        try:
+            activity = self._get_activity_or_raise()
+        except Exception:  # noqa: BLE001 - the node below raises its own error
+            activity = None
+        controls = TurnVoiceControls(getattr(activity, "tts", None))
+
+        async for chunk in Agent.default.llm_node(self, chat_ctx, tools, model_settings):
+            # The node may yield a ChatChunk, a bare str, or a flush sentinel;
+            # only the first two carry text, and a sentinel must not be read as
+            # one.
+            if isinstance(chunk, str):
+                delta = chunk
+            else:
+                delta = getattr(getattr(chunk, "delta", None), "content", None)
+            if isinstance(delta, str) and delta:
+                controls.observe(delta)
+            yield chunk
 
 
 async def build_session_components(publisher, room_name: str, interruption_mode: str):

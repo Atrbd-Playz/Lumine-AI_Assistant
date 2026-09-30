@@ -1,4 +1,4 @@
-import { findModel, type OutputMode, type ProviderCatalog, type VoiceProfile } from "../../../features/settings/aiConfigTypes";
+import { findModel, type OutputMode, type ProviderCatalog, type SavedVoice, type VoiceProfile } from "../../../features/settings/aiConfigTypes";
 import { convertProfileKind, defaultModelRef } from "../../../features/settings/profileOps";
 import { Hint } from "../../../components/ui/hint";
 import { Dropdown } from "../../../components/ui/dropdown";
@@ -49,6 +49,17 @@ export type ModelsPageProps = AiSaveFooterProps & {
   /** Which stage this tab is showing. */
   tab: string;
   onChange: (profile: VoiceProfile) => void;
+  /**
+   * Voices the user kept, and the only way to change them.
+   *
+   * Belongs to the document rather than to the profile — a saved voice is
+   * something *this install* remembers, not a property of one stack — so it is
+   * handed down rather than owned here. Optional because a host with no document
+   * to write still has to render a working voice picker; it simply loses the
+   * save row.
+   */
+  savedVoices?: SavedVoice[];
+  onSavedVoicesChange?: (voices: SavedVoice[]) => void;
 };
 
 export function ModelsPage({
@@ -57,6 +68,8 @@ export function ModelsPage({
   isEnvironmentBacked,
   tab,
   onChange,
+  savedVoices,
+  onSavedVoicesChange,
   ...footer
 }: ModelsPageProps) {
   const isRealtime = profile.kind === "realtime";
@@ -112,6 +125,8 @@ export function ModelsPage({
         </Field>
       </section>
 
+      {tab === "tts" && <AudioPathNotice catalog={catalog} profile={profile} onChange={onChange} />}
+
       {isRealtime ? (
         <RealtimeStages
           tab={tab}
@@ -120,13 +135,116 @@ export function ModelsPage({
           realtimeModel={realtimeModel}
           isEnvironmentBacked={isEnvironmentBacked}
           setRealtime={setRealtime}
+          savedVoices={savedVoices}
+          onSavedVoicesChange={onSavedVoicesChange}
         />
       ) : (
-        <PipelineStages tab={tab} catalog={catalog} profile={profile} setPipeline={setPipeline} />
+        <PipelineStages
+          tab={tab}
+          catalog={catalog}
+          profile={profile}
+          setPipeline={setPipeline}
+          savedVoices={savedVoices}
+          onSavedVoicesChange={onSavedVoicesChange}
+        />
       )}
 
       <AiSaveFooter {...footer} />
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------------- */
+
+/**
+ * Which stage is actually speaking, and whether what is tuned here reaches it.
+ *
+ * Per-reply emotion has a path or it does not. It needs a language model
+ * streaming text into a separate synthesizer — the pipeline — and cannot exist
+ * on a realtime model, which hears, reasons and speaks in a single call so
+ * there is no synthesizer to talk to. The stack control that decides it sits
+ * directly above, so the answer is stated here rather than left to be
+ * discovered: a person who has just chosen a voice is owed the news *before*
+ * they choose a delivery to go with it, not afterwards in a forum post.
+ *
+ * Shown on the speech tab only. It is a fact about the voice, the other three
+ * tabs are not about the voice, and a banner that appears on every screen is a
+ * banner that stops being read.
+ */
+function AudioPathNotice({
+  catalog,
+  profile,
+  onChange,
+}: {
+  catalog: ProviderCatalog;
+  profile: VoiceProfile;
+  onChange: (profile: VoiceProfile) => void;
+}) {
+  const realtime = profile.kind === "realtime";
+  const pipeline = profile.pipeline;
+
+  const label = (ref: { provider: string; model: string } | undefined, capability: "stt" | "llm" | "tts" | "realtime") => {
+    if (!ref) return "";
+    const found = findModel(catalog, ref.provider, ref.model, capability);
+    // A model the catalog has never heard of still names itself; falling back
+    // to the raw id keeps the path readable rather than leaving a blank where
+    // the stage should be.
+    return found?.label ?? ref.model;
+  };
+
+  const segments: Array<{ text: string; speaking?: boolean }> = realtime
+    ? [{ text: label(profile.realtime, "realtime"), speaking: true }]
+    : [
+        { text: label(pipeline?.stt, "stt") },
+        { text: label(pipeline?.llm, "llm") },
+        { text: label(pipeline?.tts, "tts"), speaking: true },
+      ].filter((segment) => segment.text);
+
+  const speaking = realtime
+    ? label(profile.realtime, "realtime")
+    : label(pipeline?.tts, "tts");
+
+  return (
+    <section className="audio-path">
+      <div className="audio-path-head flex items-center justify-between gap-3">
+        <h3>Your audio path</h3>
+        {realtime && (
+          <button
+            type="button"
+            className="settings-quiet py-[9px] px-1.5 text-soft bg-transparent text-[12px] cursor-pointer"
+            onClick={() => onChange(convertProfileKind(catalog, profile, "pipeline"))}
+          >
+            Use a pipeline instead
+          </button>
+        )}
+      </div>
+
+      <p className="audio-path-stages flex flex-wrap items-center gap-1 m-0 text-foreground text-[13.5px]">
+        {segments.map((segment, index) => (
+          <span key={segment.text}>
+            {index > 0 && <span className="audio-path-arrow" aria-hidden="true">→</span>}
+            <span className={segment.speaking ? "audio-path-stage is-speaking" : "audio-path-stage"}>
+              {segment.text}
+            </span>
+          </span>
+        ))}
+        {realtime && <span className="audio-path-all">hears, reasons and speaks</span>}
+      </p>
+
+      <p className="audio-path-note max-w-[74ch] m-0 text-soft text-[11.5px] leading-[1.55]">
+        {realtime ? (
+          <>
+            A realtime model speaks for itself, so per-reply emotion and Cartesia's delivery controls do not
+            reach it — there is no separate synthesizer to send them to.
+          </>
+        ) : (
+          <>
+            Every reply is spoken by <strong>{speaking}</strong>, so per-reply emotion and the delivery
+            controls below reach the voice.
+          </>
+        )}
+      </p>
+    </section>
   );
 }
 
@@ -137,11 +255,15 @@ function PipelineStages({
   catalog,
   profile,
   setPipeline,
+  savedVoices,
+  onSavedVoicesChange,
 }: {
   tab: string;
   catalog: ProviderCatalog;
   profile: VoiceProfile;
   setPipeline: (mutate: (pipeline: NonNullable<VoiceProfile["pipeline"]>) => NonNullable<VoiceProfile["pipeline"]>) => void;
+  savedVoices?: SavedVoice[];
+  onSavedVoicesChange?: (voices: SavedVoice[]) => void;
 }) {
   const pipeline = profile.pipeline;
   if (!pipeline) return null;
@@ -231,6 +353,8 @@ function PipelineStages({
             catalog={catalog}
             stage={pipeline.tts}
             onChange={(tts) => setPipeline((current) => ({ ...current, tts }))}
+            savedVoices={savedVoices}
+            onSavedVoicesChange={onSavedVoicesChange}
           />
         </div>
       </>
@@ -263,6 +387,8 @@ function RealtimeStages({
   realtimeModel,
   isEnvironmentBacked,
   setRealtime,
+  savedVoices,
+  onSavedVoicesChange,
 }: {
   tab: string;
   catalog: ProviderCatalog;
@@ -270,6 +396,8 @@ function RealtimeStages({
   realtimeModel: ReturnType<typeof findModel>;
   isEnvironmentBacked: boolean;
   setRealtime: (mutate: (realtime: NonNullable<VoiceProfile["realtime"]>) => NonNullable<VoiceProfile["realtime"]>) => void;
+  savedVoices?: SavedVoice[];
+  onSavedVoicesChange?: (voices: SavedVoice[]) => void;
 }) {
   const realtime = profile.realtime;
   if (!realtime) return null;
@@ -378,6 +506,8 @@ function RealtimeStages({
                   };
                 })
               }
+              savedVoices={savedVoices}
+              onSavedVoicesChange={onSavedVoicesChange}
             />
           </div>
         )}

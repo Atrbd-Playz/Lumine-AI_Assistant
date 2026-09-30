@@ -1,10 +1,12 @@
 import { useId } from "react";
 
 import type { CatalogModel, CatalogOption } from "../../../features/settings/aiConfigTypes";
+import { optionInapplicableReason, optionTitle } from "../../../features/settings/aiConfigTypes";
 import { Dropdown } from "../../../components/ui/dropdown";
 import { Disclosure } from "../../../components/ui/disclosure";
 import { Knob } from "../../../components/ui/knob";
 import { Hint } from "../../../components/ui/hint";
+import { Switch } from "../../../components/ui/switch";
 
 /**
  * Renders the settings a selected model declares it accepts.
@@ -49,7 +51,7 @@ export type ModelOptionsProps = {
 
 export function ModelOptions({ model, values, onChange, emptyHint }: ModelOptionsProps) {
   if (!model || model.options.length === 0) {
-    return emptyHint ? <small className="field-hint">{emptyHint}</small> : null;
+    return emptyHint ? <small className="field-hint text-faint text-[11.5px] leading-[1.5]">{emptyHint}</small> : null;
   }
 
   const set = (name: string, next: string) => {
@@ -79,12 +81,24 @@ export function ModelOptions({ model, values, onChange, emptyHint }: ModelOption
   return (
     <div className="model-options">
       {visible.map((option) => (
-        <OptionRow key={option.name} option={option} value={values[option.name] ?? ""} onChange={set} />
+        <OptionRow
+          key={option.name}
+          option={option}
+          modelId={model.id}
+          value={values[option.name] ?? ""}
+          onChange={set}
+        />
       ))}
       {advanced.length > 0 && (
         <Disclosure label="Advanced" count={setCount}>
           {advanced.map((option) => (
-            <OptionRow key={option.name} option={option} value={values[option.name] ?? ""} onChange={set} />
+            <OptionRow
+              key={option.name}
+              option={option}
+              modelId={model.id}
+              value={values[option.name] ?? ""}
+              onChange={set}
+            />
           ))}
         </Disclosure>
       )}
@@ -94,10 +108,12 @@ export function ModelOptions({ model, values, onChange, emptyHint }: ModelOption
 
 function OptionRow({
   option,
+  modelId,
   value,
   onChange,
 }: {
   option: CatalogOption;
+  modelId: string;
   value: string;
   onChange: (name: string, value: string) => void;
 }) {
@@ -105,12 +121,39 @@ function OptionRow({
   const hintId = `${id}-hint`;
   const isChoice = option.values.length > 0;
   const isRange = option.minimum !== null && option.maximum !== null;
+  // Whether the selected model acts on this at all. The catalog is the only
+  // place that knows, and the note has to live *inside* the control's own
+  // container: `.model-options` is a grid, so a sibling would become a cell of
+  // its own and land in the row below.
+  const ignored = optionInapplicableReason(option, modelId);
 
   // A slider, when the provider published its bounds. A closed set, when the
-  // provider enumerated its values. A text box only when it did neither — which is
-  // the honest outcome, because there is nothing to bound or enumerate with.
+  // provider enumerated its values. A boolean, when the option is one — which
+  // used to reach the text box below and ask for `true` spelled correctly. A
+  // text box only when it did none of the three, which is the honest outcome,
+  // because there is nothing to bound, enumerate or toggle.
+  if (option.control === "switch") {
+    const control = (
+      <Switch
+        label={optionTitle(option.name)}
+        value={value}
+        fallback={option.default === true || String(option.default).toLowerCase() === "true"}
+        onChange={(next) => onChange(option.name, next)}
+        help={option.notes}
+      />
+    );
+    return ignored ? (
+      <div className="field">
+        {control}
+        <small className="field-hint text-faint text-[11.5px] leading-[1.5]">{ignored}</small>
+      </div>
+    ) : (
+      control
+    );
+  }
+
   if (option.control === "slider" && isRange) {
-    return (
+    const control = (
       <Knob
         name={option.name}
         value={value}
@@ -121,20 +164,28 @@ function OptionRow({
         help={option.notes}
       />
     );
+    return ignored ? (
+      <div className="field">
+        {control}
+        <small className="field-hint text-faint text-[11.5px] leading-[1.5]">{ignored}</small>
+      </div>
+    ) : (
+      control
+    );
   }
 
   if (option.control === "select" || option.control === "combobox") {
     return (
       <div className="field">
-        <div className="field-row" style={{ alignItems: "center" }}>
-          <span className="field-label" id={`${id}-label`}>
-            {label(option.name)}
+        <div className="field-row flex gap-2" style={{ alignItems: "center" }}>
+          <span className="field-label text-soft text-[12px]" id={`${id}-label`}>
+            {optionTitle(option.name)}
           </span>
           {option.notes && <Hint>{option.notes}</Hint>}
         </div>
         <Dropdown
           id={id}
-          label={label(option.name)}
+          label={optionTitle(option.name)}
           value={value}
           onChange={(next) => onChange(option.name, next)}
           placeholder="Model default"
@@ -143,20 +194,21 @@ function OptionRow({
           // cloned voice, a model the plugin added after this build.
           editable="Enter a value"
         />
+        {ignored && <small className="field-hint text-faint text-[11.5px] leading-[1.5]">{ignored}</small>}
       </div>
     );
   }
 
   return (
     <label className="field" htmlFor={id}>
-      <span className="field-label">{label(option.name)}</span>
+      <span className="field-label text-soft text-[12px]">{optionTitle(option.name)}</span>
       {/* An enumerated setting is a dropdown even in the fallback path. The same
           argument as everywhere else in the settings: one chooser, drawn once, so
           the app does not change idiom halfway down a page. */}
       {isChoice ? (
         <Dropdown
           id={id}
-          label={label(option.name)}
+          label={optionTitle(option.name)}
           value={value}
           onChange={(next) => onChange(option.name, next)}
           placeholder="Model default"
@@ -180,16 +232,10 @@ function OptionRow({
         exists nowhere else stays here. The `?` is for the repeatable part.
       */}
       {option.notes && !isChoice && (
-        <small className="field-hint" id={hintId}>
+        <small className="field-hint text-faint text-[11.5px] leading-[1.5]" id={hintId}>
           {option.notes}
         </small>
       )}
     </label>
   );
-}
-
-/** A readable name for a setting, derived from its key. */
-function label(name: string): string {
-  const spaced = name.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }

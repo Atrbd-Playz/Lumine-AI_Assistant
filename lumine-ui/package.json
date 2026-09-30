@@ -13,7 +13,10 @@
     "tauri": "tauri",
     "check:profile-ops": "node --experimental-strip-types --no-warnings scripts/verify-profile-ops.mts",
     "check:conversion": "node --experimental-strip-types --no-warnings scripts/verify-conversion.mts",
-    "check:tool-toast": "node --experimental-strip-types --no-warnings scripts/verify-tool-toast.mts"
+    "check:tool-toast": "node --experimental-strip-types --no-warnings scripts/verify-tool-toast.mts",
+    "check:command-surface": "node --experimental-strip-types --no-warnings scripts/verify-command-surface.mts",
+    "check:voice-contract": "node --experimental-strip-types --no-warnings scripts/verify-voice-contract.mts",
+    "check": "npm run check:profile-ops && npm run check:conversion && npm run check:tool-toast && npm run check:command-surface && npm run check:voice-contract"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

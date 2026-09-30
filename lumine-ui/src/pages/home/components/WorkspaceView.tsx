@@ -2,14 +2,29 @@ import { useEffect, useMemo, useState } from "react";
 import { getToolCatalog, type CatalogTool, type ToolCategory } from "../../../features/settings/aiConfigClient";
 import { TabStrip, type TabStripItem } from "../../../components/ui/tabstrip";
 import { Hint } from "../../../components/ui/hint";
+import type { WorkspaceNavId } from "../constants";
 import { Icon } from "./Icon";
 
-type WorkspaceKind = "tools" | "memory" | "activity";
+/**
+ * The two workspace pages that are not a timeline.
+ *
+ * `activity` used to be a third kind here, and it was the worst of the three: a
+ * hardcoded "morning standup", a "3 tasks" row and a "12 notes indexed" row,
+ * invented in the component and therefore not capable of being wrong. It is now
+ * `ActivityTimeline`, built on the worker's own `agent_runtime` stream — real
+ * records, and genuinely empty until there are any. The nav item is unchanged;
+ * only the page behind it stopped lying.
+ *
+ * The kind is the same `WorkspaceNavId` the rail declares, so the two lists are
+ * one list. It used to be a private `type WorkspaceKind = "tools" | "memory"`,
+ * which is a second declaration of the same fact and one that the router reached
+ * past with a cast.
+ */
+type WorkspaceKind = WorkspaceNavId;
 
-const CONTENT: Record<WorkspaceKind, { eyebrow: string; title: string; detail: string; icon: "tools" | "memory" | "activity" }> = {
-  tools: { eyebrow: "Lumine workspace", title: "Tools", detail: "Everything Lumine can reach on her own. She decides when to use one.", icon: "tools" },
-  memory: { eyebrow: "Lumine workspace", title: "Memory", detail: "A quiet place for the things Lumine is allowed to remember.", icon: "memory" },
-  activity: { eyebrow: "Lumine workspace", title: "Activity", detail: "A calm timeline of meaningful moments with Lumine.", icon: "activity" },
+const CONTENT: Record<WorkspaceKind, { eyebrow: string; title: string; detail: string; icon: "tools" | "memory" }> = {
+  tools: { eyebrow: "Lumine workspace", title: "Tools", detail: "What Lumine can reach on her own.", icon: "tools" },
+  memory: { eyebrow: "Lumine workspace", title: "Memory", detail: "What carries over between calls.", icon: "memory" },
 };
 
 type ToolState =
@@ -34,7 +49,7 @@ export function WorkspaceView({ kind, onSettings }: { kind: WorkspaceKind; onSet
           <Icon name="settings" size={18} />
         </button>
       </header>
-      {kind === "tools" ? <ToolsPage /> : <EmptyWorkspace kind={kind} onSettings={onSettings} />}
+      {kind === "tools" ? <ToolsPage /> : <MemoryPage onSettings={onSettings} />}
     </main>
   );
 }
@@ -60,10 +75,6 @@ export function WorkspaceView({ kind, onSettings }: { kind: WorkspaceKind; onSet
  * Read from the worker rather than written here, for the same reason as before:
  * a hardcoded list would look right and go stale, and a page that advertises a
  * tool the model cannot call is worse than an empty one.
- *
- * Memory and Activity stay empty states. They are placeholders for capabilities
- * that do not exist yet, and inventing content for them would be the same lie in
- * a more convincing costume.
  */
 function ToolsPage() {
   const [state, setState] = useState<ToolState>({ kind: "loading" });
@@ -184,9 +195,8 @@ function ToolsUnavailable() {
       </span>
       <h2>Could not read the tool registry</h2>
       <p>
-        The list is generated from the agent rather than stored here, so it is empty
-        whenever the worker cannot be asked. That is a worker that has not started
-        yet, or a Python environment that is missing.
+        The list is generated from the agent rather than stored here, so it is empty whenever the
+        worker has not started.
       </p>
     </div>
   );
@@ -208,13 +218,13 @@ function ToolCard({ tool }: { tool: CatalogTool }) {
           </span>
         )}
       </header>
-      <p className="tool-summary">{tool.summary}</p>
-      <ul className="tool-facts">
+      <p className="tool-summary m-0 text-soft text-[12.5px] leading-[1.55]">{tool.summary}</p>
+      <ul className="tool-facts flex flex-wrap gap-[5px] m-0 p-0 list-none">
         <li className={"tool-fact tool-fact-effect is-" + tool.effect}>{effect}</li>
         {tool.network && <li className="tool-fact">Uses the internet</li>}
       </ul>
       {tool.parameters.length > 0 && (
-        <dl className="tool-params">
+        <dl className="tool-params flex flex-col gap-1.5 m-0 pt-2.5 border-t border-t-border">
           {tool.parameters.map((parameter) => (
             <div key={parameter.name}>
               <dt>
@@ -228,29 +238,61 @@ function ToolCard({ tool }: { tool: CatalogTool }) {
       )}
       {/* The id the model actually receives. Not decoration: it is how a report
           of "she used get_weather" is matched to the card above it. */}
-      <code className="tool-id">{tool.id}</code>
+      <code className="tool-id mt-auto text-faint font-mono text-[10px] font-normal leading-[normal] tracking-[0.02em]">{tool.id}</code>
     </li>
   );
 }
 
-function EmptyWorkspace({ kind, onSettings }: { kind: WorkspaceKind; onSettings: () => void }) {
-  const content = CONTENT[kind];
+/**
+ * The Memory page, which is a real answer rather than a placeholder.
+ *
+ * ## The honest version
+ *
+ * There is no memory. Not "coming soon", not "disabled" — the worker has no store,
+ * so a call ends and the context ends with it. The previous version of this page
+ * said "Memory is not available yet", which is true and useless: it names the
+ * absence without saying what the absence *means*, so a person who wanted to check
+ * whether Lumine remembered something still has no idea what to conclude.
+ *
+ * So this page states the fact, states the consequence in the terms someone would
+ * actually use ("start a new call and she will not know you"), and then names the
+ * one thing that *is* persistent, because a page that only reports a lack leaves
+ * the reader hunting for the capability somewhere it might be hiding.
+ *
+ * That one thing is the persona. It is not a memory feature and it is not
+ * presented as one — it is a file, loaded into every session, and it is the reason
+ * Lumine says "Master" to someone she has never met. Being precise about that
+ * difference is the point: "she remembers" would be a promise this build cannot
+ * keep, and the whole point of this page is that it does not make promises.
+ */
+function MemoryPage({ onSettings }: { onSettings: () => void }) {
   return (
-    <section className={`workspace-empty workspace-empty-${kind}`}>
-      <span className="workspace-empty-icon">
-        <Icon name={content.icon} size={22} />
-      </span>
-      <h2>{kind === "memory" ? "Memory is not available yet" : "No activity to show"}</h2>
-      <p>
-        {kind === "memory"
-          ? "Lumine does not have persistent memory in this build. Nothing is being stored here."
-          : "Your meaningful sessions, voice moments, and completed actions will appear here when they are available."}
-      </p>
-      {kind === "activity" && (
+    <section className="memory-page flex flex-col gap-5.5 max-w-[72ch]">
+      <div className="workspace-empty">
+        <span className="workspace-empty-icon">
+          <Icon name="memory" size={22} />
+        </span>
+        <h2>She does not remember between calls</h2>
+        <p>
+          No store behind this page: a call ends and the conversation ends with it. Within one call
+          she remembers everything said, tools included.
+        </p>
+      </div>
+
+      <section className="memory-card p-6 bg-surface rounded-lg shadow-elev-1" aria-labelledby="memory-card-title">
+        <header>
+          <p className="eyebrow">The one thing that persists</p>
+          <h2 id="memory-card-title">Her persona</h2>
+        </header>
+        <p>
+          A written character — her warmth, her speech, that she calls you Master — loaded at every
+          session. It is a script, not a memory: it cannot grow from what you tell her.
+        </p>
+        <p className="memory-card-note">Keeping anything else is a question of storage, not of interface.</p>
         <button className="workspace-action" onClick={onSettings}>
-          Review settings
+          Review voice and models
         </button>
-      )}
+      </section>
     </section>
   );
 }

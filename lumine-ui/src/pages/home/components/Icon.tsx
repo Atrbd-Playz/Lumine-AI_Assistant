@@ -30,6 +30,18 @@ import {
   SpeakerHigh,
   SpeakerSlash,
   Info,
+  MagnifyingGlass,
+  Sun,
+  Cloud,
+  CloudRain,
+  CloudSnow,
+  Lightning,
+  Newspaper,
+  NotePencil,
+  Timer,
+  List,
+  CaretLeft,
+  CaretRight,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import type { IconName } from "../types";
@@ -62,6 +74,10 @@ const iconMap: Record<IconName, PhosphorIcon> = {
   reset: ArrowCounterClockwise,
   close: X,
   presentation: StackSimple,
+  // The command palette's affordance in the topbar. The chord is shown next to it
+  // because `mod+k` is Ctrl+K on Windows and Linux and nothing else in the app
+  // ever said so.
+  search: MagnifyingGlass,
   // The call bar. A waveform rather than a handset, because the control starts a
   // voice conversation and this is the app's own mark for one — the same glyph the
   // transcript and the activity page use. Reaching for a handset put a second
@@ -83,6 +99,23 @@ const iconMap: Record<IconName, PhosphorIcon> = {
   monitor: MonitorArrowUp,
   speaker: SpeakerHigh,
   "speaker-off": SpeakerSlash,
+  // The everyday rail. Weather is drawn from a small vocabulary of its own rather
+  // than one thermometer glyph, because a card whose whole job is "what is it like
+  // out" has to answer that before it is read — the label under it is the
+  // confirmation, not the answer.
+  sun: Sun,
+  cloud: Cloud,
+  rain: CloudRain,
+  snow: CloudSnow,
+  storm: Lightning,
+  news: Newspaper,
+  note: NotePencil,
+  timer: Timer,
+  // The rail's own controls rather than destinations: a list glyph for the small
+  // screen's overflow menu, and a caret for folding the rail down to icons.
+  menu: List,
+  collapse: CaretLeft,
+  expand: CaretRight,
 };
 
 /** Shared Phosphor icon surface; color remains controlled by Lumine theme tokens. */
@@ -111,5 +144,5 @@ export function Icon({
 }
 
 export function Mark() {
-  return <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>;
+  return <span className="brand-mark inline-flex items-center gap-0.5 h-[15px]" aria-hidden="true"><i /><i /><i /></span>;
 }

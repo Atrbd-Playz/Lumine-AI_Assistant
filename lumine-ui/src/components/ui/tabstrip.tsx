@@ -131,7 +131,10 @@ export function TabStrip({ items, value, onChange, label, hintSide = "bottom", c
       // Focus follows selection, which is the whole point of a roving tabindex:
       // arrow keys without focus movement leave the keyboard user guessing which
       // tab they are now on.
-      strip.querySelector<HTMLButtonElement>(`[data-tab="${target.id}"]`)?.focus();
+      // `CSS.escape`, because this value goes into a selector. A tab id with a
+      // quote, a `]` or a comma in it ends the attribute term early and the
+      // parse throws — inside a focus effect, where nothing catches it.
+      strip.querySelector<HTMLButtonElement>(`[data-tab="${CSS.escape(target.id)}"]`)?.focus();
     };
     strip.addEventListener("keydown", onKeyDown);
     return () => strip.removeEventListener("keydown", onKeyDown);

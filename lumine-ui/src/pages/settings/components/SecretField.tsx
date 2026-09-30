@@ -106,7 +106,7 @@ export function SecretField({
 
   return (
     <form
-      className="secret-field"
+      className="secret-field flex flex-col gap-2 mt-2.5 p-3.5 rounded-sm bg-[var(--color-stage)] shadow-elev-1"
       onSubmit={(event) => {
         event.preventDefault();
         if (trimmed && !busy) void onSubmit(trimmed);
@@ -130,8 +130,8 @@ export function SecretField({
         </p>
       )}
       <label className="field" htmlFor={fieldId}>
-        <span className="field-label">{label}</span>
-        <div className="secret-input">
+        <span className="field-label text-soft text-[12px]">{label}</span>
+        <div className="secret-input flex gap-1.5">
           <input
             id={fieldId}
             ref={inputRef}
@@ -169,12 +169,12 @@ export function SecretField({
             </button>
           )}
         </div>
-        {help && <small className="field-hint">{help}</small>}
+        {help && <small className="field-hint text-faint text-[11.5px] leading-[1.5]">{help}</small>}
       </label>
 
       {error && <p className="notice is-error">{error}</p>}
 
-      <div className="secret-actions">
+      <div className="secret-actions flex gap-1.5">
         <button type="submit" className="settings-primary" disabled={!trimmed || busy}>
           {/* No `.toLowerCase()`. The label is a proper noun more often than not --
               "API key", not "api key" -- and a button that mangles the name of the

@@ -65,6 +65,37 @@ export function useConversation({ service = mockConversationService }: UseConver
     setError(null);
   };
 
+  /**
+   * Mark a new call in the transcript instead of destroying the last one.
+   *
+   * `clearMessages()` on connect was the old behaviour, and it is the single most
+   * destructive thing this app did: a voice conversation *is* the record, and
+   * calling Lumine again used to throw the previous call away before the new one
+   * had produced a word. So a second call was paid for with the first.
+   *
+   * A divider is the right replacement rather than a timestamp badge on every
+   * message: the useful question is "where does one call end and the next begin",
+   * and that is one fact, not a fact per row. It is a `system` item, which keeps
+   * the whole thing inside the existing union and — like everything else here —
+   * knows nothing about where the messages came from.
+   *
+   * Silent when the transcript is empty. A divider above nothing is a rule with
+   * nothing under it, which is the shape of a UI element that exists only to
+   * justify itself.
+   */
+  const beginSession = useCallback((label = "New call") => {
+    setItems((current) => {
+      if (current.length === 0) return current;
+      const divider: ConversationItem = {
+        id: `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type: "system",
+        text: label,
+        timestamp: new Date(),
+      };
+      return [...current, divider];
+    });
+  }, []);
+
   const setConversationError = (message: string | null) => {
     setError(message);
     setAgentStatus(message ? "error" : "idle");
@@ -80,6 +111,7 @@ export function useConversation({ service = mockConversationService }: UseConver
     updateMessageStatus,
     upsertToolEvent,
     clearMessages,
+    beginSession,
     resetMessages,
     setAgentStatus,
     setError: setConversationError,

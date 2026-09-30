@@ -56,6 +56,16 @@
   /* The tinted fill behind an inline error, kept separate from the text colour
      so a destructive surface does not have to be legible as body copy. */
   --color-danger-soft: var(--color-danger-soft);
+  /* The accent wash, bridged for the same reason it was split out of
+     `--color-accent`: it is mixed per theme (and again by `Home.tsx` from the
+     chosen accent), so `bg-accent-soft` only exists as a utility if the token is
+     declared here. */
+  --color-accent-soft: var(--color-accent-soft);
+  /* The other two statuses, bridged for the same reason. Without a line here
+     `text-ok` and `text-warn` would not exist as utilities at all, and the
+     rules that need them are written by hand in `index.css` instead. */
+  --color-ok: var(--color-ok);
+  --color-warn: var(--color-warn);
 
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);

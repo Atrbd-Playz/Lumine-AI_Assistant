@@ -5,7 +5,7 @@ import { type ExpressiveEyeMode } from "../components/avatar/expressiveEyePaths"
 import { LumineAvatarEngine } from "../components/avatar/emotionEngine";
 import { expressionSpec } from "../components/avatar/expressions";
 import { ExpressionEffects } from "../components/avatar/ExpressionEffects";
-import { randomIdleAnimation } from "../components/avatar/idleMontage";
+import { surpriseAnimation } from "../components/avatar/idleMontage";
 import { useAvatarMontage } from "../components/avatar/useAvatarMontage";
 import type { LumineActivity, LumineAnimation, LumineEmotion } from "../components/avatar/avatarTypes";
 import { Dropdown } from "../components/ui/dropdown";
@@ -193,7 +193,7 @@ export default function AvatarLabPage() {
         </section>
 
         <motion.aside
-          className="avatar-lab-controls"
+          className="avatar-lab-controls p-6"
           initial={{ opacity: 0, x: 14 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.35 }}
@@ -205,9 +205,9 @@ export default function AvatarLabPage() {
             </div>
           </div>
 
-          <section className="avatar-lab-section">
+          <section className="avatar-lab-section mt-5">
             <span id="lab-emotion-label">Emotion</span>
-            <div className="avatar-lab-emotions" role="group" aria-labelledby="lab-emotion-label">
+            <div className="avatar-lab-emotions flex flex-wrap gap-[5px] mt-[7px]" role="group" aria-labelledby="lab-emotion-label">
               {EMOTIONS.map((value) => (
                 <button
                   key={value}
@@ -222,7 +222,7 @@ export default function AvatarLabPage() {
             </div>
           </section>
 
-          <div className="avatar-lab-field">
+          <div className="avatar-lab-field flex flex-col gap-[7px] mt-5">
             <label id="lab-eyes-label">Eye construction</label>
             <Dropdown
               label="Eye construction"
@@ -230,10 +230,10 @@ export default function AvatarLabPage() {
               onChange={(next) => setEyeMode(next as "canonical" | ExpressiveEyeMode)}
               options={EYE_MODES}
             />
-            <span className="avatar-lab-hint">{EYE_MODES.find((mode) => mode.value === eyeMode)?.hint}</span>
+            <span className="avatar-lab-hint text-faint text-[11.5px] leading-[1.4]">{EYE_MODES.find((mode) => mode.value === eyeMode)?.hint}</span>
           </div>
 
-          <div className="avatar-lab-field">
+          <div className="avatar-lab-field flex flex-col gap-[7px] mt-5">
             <label id="lab-activity-label">Activity</label>
             <Dropdown
               label="Activity"
@@ -241,10 +241,10 @@ export default function AvatarLabPage() {
               onChange={(next) => setActivity(next as LumineActivity)}
               options={ACTIVITIES}
             />
-            <span className="avatar-lab-hint">{ACTIVITIES.find((row) => row.value === activity)?.hint}</span>
+            <span className="avatar-lab-hint text-faint text-[11.5px] leading-[1.4]">{ACTIVITIES.find((row) => row.value === activity)?.hint}</span>
           </div>
 
-          <div className="avatar-lab-field">
+          <div className="avatar-lab-field flex flex-col gap-[7px] mt-5">
             <label htmlFor="lab-intensity">Intensity</label>
             <Knob
               name="intensity"
@@ -259,7 +259,7 @@ export default function AvatarLabPage() {
             />
           </div>
 
-          <div className="avatar-lab-row">
+          <div className="avatar-lab-row flex items-center gap-2.5 mt-4.5">
             <span id="lab-montage-label">Idle montage</span>
             <button
               type="button"
@@ -278,7 +278,7 @@ export default function AvatarLabPage() {
             </Hint>
           </div>
 
-          <div className="avatar-lab-field">
+          <div className="avatar-lab-field flex flex-col gap-[7px] mt-5">
             <label id="lab-animation-label">Play one gesture</label>
             <Dropdown
               label="Animation"
@@ -291,8 +291,8 @@ export default function AvatarLabPage() {
             />
           </div>
 
-          <div className="avatar-lab-actions">
-            <button type="button" onClick={() => play(randomIdleAnimation())}>
+          <div className="avatar-lab-actions flex flex-wrap gap-1.5 mt-4.5">
+            <button type="button" onClick={() => play(surpriseAnimation())}>
               Surprise me
             </button>
             <button type="button" onClick={reset}>

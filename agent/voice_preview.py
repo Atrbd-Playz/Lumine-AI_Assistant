@@ -8,7 +8,7 @@ This is that button's engine. It is deliberately a *one-shot*, not a session:
 
 * It is given the stage fragment to audition, not the saved profile, because the
   point is to hear a change that has not been committed yet.
-* It builds the stage through :func:`agent.pipeline_factory._build_tts`, the same
+* It builds the stage through :func:`agent.pipeline.pipeline_factory._build_tts`, the same
   path the worker uses. Building it any other way would mean previewing a voice
   the real session does not have, which is worse than not previewing at all.
 * It never touches a room, an LLM, or a LiveKit session. Nothing is dispatched
@@ -44,12 +44,12 @@ from typing import Any
 # inside the coroutine would be after the loop exists, which on some platforms is
 # too late to register the plugin's executor.
 try:
-    from .config_store import ResolvedStage
-    from .pipeline_factory import _build_tts
+    from .settings.config_store import ResolvedStage
+    from .pipeline.pipeline_factory import _build_tts
 except ImportError:  # running as `python agent/voice_preview.py`
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from config_store import ResolvedStage
-    from pipeline_factory import _build_tts
+    from settings.config_store import ResolvedStage
+    from pipeline.pipeline_factory import _build_tts
 
 #: Long enough to judge pace, emotion and volume; short enough that pressing the
 #: button twice in a row is not annoying. Anything past this is truncated, so a

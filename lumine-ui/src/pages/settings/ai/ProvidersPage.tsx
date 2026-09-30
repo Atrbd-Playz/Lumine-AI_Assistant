@@ -227,7 +227,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
         </p>
       )}
 
-      <div className="provider-list">
+      <div className="provider-list flex flex-col gap-3">
         {catalog.providers.map((provider) => {
           const status: ProviderStatus = statuses[provider.id] ?? { kind: "loading", slots: {} };
           const summary = summarise(status, provider.keyEnv);
@@ -247,7 +247,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
               </header>
 
               {provider.capabilities.length > 0 && (
-                <div className="provider-caps">
+                <div className="provider-caps flex flex-wrap gap-[5px] mt-[11px]">
                   {provider.capabilities.map((capability) => (
                     <span key={capability} className="provider-cap">
                       {capability}
@@ -272,9 +272,9 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                         const slotStatus = status.slots[slot.env];
                         return (
                           <li key={slot.env} className="key-slot">
-                            <div className="key-slot-text">
-                              <span className="field-label">{slot.label}</span>
-                              <small className="field-hint">
+                            <div className="key-slot-text flex flex-col gap-0.5 min-w-0">
+                              <span className="field-label text-soft text-[12px]">{slot.label}</span>
+                              <small className="field-hint text-faint text-[11.5px] leading-[1.5]">
                                 {status.kind === "unavailable"
                                   ? "The system credential store could not be reached."
                                   : status.kind === "loading"
@@ -284,7 +284,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                                       : `Not set — reads ${slot.env}`}
                               </small>
                             </div>
-                            <div className="provider-actions">
+                            <div className="provider-actions flex items-center gap-2">
                               <button
                                 type="button"
                                 className="settings-secondary"
@@ -302,7 +302,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                               {slotStatus?.present && (
                                 <button
                                   type="button"
-                                  className="settings-quiet"
+                                  className="settings-quiet py-[9px] px-1.5 text-soft bg-transparent text-[12px] cursor-pointer"
                                   onClick={() => void remove(provider.id, slot.env, slot.label)}
                                   disabled={pending === provider.id}
                                 >
@@ -340,7 +340,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                     </ul>
                   ) : (
                     <footer>
-                      <small className="field-hint">
+                      <small className="field-hint text-faint text-[11.5px] leading-[1.5]">
                         {status.kind === "unavailable"
                           ? "The system credential store could not be reached."
                           : status.kind === "loading"
@@ -349,7 +349,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                               ? `Key on file, ending in ${status.slots[provider.keyEnv[0]]?.last4 ?? ""}`
                               : `The worker reads ${provider.keyEnv.join(", ")}`}
                       </small>
-                      <div className="provider-actions">
+                      <div className="provider-actions flex items-center gap-2">
                         <button
                           type="button"
                           className="settings-secondary"
@@ -372,7 +372,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                         {summary !== "absent" && (
                           <button
                             type="button"
-                            className="settings-quiet"
+                            className="settings-quiet py-[9px] px-1.5 text-soft bg-transparent text-[12px] cursor-pointer"
                             onClick={() => void remove(provider.id, provider.keyEnv[0], `${provider.label} key`)}
                             disabled={pending === provider.id}
                           >
@@ -380,7 +380,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                           </button>
                         )}
                         {provider.setupUrl && (
-                          <a className="provider-link" href={provider.setupUrl} target="_blank" rel="noreferrer">
+                          <a className="provider-link inline-flex items-center gap-[5px] text-accent text-[11.5px] no-underline" href={provider.setupUrl} target="_blank" rel="noreferrer">
                             Get a key
                             <Icon name="spark" size={12} />
                           </a>
@@ -397,7 +397,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                   */}
                   {multiple && (
                     <footer>
-                      <div className="provider-actions">
+                      <div className="provider-actions flex items-center gap-2">
                         {provider.probe && (
                           <button
                             type="button"
@@ -410,7 +410,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                           </button>
                         )}
                         {provider.setupUrl && (
-                          <a className="provider-link" href={provider.setupUrl} target="_blank" rel="noreferrer">
+                          <a className="provider-link inline-flex items-center gap-[5px] text-accent text-[11.5px] no-underline" href={provider.setupUrl} target="_blank" rel="noreferrer">
                             Get a key
                             <Icon name="spark" size={12} />
                           </a>
@@ -422,7 +422,7 @@ export function ProvidersPage({ catalog, isEnvironmentBacked }: ProvidersPagePro
                 </>
               ) : (
                 <footer>
-                  <small className="field-hint">No credential needed. This runs locally on this machine.</small>
+                  <small className="field-hint text-faint text-[11.5px] leading-[1.5]">No credential needed. This runs locally on this machine.</small>
                 </footer>
               )}
 
@@ -466,9 +466,9 @@ function slotKey(providerId: string, env: string): string {
 function ProbeResult({ outcome }: { outcome: ProbeOutcome }) {
   const verdict = VERDICT[outcome.verdict] ?? VERDICT.inconclusive;
   return (
-    <div className={`probe-result is-${verdict.tone}`}>
-      <span className="probe-verdict">{verdict.label}</span>
-      <span className="field-hint">
+    <div className={`probe-result flex items-baseline gap-2 flex-wrap mt-2.5 pt-2.5 is-${verdict.tone}`}>
+      <span className="probe-verdict text-[11px] tracking-[0.03em] uppercase text-faint">{verdict.label}</span>
+      <span className="field-hint text-faint text-[11.5px] leading-[1.5]">
         {outcome.detail ? `${verdict.help} ${outcome.detail}` : verdict.help}
         {outcome.latencyMs !== undefined && ` (${outcome.latencyMs} ms)`}
         {outcome.status !== undefined && ` · HTTP ${outcome.status}`}

@@ -50,7 +50,11 @@ function Toast({ className, ...props }: ToastPrimitive.Root.Props) {
         // A tone wash plus a leading rule, so the kind of message is readable
         // from the edge of the screen without reading the words.
         "before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-[var(--toast-tone,var(--color-accent))]",
-        "data-[tone=success]:[--toast-tone:#5fbf8f] data-[tone=error]:[--toast-tone:#e2685a] data-[tone=warning]:[--toast-tone:#e0a355] data-[tone=info]:[--toast-tone:var(--color-accent)] data-[tone=loading]:[--toast-tone:var(--color-text-faint)]",
+        // The tones are tokens rather than hexes: #5fbf8f reached 2.2:1 on the
+        // light toast surface, below the 3:1 a graphic is held to, and none of
+        // the three switched when the theme did. `--color-ok` / `--color-danger`
+        // / `--color-warn` are declared per theme for exactly this.
+        "data-[tone=success]:[--toast-tone:var(--color-ok)] data-[tone=error]:[--toast-tone:var(--color-danger)] data-[tone=warning]:[--toast-tone:var(--color-warn)] data-[tone=info]:[--toast-tone:var(--color-accent)] data-[tone=loading]:[--toast-tone:var(--color-text-faint)]",
         "focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-canvas)]",
         // A flow column, so the only transform is the swipe offset. Enter and
         // exit slide down from the top edge, matching where the stack begins.

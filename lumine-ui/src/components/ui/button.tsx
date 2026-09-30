@@ -22,8 +22,17 @@ const buttonVariants = cva(
           "border-[var(--color-border)] bg-[var(--color-surface-muted)] text-[var(--color-text)] hover:border-[var(--color-accent)]/45 hover:bg-[color-mix(in_srgb,var(--color-accent)_14%,var(--color-surface-muted))]",
         ghost:
           "text-[var(--color-text-soft)] hover:bg-[var(--color-surface-muted)] hover:text-[var(--color-text)]",
+        // The tint, border and ring are the token rather than a hex, because
+        // `#e2685a` matched neither theme's danger colour: light declares `#b03a2e`
+        // and dark `#e5645a`, so the button was a red belonging to a third palette
+        // in both of them. The *text* is measured against that tint and does not
+        // simply inherit it — on the light 15% fill the token reaches 4.53:1, while
+        // the dark token manages only 4.0:1 against a dark fill of itself, so dark
+        // takes a lifted tint of the same hue. Hover needs its own per theme for the
+        // mirror-image reason: the fill darkens, which helps a light-on-dark glyph
+        // and costs a dark-on-light one a full point.
         destructive:
-          "border-[color-mix(in_srgb,#e2685a_45%,transparent)] bg-[color-mix(in_srgb,#e2685a_16%,transparent)] text-[#f0a49b] hover:border-[#e2685a]/70 hover:bg-[color-mix(in_srgb,#e2685a_26%,transparent)] hover:text-[#ffd2cb] focus-visible:border-[#e2685a] focus-visible:ring-[#e2685a]/35 dark:text-[#ffb4aa]",
+          "border-destructive/45 bg-destructive/15 text-destructive hover:border-destructive/70 hover:bg-destructive/25 hover:text-[#8f2a1e] focus-visible:border-destructive focus-visible:ring-destructive/35 dark:text-[#ff8f84] dark:hover:text-[#ffb0a6]",
         link: "text-[var(--color-accent)] underline-offset-4 hover:underline",
       },
       size: {

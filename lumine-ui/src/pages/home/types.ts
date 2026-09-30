@@ -1,6 +1,24 @@
 /** Shared data shapes for the Lumine home experience. */
 
-export type LumineState = "idle" | "listening" | "thinking" | "speaking";
+/**
+ * What Lumine is doing, as the presence layer tells it.
+ *
+ * This used to be four states, and the four states were the problem: everything
+ * that was not `speaking`, `listening` or `thinking` was reported as one of those
+ * three, so `connecting`, `online` and `reconnecting` all drew the same thinking
+ * face. A user pressing the call button and seeing a thoughtful expression has
+ * been told the call connected, and has not been told anything at all.
+ *
+ * `connecting` and `online` are therefore first-class here rather than folded
+ * into `thinking`, and they are what makes the idle/connecting/connected question
+ * answerable at all. `error` is here for the same reason: it used to render as
+ * `idle`, so a failed call looked exactly like a call nobody started.
+ *
+ * A total union, so `Record<LumineState, …>` tables in `constants.ts` and
+ * `Presence.tsx` fail to compile the moment a state is added without a face and a
+ * line of copy.
+ */
+export type LumineState = "idle" | "connecting" | "online" | "listening" | "thinking" | "speaking" | "error";
 export type EntryKind = "note" | "action" | "message";
 export type ThemeMode = "light" | "dark";
 export type InterfaceFont = "Manrope" | "Newsreader" | "Space Grotesk" | "DM Mono" | "Roboto" | "Ubuntu";
@@ -71,10 +89,22 @@ export type IconName =
   | "reset"
   | "close"
   | "presentation"
+  | "search"
   | "phone"
   | "phone-down"
   | "video"
   | "video-off"
   | "monitor"
   | "speaker"
-  | "speaker-off";
+  | "speaker-off"
+  | "sun"
+  | "cloud"
+  | "rain"
+  | "snow"
+  | "storm"
+  | "news"
+  | "note"
+  | "timer"
+  | "menu"
+  | "collapse"
+  | "expand";

@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
-import { getMontageSequence, randomIdleAnimation } from "./idleMontage";
+import { gapFor, pickMontageAnimation } from "./idleMontage";
 import type { LumineAnimation } from "./avatarTypes";
 import type { LumineAvatarEngine } from "./emotionEngine";
+import type { LumineState } from "../../pages/home/types";
 
 /**
  * The idle montage: Lumine moving on her own, with nobody asking.
@@ -43,7 +44,17 @@ import type { LumineAvatarEngine } from "./emotionEngine";
  *   montages are shorter and exclude the slow idle drifts for the same reason.
  */
 
-type MontageKind = "idle" | "listening" | "thinking" | "speaking";
+/**
+ * The montage's kind is the room's state, verbatim.
+ *
+ * It used to be a narrower union of its own — four states, with `connecting`,
+ * `online` and `error` folded into `idle` and `thinking` by whatever the caller
+ * passed. That is the same collapsing the presence state model was fixed for, one
+ * layer down, and a driver that silently accepted a state it had no gap for is
+ * how the second collapse came back after the first was fixed. Aliasing
+ * `LumineState` means a new state fails to compile here too.
+ */
+type MontageKind = LumineState;
 
 /**
  * Animations that move the eyes, and so conflict with cursor gaze.
@@ -51,6 +62,11 @@ type MontageKind = "idle" | "listening" | "thinking" | "speaking";
  * Declared here rather than inferred from the engine's tween targets: the engine
  * has no table of which animations touch which channel, and adding one for this
  * would be a second source of truth about the same animations.
+ *
+ * `wonder` and `reaching` are here and were not, because both were authored after
+ * this list was written. That is the honest reason this set is hand-maintained
+ * and not derived: a derived list would be correct, and it would also be a second
+ * place to forget.
  */
 const MOVES_EYES: ReadonlySet<LumineAnimation> = new Set<LumineAnimation>([
   "lookLeft",
@@ -58,6 +74,8 @@ const MOVES_EYES: ReadonlySet<LumineAnimation> = new Set<LumineAnimation>([
   "tinySway",
   "pauseDrift",
   "peek",
+  "wonder",
+  "reaching",
 ]);
 
 export type MontageOptions = {
@@ -73,30 +91,15 @@ export type MontageOptions = {
   cursorGaze: boolean;
 };
 
-/** How long to sit still between gestures, in ms, per montage. */
-const GAP: Record<MontageKind, [number, number]> = {
-  // Idle is a long wait. A face that fidgets is a face you notice, and the point
-  // of this screen is that it is there without asking for anything.
-  idle: [2600, 6200],
-  // Listening has to read as attentive, so it moves more often but less far.
-  listening: [1200, 2600],
-  // Thinking is the one state where a still face would be a bug: the pause is
-  // the signal, and a long one is indistinguishable from a dropped connection.
-  thinking: [1800, 3400],
-  // Speaking is busy already. The activity overlay carries it.
-  speaking: [2400, 4800],
-};
-
-function gapFor(kind: MontageKind): number {
-  const [low, high] = GAP[kind];
-  return low + Math.random() * (high - low);
-}
-
 export function useAvatarMontage({ engine, kind, paused, cursorGaze }: MontageOptions): void {
   // A ref rather than state: this must not cause a render, and the effect that
   // starts the loop should not re-run because a timer fired.
   const kindRef = useRef(kind);
   kindRef.current = kind;
+  // A ref for the same reason, and because the scheduler needs to know what it
+  // just played to avoid playing it again. The picker owns the weighting; this
+  // owns only the one fact it cannot know.
+  const lastRef = useRef<LumineAnimation | null>(null);
 
   useEffect(() => {
     if (!engine || paused) return;
@@ -109,26 +112,19 @@ export function useAvatarMontage({ engine, kind, paused, cursorGaze }: MontageOp
       if (cancelled || running) return;
       running = true;
       try {
-        const sequence = getMontageSequence(kindRef.current);
-        // Weighted random, and the group is the sequence, not a shuffle of the
-        // whole catalog. The group is what keeps a thinking face from doing a
-        // `wiggle`; the weighting is what stops it doing the same gesture twice
-        // in a row, which is the one thing that makes an avatar look automated.
-        const allowed = sequence.filter((animation) => !cursorGaze || !MOVES_EYES.has(animation));
+        const current = kindRef.current;
+        const drawn = pickMontageAnimation(current, lastRef.current);
         // No group is entirely gaze-driven today, but a future one could be, and
         // an empty pool would hand `play` an undefined animation and land in its
-        // `else` branch — the surprise reaction. Falling back to the unfiltered
-        // group is visibly wrong for a moment; being startled is worse.
-        const pool = allowed.length > 0 ? allowed : sequence;
-        // Draw from the weighted list, then keep it only if the filter allowed
-        // it. Sampling the pool uniformly instead would make every allowed
-        // gesture equally likely, and the weights are the whole reason a blink
-        // outnumbers a `wiggle` eight to one.
-        const drawn = randomIdleAnimation();
-        const next = pool.includes(drawn) ? drawn : pool[Math.floor(Math.random() * pool.length)];
+        // `else` branch — the surprise reaction. So the drawn behaviour is checked
+        // and, if the pointer owns the eyes, the state is downgraded to `idle`,
+        // whose pool is body-led. Being visibly wrong for a moment beats being
+        // startled.
+        const next = cursorGaze && MOVES_EYES.has(drawn) ? pickMontageAnimation("idle", lastRef.current) : drawn;
+        lastRef.current = next;
         // A state change mid-gesture does not cut this one short — `play` is
-        // atomic and re-entry is guarded above — but the *next* one comes from
-        // the new state, because `kindRef` is read when the queue is drawn.
+        // atomic and re-entry is guarded above — but the *next* one comes from the
+        // new state, because `kindRef` is read when the behaviour is drawn.
         await engine.play(next, 0);
       } catch {
         // A montage that throws would stop the loop and leave the face frozen

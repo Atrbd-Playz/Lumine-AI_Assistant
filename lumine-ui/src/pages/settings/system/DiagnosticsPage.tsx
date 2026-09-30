@@ -85,7 +85,7 @@ export function DiagnosticsPage({ catalog, isEnvironmentBacked, validating, diag
         ) : !agent ? (
           <p className="validation is-pending">Checking…</p>
         ) : (
-          <div className="runtime-state">
+          <div className="runtime-state flex flex-col items-start gap-2">
             <span className={`provider-status is-${agent.running ? "ok" : "missing"}`}>
               {agent.state}
             </span>
@@ -100,7 +100,7 @@ export function DiagnosticsPage({ catalog, isEnvironmentBacked, validating, diag
                 ? "Registered with LiveKit. A room dispatched to Lumine will reach her."
                 : "Not registered with LiveKit. Starting a call will launch the worker first."}
             </p>
-            {agent.pid && <small className="field-hint">Process {agent.pid}</small>}
+            {agent.pid && <small className="field-hint text-faint text-[11.5px] leading-[1.5]">Process {agent.pid}</small>}
             {agent.error && <p className="validation is-error">{agent.error}</p>}
           </div>
         )}
@@ -151,7 +151,7 @@ export function DiagnosticsPage({ catalog, isEnvironmentBacked, validating, diag
           </p>
         )}
         {diagnostics.length > 0 && (
-          <ul className="validation-list">
+          <ul className="validation-list flex flex-col gap-2.5 m-0 p-0 list-none">
             {diagnostics.map((diagnostic, index) => (
               <li key={index} className={`validation is-${diagnostic.severity}`}>
                 <Icon name={diagnostic.severity === "error" ? "close" : "clock"} size={14} />

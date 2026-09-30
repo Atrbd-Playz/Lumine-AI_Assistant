@@ -13,8 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 from agent import provider_probe
-import agent.providers as providers_module
-from agent.providers import PROVIDERS, ProbeDefinition, catalog_issues, get_provider
+import agent.settings.providers as providers_module
+from agent.settings.providers import PROVIDERS, ProbeDefinition, catalog_issues, get_provider
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -59,7 +59,7 @@ class ProbeTestCase(unittest.TestCase):
         self.thread.start()
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}/probe"
 
-        import agent.validation as validation_module
+        import agent.settings.validation as validation_module
 
         self.addCleanup(self._restore)
         self.original = dict(PROVIDERS)
@@ -68,7 +68,7 @@ class ProbeTestCase(unittest.TestCase):
         )
 
     def _install(self, probe: ProbeDefinition | None) -> None:
-        import agent.validation as validation_module
+        import agent.settings.validation as validation_module
 
         provider = providers_module.ProviderDefinition(
             id="http",
@@ -83,7 +83,7 @@ class ProbeTestCase(unittest.TestCase):
         validation_module.PROVIDERS[provider.id] = provider
 
     def _restore(self):
-        import agent.validation as validation_module
+        import agent.settings.validation as validation_module
 
         PROVIDERS.clear()
         PROVIDERS.update(self.original)
@@ -437,7 +437,7 @@ class CatalogProbeTests(unittest.TestCase):
     def test_a_plain_http_probe_is_rejected_by_the_self_check(self):
         broken = get_provider("groq")
         assert broken is not None
-        import agent.providers as providers_module
+        import agent.settings.providers as providers_module
 
         bad = providers_module.ProviderDefinition(
             **{
@@ -449,7 +449,7 @@ class CatalogProbeTests(unittest.TestCase):
         self.assertTrue(any("https" in issue for issue in issues), issues)
 
     def test_the_public_catalog_never_carries_a_secret(self):
-        from agent.providers import to_public_catalog
+        from agent.settings.providers import to_public_catalog
 
         blob = json.dumps(to_public_catalog())
         for provider in PROVIDERS.values():

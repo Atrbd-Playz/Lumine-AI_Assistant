@@ -200,6 +200,15 @@ cython_debug/
 #   and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #   you could uncomment the following to ignore the entire vscode folder
 # .vscode/
+
+# Frontend source lives in a folder called `lib`, which the Python `lib/` rule
+# above would otherwise swallow. Without the two lines below,
+# `lumine-ui/src/lib/*.ts` is silently untracked: it never reaches the remote and
+# a fresh clone does not build. The directory has to be re-included first, because
+# git will not re-include a file beneath a directory it has already excluded.
+!lumine-ui/src/lib/
+!lumine-ui/src/lib/**
+
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
@@ -244,3 +253,54 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# ---------------------------------------------------------------------------
+# Dev and tooling artifacts
+#
+# opencode runs Playwright against the dev server and captures screenshots,
+# traces and recordings while it works. None of that is source: it goes stale the
+# moment the run ends, it is large, and pushing it is always a mistake. These
+# rules exist so an accidental `git add .` cannot put a screenshot in history.
+# ---------------------------------------------------------------------------
+
+# Playwright reports, traces and video output (default and custom output dirs)
+playwright-report/
+blob-report/
+.playwright/
+playwright/.cache/
+**/playwright-report/
+**/blob-report/
+test-results/
+**/test-results/
+*.trace
+trace.zip
+*.webm
+
+# Network captures
+*.har
+
+# Screenshots. Naming, not extension, is the signal: lumine-ui/public,
+# lumine-ui/src-tauri/icons and lumine-ui/src/assets ship real images on purpose
+# and stay tracked. A loose capture written to the repo root or a scratch folder
+# does not.
+*screenshot*.png
+*screenshot*.jpg
+*screenshot*.jpeg
+*screenshot*.webp
+/screenshots/
+/screenshots
+/tmp/
+/tmp
+/.tmp/
+/scratch/
+/scratch
+.opencode/
+
+# AI assistant working directories and fixtures created by a dev run
+.qodo/
+tmp_browser_fixture/
+
+# Frontend build leftovers
+*.tsbuildinfo
+.vite/
+coverage/

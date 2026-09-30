@@ -37,10 +37,23 @@ function readPreferences(): StoredPreferences {
     return {
       ...DEFAULT_PREFERENCES,
       ...parsed,
+      // `mode` is read as an index into two records, one line below, so a value
+      // that is not one of the two keys (a hand-edited file, a value written by
+      // an older build) would look up `undefined` and hand it to a component
+      // that calls `Object.keys` on it. Validate it at the boundary, where the
+      // fallback is a decision rather than a crash.
+      mode: parsed.mode === "light" || parsed.mode === "dark" ? parsed.mode : DEFAULT_PREFERENCES.mode,
       appearance: { ...DEFAULT_APPEARANCE, ...parsed.appearance },
       presets: parsed.presets ?? {},
       palettes: { ...DEFAULT_THEME_PALETTES, ...palettes },
-      themePresets: parsed.themePresets ?? DEFAULT_THEME_PRESETS,
+      // Per-key rather than `?? DEFAULT`: a stored `{ light: {... } }` with no
+      // `dark` half replaces the default wholesale under `??`, because the
+      // object itself is present. That is how `presets` came to be `undefined`
+      // for anyone who had only ever saved a light preset.
+      themePresets: {
+        light: parsed.themePresets?.light ?? DEFAULT_THEME_PRESETS.light,
+        dark: parsed.themePresets?.dark ?? DEFAULT_THEME_PRESETS.dark,
+      },
       interruptionMode: normalizeInterruptionMode(parsed.interruptionMode),
     };
   } catch {
@@ -54,7 +67,14 @@ export function usePreferences() {
   const appearance = { ...preferences.appearance, ...preferences.palettes[preferences.mode] };
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    // Best-effort, like every other write in the app. A private window or a
+    // full disk must cost the user their saved theme on next launch, not the
+    // settings screen they are standing in.
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    } catch {
+      // Losing the preference for this session is the cheap version of this failure.
+    }
   }, [preferences]);
 
   return {

@@ -1,6 +1,6 @@
 """Factories for Lumine's voice pipelines.
 
-Stages are built from a :class:`~agent.config_store.ResolvedProfile` rather than
+Stages are built from a :class:`~agent.settings.config_store.ResolvedProfile` rather than
 being hardcoded, so STT, LLM, TTS, and VAD can be selected independently and
 realtime can be paired with a separate TTS when a model supports it.
 
@@ -20,24 +20,26 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 try:
-    from .config_store import ResolvedProfile, ResolvedStage, env_profile, resolve_profile
-    from .llm_config import connect_max_retry
-    from .pipeline_config import pipeline_name
-    from .providers import Capability, get_model
-    from .session_preferences import normalize_interruption_mode
-    from .validation import (
+    from ..settings.config_store import ResolvedProfile, ResolvedStage, env_profile, resolve_profile
+    from ..runtime.emotion_voice import remember_baseline
+    from ..settings.llm_config import connect_max_retry
+    from ..settings.pipeline_config import pipeline_name
+    from ..settings.providers import Capability, get_model
+    from ..settings.session_preferences import normalize_interruption_mode
+    from ..settings.validation import (
         Diagnostic,
         diagnostic,
         env_credential_status,
         validate_profile,
     )
 except ImportError:
-    from config_store import ResolvedProfile, ResolvedStage, env_profile, resolve_profile
-    from llm_config import connect_max_retry
-    from pipeline_config import pipeline_name
-    from providers import Capability, get_model
-    from session_preferences import normalize_interruption_mode
-    from validation import (
+    from settings.config_store import ResolvedProfile, ResolvedStage, env_profile, resolve_profile
+    from runtime.emotion_voice import remember_baseline
+    from settings.llm_config import connect_max_retry
+    from settings.pipeline_config import pipeline_name
+    from settings.providers import Capability, get_model
+    from settings.session_preferences import normalize_interruption_mode
+    from settings.validation import (
         Diagnostic,
         diagnostic,
         env_credential_status,
@@ -255,7 +257,14 @@ async def _build_tts(stage: ResolvedStage) -> Any:
     options = {"model": stage.model, **_declared_options(stage, "tts")}
     if stage.voice:
         options[_voice_keyword(stage)] = stage.voice
-    return await asyncio.to_thread(module.TTS, **options)
+    tts = await asyncio.to_thread(module.TTS, **options)
+    # Write down what this was built with before anything can change it. Which
+    # settings exist, and what they default to, is the catalog's decision and
+    # already made above; this is only the observation that a synthesizer's
+    # options are mutated in place for as long as the session lasts, so the
+    # configured value has to be kept somewhere it will not be overwritten.
+    remember_baseline(tts, options.get("emotion"))
+    return tts
 
 
 async def _build_stt(stage: ResolvedStage) -> Any:
@@ -295,7 +304,7 @@ async def _build_realtime(stage: ResolvedStage, interruption_mode: str) -> Any:
     if not hasattr(module, "realtime"):
         raise RuntimeError(
             f"The {stage.provider} plugin has no realtime module. "
-            "Add one in agent/pipeline_factory.py before selecting it."
+            "Add one in agent/pipeline/pipeline_factory.py before selecting it."
         )
 
     # Turn handling is session wiring rather than a model option: the models

@@ -1,6 +1,6 @@
 //! Versioned, non-secret configuration storage for the AI Control Center.
 //!
-//! This is the writer half of the contract that `agent/config_store.py` reads.
+//! This is the writer half of the contract that `agent/settings/config_store.py` reads.
 //! The file holds profiles, provider enablement, and agent toggles. It never
 //! holds credential material — `credentials.rs` owns that, in the OS keyring.
 //!

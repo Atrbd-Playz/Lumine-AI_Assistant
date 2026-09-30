@@ -28,11 +28,11 @@ export function SettingsPageHeader({ section, actions }: SettingsPageHeaderProps
 
   return (
     <header className="settings-page-head">
-      <div className="settings-page-head-text">
+      <div className="settings-page-head-text min-w-0">
         <p className="eyebrow">{definition?.group ?? "Settings"}</p>
         <h1>{definition?.label ?? "Settings"}</h1>
       </div>
-      {actions ? <div className="settings-page-head-actions">{actions}</div> : null}
+      {actions ? <div className="settings-page-head-actions flex items-center gap-2 shrink-0 pt-1">{actions}</div> : null}
     </header>
   );
 }

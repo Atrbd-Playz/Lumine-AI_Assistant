@@ -27,9 +27,9 @@ Two failure modes are guarded, and both have already happened:
 import unittest
 from pathlib import Path
 
-from agent import llm_config
-from agent import pipeline_config
-from agent.providers import PROVIDERS
+from agent.settings import llm_config
+from agent.settings import pipeline_config
+from agent.settings.providers import PROVIDERS
 
 AGENT_DIR = Path(__file__).resolve().parent.parent
 ENV_EXAMPLE = AGENT_DIR / ".env.example"

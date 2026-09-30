@@ -21,8 +21,8 @@
 - Current tool IDs are `get_weather`, `get_news`, `search_web`, `recall_persona`, and `open_app`, registered cheapest-first. `LUMINE_DISABLED_TOOLS` accepts a comma-separated list of exact IDs; `LUMINE_ENABLE_APP_LAUNCH=false` disables the desktop-launch tool. Toggles are read after `agent/.env` loads.
 - `agent/tools/tool_results.py` owns the one rule for what a tool may return: a central `MAX_RESULT_CHARS` ceiling, keyed JSON rather than prose, a truncation marker, and a delimiter around anything retrieved from the internet. New tools go through it — a tool result is re-sent on every later turn, so its size is paid for repeatedly.
 - `agent/prompts/persona.md` is the **full** persona, read on demand by `recall_persona`. `persona_core.md` is what every request carries. The split is about when the persona is read, never what it says; `agent/tests/test_persona_split.py` asserts the full file survives.
-- `agent/context_trim.py` trims the chat context to `LUMINE_MAX_CONTEXT_ITEMS` (default 40, floor 24) on `conversation_item_added`. It is a backstop — `ChatContext.truncate` preserves the system message, which is the persona and the tool policy.
-- `agent/llm_errors.py` classifies a failed LLM call, and `agent/failure_gate.py` opens a circuit after three consecutive failures. Lumine speaks one short apology per opening. Do not add a retry loop: a rate-limited session that keeps trying spends the quota it has left.
+- `agent/runtime/context_trim.py` trims the chat context to `LUMINE_MAX_CONTEXT_ITEMS` (default 40, floor 24) on `conversation_item_added`. It is a backstop — `ChatContext.truncate` preserves the system message, which is the persona and the tool policy.
+- `agent/runtime/llm_errors.py` classifies a failed LLM call, and `agent/runtime/failure_gate.py` opens a circuit after three consecutive failures. Lumine speaks one short apology per opening. Do not add a retry loop: a rate-limited session that keeps trying spends the quota it has left.
 - Notices reach the UI on the `lumine.notice` data channel, not only on stdout — a notice that depends on how the process was started is a notice that silently does not arrive.
 - **Never let a telemetry write raise.** `runtime_events.write_event_line` catches `OSError`/`ValueError` for exactly this reason: the desktop app pipes the worker's stdout, and a write to a dead pipe raises `OSError: [Errno 22] Invalid argument` on Windows. That unguarded `print` was killing every session on its first line. `agent/broken_stdout_check.py` reproduces it.
 - `agent.py` sets `logging.raiseExceptions = False`. LiveKit's logger fails on the same broken stream, and without this every log record prints a full traceback.
@@ -68,7 +68,7 @@ Both check scripts kill the process tree on exit. Stop any leftover `python agen
 
 ## Verification
 
-- Run the Python suite from the repository root (the test imports `agent.emotion_contract` as a package):
+- Run the Python suite from the repository root (the test imports `agent.runtime.emotion_contract` as a package):
   ```powershell
   .\.venv\Scripts\python.exe -m unittest discover -s agent\tests -p "test_*.py"
   ```
@@ -87,7 +87,7 @@ Both check scripts kill the process tree on exit. Stop any leftover `python agen
 
 ## Where to look next
 
-- Agent/runtime contract: `agent/agent.py`, `agent/emotion_contract.py`, `agent/livekit_{token,dispatch,room}.py`.
+- Agent/runtime contract: `agent/agent.py`, `agent/runtime/emotion_contract.py`, `agent/livekit_{token,dispatch,room}.py`.
 - Desktop process/IPC contract: `lumine-ui/src-tauri/src/lib.rs` and `agent_manager.rs`.
 - Voice/session lifecycle: `lumine-ui/src/features/voice/voice-manager.ts` and `useLumineVoice.ts`.
 - Conversation integration seam: `lumine-ui/src/pages/home/conversation/`.

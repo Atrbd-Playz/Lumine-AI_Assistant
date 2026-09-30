@@ -1,10 +1,28 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConversationMessage, ConversationToolEvent } from "../../pages/home/conversation/types";
 import { LumineVoiceManager, type LumineVoiceStatus, type VoiceNotice, type VoiceToolEvent } from "./voice-manager";
 import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
 import { DEFAULT_INTERRUPTION_MODE, type InterruptionMode } from "./interruption";
 
 export type LumineVoiceConnectionState = LumineVoiceStatus | "online" | "waiting" | "reconnecting";
+
+/**
+ * The statuses in which a typed message can actually arrive.
+ *
+ * Derived from the same union the connection map consumes, so it cannot name a
+ * status that does not exist. Note that `connecting` is absent: the room exists
+ * before the agent has joined, and text sent into a room with nobody in it is
+ * accepted by the data layer and read by no one — the message would appear to
+ * have been sent and would simply never be answered.
+ */
+const TEXT_SENDABLE_STATES: ReadonlySet<LumineVoiceConnectionState> = new Set<LumineVoiceConnectionState>([
+  "connected",
+  "online",
+  "listening",
+  "thinking",
+  "speaking",
+  "waiting",
+]);
 
 /**
  * Every `LumineVoiceStatus`, mapped to what the UI shows.
@@ -162,6 +180,53 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
   );
   const unpublishVideo = useCallback(() => managerRef.current!.unpublishVideo(), []);
 
+  /**
+   * Lumine's loudness, 0..1, pushed rather than polled.
+   *
+   * A callback and not a number, and the reason is the render cost: an RMS
+   * updates about 60 times a second, so exposing it as state would re-render
+   * everything that read it 60 times a second. Handing out a subscription lets
+   * the consumer store the value in a ref and write it straight to whatever is
+   * drawing.
+   *
+   * Stable by identity, so it is safe as an effect dependency — an inline arrow
+   * here would tear down and re-establish the avatar's subscription on every
+   * single render, which is the exact cost the subscription was introduced to
+   * avoid.
+   */
+  const subscribeAudioLevel = useCallback(
+    (onLevel: (level: number) => void) => managerRef.current!.subscribeAudioLevel(onLevel),
+    [],
+  );
+
+  /**
+   * Say something to Lumine in text. Resolves to whether it was delivered.
+   *
+   * A boolean rather than a throw, because the caller is a composer and a
+   * rejected promise inside a submit handler is an unhandled rejection. `false`
+   * means "keep your draft"; the manager has already reported the reason.
+   *
+   * Stable by identity so it can be a dependency of a memo without churning.
+   */
+  const sendText = useCallback((text: string) => managerRef.current!.sendText(text), []);
+
+  /**
+   * Whether a typed message can reach Lumine.
+   *
+   * Derived from the snapshot rather than held as its own state, because it is
+   * the same fact as the connection and a second copy would be wrong for exactly
+   * as long as a call ended between the render and the click.
+   *
+   * Mute is included deliberately. It looks unrelated — muting is about the
+   * microphone — but on this app a muted call has the microphone disabled, so
+   * there is no *speakable* channel left, and typing during a muted call is
+   * someone who has forgotten they muted.
+   */
+  const canSendText = useMemo(
+    () => TEXT_SENDABLE_STATES.has(snapshot.state) && !snapshot.muted,
+    [snapshot.state, snapshot.muted],
+  );
+
   return {
     state: snapshot.state,
     status,
@@ -170,6 +235,9 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
     startedAt: snapshot.startedAt,
     isActive: snapshot.isActive,
     muted: snapshot.muted,
+    subscribeAudioLevel,
+    sendText,
+    canSendText,
     session: snapshot.sessionId ? { sessionId: snapshot.sessionId, roomName: snapshot.roomName ?? "", participantIdentity: "", agentIdentity: "Lumine" } : null,
     connect: () => managerRef.current!.start(interruptionModeRef.current),
     disconnect: () => managerRef.current!.stop(),

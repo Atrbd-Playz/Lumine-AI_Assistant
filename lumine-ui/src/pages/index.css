@@ -1,3 +1,4 @@
+@layer components {
 /* ==========================================================================
    Lumine UI â€” design tokens
    Keep component styles below these variables. Add new colors here first.
@@ -45,11 +46,30 @@
   --color-danger: #e5645a;
   --color-danger-soft: #3d1f1d;
 
+  /* The other two tones, and they have to be tokens for the same reason
+     `--color-danger` did: they were literals tuned against the dark surface.
+     #d9b27a reaches 8:1 on #211f1d and 1.9:1 on #fbfaf8 — an amber warning in
+     light mode was not a warning, it was a rumour. Dark values are the ones
+     that were already here; the light values below are chosen to clear 4.5:1 on
+     #fbfaf8. Icons and dots take the same pair, where 3:1 is the bar and both
+     pass comfortably. */
+  --color-ok: #68ae82;
+  --color-warn: #d9b27a;
+
   --color-avatar: #df6232;
 
   --sidebar-width: 76px;
-  --side-panel-width: 354px;
-  --conversation-width: var(--side-panel-width);
+  /* The transcript's width, and the *only* piece of layout the panel reports.
+     The stage reads it as a grid track rather than as a measured width, so the
+     two can never disagree about how much room is left — the disagreement a
+     hardcoded column and a JS-set width produce the first time somebody resizes
+     the window mid-conversation.
+     380px rather than the original 460: the bubbles only need enough measure for
+     a comfortable line length, and every pixel here is a pixel the avatar loses. */
+  --conversation-width: 380px;
+  /* The everyday band's row is not a fixed track: the stage above it is capped
+     and the band takes whatever is left, which is the whole difference between a
+     section that sits across a page and one that owns the page. */
   --conversation-surface: var(--color-surface);
   --conversation-border: var(--color-border);
   --conversation-muted: var(--color-text-soft);
@@ -67,6 +87,15 @@
   --radius-md: 14px;
   --radius-lg: 20px;
   --radius-xl: 30px;
+
+  /* One size for an icon-only button, whether it sits in the stage header, the
+     transcript header or a page header. It was 36 in the topbar, 32 in the panel
+     heads one screen over and 42 in the workspace header — three numbers for one
+     idea, two of them visible at the same time, and the two that were visible
+     together were the two that differed by four pixels. A hit target is a hit
+     target everywhere; what changes with context is the space around it, and that
+     is already the gutter's job. */
+  --icon-btn-size: 36px;
 
   --shadow-soft: 0 8px 24px rgba(232, 111, 61, 0.3);
 
@@ -94,8 +123,26 @@
   --secondary-foreground: var(--color-text);
   --muted: var(--color-surface-muted);
   --muted-foreground: var(--color-text-soft);
-  --accent: var(--color-accent-soft);
-  --accent-foreground: var(--color-text);
+  /* The bridge's `--accent` is the *strong* accent, not the soft one.
+     `@theme inline` in App.css maps Tailwind's `--color-accent` straight onto
+     this token, so `text-accent`, `bg-accent` and `outline-accent` are only as
+     strong as this line. It used to read `var(--color-accent-soft)`, which is a
+     ~1.3:1 wash in both themes — close enough to the surface that every search
+     match in the palette, every selected dropdown row, every switch's ON track
+     and every focus ring in the app was effectively invisible. The hand-written
+     rules in this file never had the problem because they say
+     `var(--color-accent)`; only the utilities went through the bridge, so the
+     two halves of the same app disagreed about what "accent" means.
+     Nothing wants the wash as a foreground — see the `accent` utilities in the
+     components — so the wash stays available under its own name, `--color-accent-soft`. */
+  --accent: var(--color-accent);
+  /* And its foreground has to be readable *on* that accent, which `--color-text`
+     is not in the default dark theme: #f1ece5 on #e86f3d is 3.05:1, under the
+     4.5:1 these labels need. #252525 is 4.94:1 on the accent that ships, and
+     `Home.tsx` recomputes this against whatever accent is selected. It is *not*
+     `--voice-button-icon`, which is a different question — that one is a glyph,
+     where 3:1 is the bar and white-on-orange is the face of the call button. */
+  --accent-foreground: #252525;
   --destructive: var(--color-danger);
   --input: var(--color-surface-muted);
   --ring: var(--color-accent);
@@ -119,6 +166,11 @@
   --color-control-icon: #8b8882;
   --color-danger: #b03a2e;
   --color-danger-soft: #f7dfdc;
+  /* Light-mode siblings of the two above, and the whole reason they are tokens.
+     The dark values fail here badly enough to be unreadable: #d9b27a on this
+     #fbfaf8 surface is 1.9:1 and #68ae82 is 2.3:1, against a 4.5:1 bar. */
+  --color-ok: #2f7d52;
+  --color-warn: #8a5f13;
   /* Light mode needs a softer shadow: the same alpha that reads as a gentle
      lift on a dark canvas reads as a smudge on a light one. */
   --elevation-1: 0 1px 2px -1px rgb(0 0 0 / 0.10), 0 0 0 1px rgb(0 0 0 / 0.06);
@@ -182,14 +234,48 @@ input:focus-visible {
    App shell
    ========================================================================== */
 
+/* Two columns: the rail and everything else.
+   The third `var(--context-panel-width)` column is gone, and that is worth a note
+   rather than a silent edit — the variable was never defined anywhere in the
+   sheet, so that whole track resolved to `0px`. The Context page it belonged to
+   was deleted, and the track was the leftover. A grid track that silently
+   measures zero is why the shell looked like it had a third pane for months.
+
+   The transcript's column is *not* here. It lives on `.main-space`, one level
+   down, because the panel is a sibling of the stage rather than of the sidebar —
+   putting it on this grid would have made the panel overlap the rail's own
+   column and forced a workaround with `grid-column` on every route.
+
+   `--sidebar-width` is declared here rather than only on `:root` so that folding
+   the rail is one class on this element. It has to be: the rail, every route's
+   columns and the workspace's own layout all read the same variable, and a collapse
+   that only changed the rail's width would leave the content sized for the rail
+   that is no longer there.
+
+   `minmax(0, 1fr)` rather than `minmax(520px, 1fr)`: the floor was a guess about
+   the narrowest window anybody would use, and a guess in a grid track is an
+   overflow on the window it guessed wrong about. The rail's own width is what
+   stops the content column getting silly. */
 .lumine-app {
+  --sidebar-width: 76px;
   height: 100dvh;
   min-height: 0;
   display: grid;
-  grid-template-columns:
-    var(--sidebar-width)
-    minmax(520px, 1fr)
-    var(--context-panel-width);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  /* One row, and `1fr` rather than the implicit `auto` it was.
+
+     An implicit `auto` row sizes to its content's max-content, and `.main-space`
+     has content taller than any window: its own first track is a `1fr`, whose
+     contribution upward *is* the stage's natural height. On the 800x600 this app
+     opens at, that row came out 707px — which put the call strip's row at y=623,
+     twenty-three pixels below the bottom of the screen and clipped by this shell's
+     own `overflow`. The row that was doing the damage was never the call strip's;
+     it was its great-grandparent's, sizing on the wrong axis.
+
+     `minmax(0, 1fr)` against a definite `100dvh` resolves by free space instead:
+     one track takes the whole window, and `.main-space` — already `min-height: 0`
+     — gets whatever the window actually has. */
+  grid-template-rows: minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -208,13 +294,23 @@ input {
   color: white;
 }
 
+/* `.route-home` is the same two columns as `.lumine-app` — it is the same element,
+   so the rule is only here to say so. The mobile media queries key off `route-home`,
+   and deleting it would make those apply to nothing. */
 .route-home {
-  grid-template-columns: var(--sidebar-width) minmax(520px, 1fr);
-  transition: grid-template-columns 260ms ease;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
 }
 
-.route-home.conversation-open {
-  grid-template-columns: var(--sidebar-width) minmax(520px, 1fr) var(--conversation-width);
+/* Folding the rail, and what it has to change with it. One class on the shell
+   because the shell owns the column: the rail's width, every route's track and
+   the workspace's own layout all read `--sidebar-width`, and a collapse that only
+   narrowed the rail would leave the content sized for a rail that is gone.
+
+   64px rather than the 76px the narrow default already uses: a folded rail is
+   icon-only, so it only needs to clear the 42px button and its margins — the
+   extra twelve are what the label column used to be. */
+.lumine-app.is-nav-collapsed {
+  --sidebar-width: 64px;
 }
 
 /* ==========================================================================
@@ -236,6 +332,10 @@ input {
     6px 0 18px -12px rgb(0 0 0 / 0.35);
 }
 
+/* Two navs, and only one of them is ever drawn: the labelled rail above 780px,
+   the thumb bar below it. `.sidebar nav` further up wins on specificity — one
+   class and a type against one class alone — so this says the same thing with
+   the specificity it needs rather than relying on source order. */
 .sidebar nav {
   display: flex;
   flex-direction: column;
@@ -243,30 +343,20 @@ input {
   flex: 1;
 }
 
+.sidebar .sidebar-compact {
+  display: none;
+}
+
+/* `.panel-icon` was in this group and is gone. It was a 32px square button used by
+   the context panel's and the conversation panel's headers, and both panels are
+   gone — the dock's toggle and clear buttons style themselves. */
 .logo-button,
-.nav-button,
-.panel-icon {
+.nav-button {
   display: grid;
   place-items: center;
   cursor: pointer;
   background: transparent;
   color: var(--color-control-icon);
-}
-
-.logo-button {
-  width: 42px;
-  height: 42px;
-  margin-bottom: 36px;
-  border-radius: 15px;
-  background: transparent;
-  color: var(--color-accent);
-}
-
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  height: 15px;
 }
 
 .brand-mark i {
@@ -286,6 +376,15 @@ input {
 
 .brand-mark i:nth-child(3) {
   height: 10px;
+}
+
+.logo-button {
+  width: 42px;
+  height: 42px;
+  margin-bottom: 36px;
+  border-radius: 15px;
+  background: transparent;
+  color: var(--color-accent);
 }
 
 .nav-button {
@@ -335,6 +434,81 @@ input {
   flex: 0 0 auto;
 }
 
+/* --------------------------------------------------------------------------
+   Folding the rail to icons.
+   -------------------------------------------------------------------------- */
+
+/* The label goes, the row goes centre, and the marker moves from a left edge to a
+   bottom rule — because an inset 2px on the left of a 42px square is a 2px mark
+   beside nothing to align it to once the text is gone. */
+.sidebar.is-collapsed .sidebar-brand {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar.is-collapsed .sidebar-brand span,
+.sidebar.is-collapsed .nav-button span,
+.sidebar.is-collapsed .sidebar-collapse span {
+  display: none;
+}
+
+.sidebar.is-collapsed nav {
+  align-items: center;
+}
+
+.sidebar.is-collapsed .nav-button {
+  width: 44px;
+  margin: 0;
+  padding: 0;
+  justify-content: center;
+}
+
+.sidebar.is-collapsed .nav-button.is-active {
+  box-shadow: inset 0 -2px 0 var(--color-accent);
+}
+
+.sidebar.is-collapsed .sidebar-foot {
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar-collapse {
+  width: calc(100% - 24px);
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 13px;
+  margin: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--color-control-icon);
+  cursor: pointer;
+  font: 500 12px var(--font-ui);
+  text-align: left;
+}
+
+.sidebar-collapse:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.sidebar.is-collapsed .sidebar-collapse {
+  width: 44px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* The fold is available however the rail is shaped, so it is hidden with the rail
+   it acts on rather than kept as a button that changes something not on screen. */
+@media (max-width: 780px) {
+  .sidebar-foot {
+    display: none;
+  }
+}
+
 .sidebar .nav-button {
   width: calc(100% - 24px);
   min-height: 42px;
@@ -369,21 +543,55 @@ input {
   margin-top: auto;
 }
 
+.sidebar-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  min-width: 176px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-3);
+  z-index: 30;
+}
+
+.sidebar-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-soft);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-menu button:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.sidebar-menu button.is-active {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+}
+
 .workspace-view {
   min-width: 0;
   min-height: 0;
   overflow: auto;
   padding: 58px clamp(28px, 6vw, 96px);
   background: var(--color-canvas);
-}
-
-.workspace-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  max-width: 860px;
-  margin: 0 auto;
 }
 
 .workspace-header h1 {
@@ -403,20 +611,32 @@ input {
   line-height: 1.6;
 }
 
+.workspace-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
 /* The header's reset/settings button. Same three steps as every other control in
    the app: flat, raised on hover, accent when it is doing something. */
 .workspace-settings {
-  width: 42px;
-  height: 42px;
+  width: var(--icon-btn-size);
+  height: var(--icon-btn-size);
   display: grid;
   place-items: center;
   flex: 0 0 auto;
   color: var(--color-control-icon);
   background: transparent;
   border: 0;
-  border-radius: 10px;
-  box-shadow: var(--elevation-1);
+  border-radius: var(--radius-sm);
   cursor: pointer;
+  /* No shadow at rest, and the comment above this rule already said so: "flat,
+     raised on hover, accent when it is doing something". It was the one control
+     in the app that arrived already raised, so beside the flat toggle next to it
+     it read as the button that was currently pressed — a state it was not in. */
   transition:
     box-shadow 140ms ease,
     color 140ms ease,
@@ -426,12 +646,13 @@ input {
 .workspace-settings:hover {
   color: var(--color-accent);
   background: var(--color-surface-muted);
-  box-shadow: var(--elevation-2);
+  box-shadow: var(--elevation-1);
 }
 
-/* The empty state is a raised card, not a heading with a rule above it. On Tools,
-   Memory and Activity this is the entire page content, so it is also the thing
-   that has to read as a surface rather than as a gap. */
+/* The empty state. Left-aligned, vertically centred, and no box of its own --
+   `max-width` and `min-height` are about not letting a short paragraph sprawl or
+   float, and the page's own surface is the surface. Memory overrides most of this
+   below, because a two-block page is not one centred message. */
 .workspace-empty {
   max-width: 860px;
   min-height: 420px;
@@ -441,17 +662,6 @@ input {
   justify-content: center;
   margin: 38px auto 0;
   padding: 42px 0;
-}
-
-.workspace-empty-icon {
-  width: 48px;
-  height: 48px;
-  display: grid;
-  place-items: center;
-  margin-bottom: 22px;
-  color: var(--color-accent);
-  background: var(--color-accent-soft);
-  border-radius: 14px;
 }
 
 .workspace-empty h2 {
@@ -468,6 +678,17 @@ input {
   color: var(--color-text-soft);
   font-size: 14px;
   line-height: 1.65;
+}
+
+.workspace-empty-icon {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 22px;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  border-radius: 14px;
 }
 
 .workspace-action {
@@ -500,7 +721,14 @@ input {
 
 .capability-matrix {
   width: 100%;
-  min-width: 460px;
+  /* 400, not 460. The matrix lives in the settings dialog's content pane, which
+     is `496 - 2 * 40 = 416px` wide at 800x600 — the size this app opens at — so
+     a 460px floor was 44px wider than the space it was promised, and `.capability-scroll`
+     answered with a horizontal scrollbar on a table whose six columns fit
+     comfortably without one: model, stage, and four dots. The floor still exists
+     because below 400px it genuinely does not, and there the scrollbar is the
+     right answer rather than six columns each narrower than their own padding. */
+  min-width: 400px;
   border-collapse: collapse;
 }
 
@@ -531,30 +759,6 @@ input {
 
 .capability-matrix tbody th {
   font-weight: 500;
-}
-
-.capability-model {
-  display: block;
-  color: var(--color-text);
-  font-size: 13px;
-  line-height: 1.3;
-}
-
-.capability-provider {
-  display: block;
-  margin-top: 1px;
-  color: var(--color-text-faint);
-  font-size: 11px;
-}
-
-.capability-stage {
-  color: var(--color-text-soft);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.capability-cell {
-  text-align: center;
 }
 
 .capability-dot {
@@ -755,22 +959,6 @@ input {
   background: color-mix(in srgb, var(--color-text) 9%, transparent);
 }
 
-.tool-summary {
-  margin: 0;
-  color: var(--color-text-soft);
-  font-size: 12.5px;
-  line-height: 1.55;
-}
-
-.tool-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
 .tool-fact {
   padding: 2px 7px;
   border-radius: 6px;
@@ -791,15 +979,6 @@ input {
   background: var(--color-accent-soft);
 }
 
-.tool-params {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0;
-  padding-top: 10px;
-  border-top: 1px solid var(--color-border);
-}
-
 .tool-params dt {
   color: var(--color-text);
   font: 500 10.5px var(--font-mono);
@@ -810,15 +989,6 @@ input {
   color: var(--color-text-soft);
   font-size: 11.5px;
   line-height: 1.5;
-}
-
-/* The id the model is actually given, so a report of a tool call can be matched
-   to the card above it. Documentation, not an input. */
-.tool-id {
-  margin-top: auto;
-  color: var(--color-text-faint);
-  font: 400 10px var(--font-mono);
-  letter-spacing: 0.02em;
 }
 
 .avatar-lab-page {
@@ -836,9 +1006,36 @@ input {
 .avatar-lab-layout {
   max-width: 1080px;
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(340px, 0.85fr);
+  /* No floors, and the floors are what broke this.
+
+     `minmax(320px, 1fr) minmax(340px, 0.85fr)` did not size the two columns, it
+     refused to narrow them: 320 + 340 + a 22px gap is 682px the page must have
+     before a column may move at all. Measured against the container it actually
+     got — the 204px rail, a scrollbar and `clamp(28px, 6vw, 96px)` of page
+     padding all come off first — that refusal started biting at 1024px and never
+     stopped: 652px of container at 990, 573 at 900, 468 at 781, against a layout
+     that still demanded 682. The page answered with a horizontal scrollbar,
+     167px of it at the narrowest desktop width the two-column form can exist at.
+
+     Above 1024 the floors never bound, so this changes nothing there — `1fr` and
+     `0.85fr` of the same track give the same 555/471 at 1440. The floor was only
+     ever load-bearing below the point where it was already failing. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.85fr);
   gap: 22px;
   margin: 38px auto 0;
+}
+
+/* And below 1024 the two columns stop being worth having at all.
+
+   The exact edge is arithmetic rather than taste: the container is `viewport -
+   204 - 15 - 2 * 6vw`, which reaches the columns' combined 682px precisely at
+   1024. One column at 1040 keeps a little slack for a wider scrollbar, and from
+   there down each half gets the full width instead of the two fighting over less
+   than they were designed for. */
+@media (max-width: 1040px) {
+  .avatar-lab-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .avatar-lab-stage,
@@ -915,6 +1112,11 @@ input {
   box-shadow: 0 0 64px color-mix(in srgb, var(--color-avatar) 35%, transparent);
 }
 
+/* The Lab mirrors `.presence-body`: 230px on a 250px face is `0.92`, the same
+   `0.885 * 174 = 154` head-to-disc proportion the home presence carries once the
+   two boxes are scaled to each other — head at 70% of the face on the Lab, 68% on
+   home. Its face has no `overflow: hidden`, so nothing is clipped here either way;
+   the lab exists to show what the gesture does, not to hold the badge. */
 .avatar-lab-face object {
   position: absolute;
   width: 230px;
@@ -949,10 +1151,6 @@ input {
   text-transform: capitalize;
 }
 
-.avatar-lab-controls {
-  padding: 24px;
-}
-
 /* Section head inside the controls panel. A recessed trough reads as "this is a
    group inside something" in a way a rule does not: the gap below it is doing the
    separating either way, and the line was only underlining that. */
@@ -983,15 +1181,6 @@ input {
   text-transform: uppercase;
 }
 
-/* A labelled control in the panel, matching the shape the settings use: a caption,
-   the control, and one line of explanation. */
-.avatar-lab-field {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  margin-top: 20px;
-}
-
 .avatar-lab-field > label,
 .avatar-lab-row > span,
 .avatar-lab-section > span {
@@ -999,26 +1188,6 @@ input {
   font: 500 9px var(--font-mono);
   text-transform: uppercase;
   letter-spacing: .08em;
-}
-
-/* The explanation under a picker, in the interface face at the faintest step.
-   Duplicating the dropdown's own per-row hint here is deliberate: the hint belongs
-   to the *choice*, and this belongs to the current state, which is what stays
-   on screen after the menu closes. */
-.avatar-lab-hint {
-  color: var(--color-text-faint);
-  font-size: 11.5px;
-  line-height: 1.4;
-}
-
-/* The emotion wall. Twenty-six chips is the one list in this app that is a wall on
-   purpose: a menu hides twenty-five of them at a time, and comparing several
-   expressions is the activity this page exists for. */
-.avatar-lab-emotions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 7px;
 }
 
 /* Chips are flat at rest, raised on hover, and raised further with the accent
@@ -1072,38 +1241,28 @@ input {
 .route-tools,
 .route-memory,
 .route-activity,
-.route-avatar {
+.route-avatar,
+.route-focus {
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
 }
 
 @media (min-width: 781px) {
   .lumine-app {
-    grid-template-columns: 204px minmax(520px, 1fr) var(--context-panel-width);
+    --sidebar-width: 204px;
   }
 
-  .route-home {
-    grid-template-columns: 204px minmax(520px, 1fr);
-  }
-
-  .route-home.conversation-open {
-    grid-template-columns: 204px minmax(520px, 1fr) var(--conversation-width);
-  }
-
-  .route-tools,
-  .route-memory,
-  .route-activity,
-  .route-avatar {
-    grid-template-columns: 204px minmax(0, 1fr);
+  .lumine-app.is-nav-collapsed {
+    --sidebar-width: 64px;
   }
 }
 
 @media (max-width: 780px) {
   .lumine-app,
   .route-home,
-  .route-home.conversation-open,
   .route-tools,
   .route-memory,
-  .route-activity {
+  .route-activity,
+  .route-focus {
     display: block;
     min-height: 100dvh;
     height: auto;
@@ -1135,18 +1294,29 @@ input {
     display: none;
   }
 
-  .sidebar nav {
+  .sidebar .sidebar-nav {
+    display: none;
+  }
+
+  /* Four cells, not seven: three destinations and the door to the rest. Six
+     labelled rows do not fit in a 64px thumb bar at any font size that can be
+     read, and a row that reflows its own label on every rotation is worse than a
+     row behind a tap. */
+  .sidebar .sidebar-compact {
     width: 100%;
-    flex: 0 1 auto;
-    max-width: 100%;
     flex: 1 1 0;
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
+    overflow: visible;
     display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     align-items: stretch;
     gap: 2px;
+  }
+
+  .sidebar .sidebar-nav,
+  .sidebar .sidebar-compact {
+    max-width: 100%;
   }
 
   .sidebar .nav-button,
@@ -1231,37 +1401,139 @@ input {
    Main command space
    ========================================================================== */
 
+/* The stage, the call strip, and the transcript — three planes, and only two of
+   them can ever change the third's size.
+
+   It was four rows: 82px header, the stage, a 126px feature row, and a 102px call
+   row. The two rows that are gone held "Now playing / Ambient focus / Soft light
+   for the next hour" and "Voice session controls are ready below." — neither of
+   which was anything. On an 800px window that is 228px, about 28% of the height,
+   spent on invented copy.
+
+   The grid then went to `1fr / var(--dock-h)`, which gave the call strip a
+   height the transcript chose. That was backwards: opening a transcript is a
+   request for the transcript, not for the *call controls* to change position. Now
+   the panel is a column instead of a row, so the call strip's height is a
+   property of the call strip and nothing else can move it. */
 .main-space {
+  --call-h: 84px;
+  --panel-w: 0px;
+  /* Two horizontal rhythms, and both are declared once.
+
+     `--stage-gutter` is the *stage's own chrome* — its header and the two corner
+     instruments that sit against its edges. Those three have to be the same
+     number because they are read against each other: the clock at bottom-left
+     and the date at top-left are two halves of one margin, and the header was
+     the only one of the three that answered to a breakpoint. At 1050px it fell
+     to 28px while the clock stayed at 42, so on one screen the same left edge
+     was measured two ways.
+
+     `--strip-gutter` is the two working bands below. They are deliberately
+     tighter than the header — a row of cards wants its width — but they used to
+     be tighter in two *different* ways, 16 and 24, with nothing to say which was
+     intended. */
+  --stage-gutter: 42px;
+  --strip-gutter: 24px;
+  /* The everyday band's ceiling. It is a ceiling rather than a floor because the
+     two bands compete for the same window, and the only way neither can ever
+     push the call strip off the bottom is for neither to have a floor at all —
+     a `200px` minimum on this track and a `400px` minimum on the stage above
+     sum past 600px on the shortest window this app opens at, and the row that
+     loses an over-constrained grid is the last one. */
+  --band-h: clamp(150px, 29vh, 440px);
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: 82px minmax(360px, 1fr) 126px 102px;
+  grid-template-columns: minmax(0, 1fr) var(--panel-w);
+  grid-template-rows: minmax(0, 1fr) var(--band-h) var(--call-h);
   overflow: hidden;
   background: var(--color-canvas);
 }
 
-/*
- * When the setup gate is up, the stage and the gate share the flexible space.
- *
- * The stage keeps the larger share on purpose. Someone who has not set Lumine up
- * yet is exactly the person who should already be able to see Lumine, so the gate
- * takes the room the two quick-intent cards were using and no more.
- */
-.main-space.is-gated {
-  grid-template-rows: 82px minmax(160px, 1fr) minmax(150px, 1fr) 102px;
+/* `0px` while shut, so the track collapses to nothing rather than leaving a
+   hairline, and the panel is `hidden` on top of it — a zero-width track with a
+   bordered child in it still paints one pixel. Two mechanisms for one condition
+   is usually a smell; here each closes a gap the other leaves open.
+
+   This is also the whole of "the stage is full width until one of the switches is
+   on": the stage and the band both live in column 1, so the aside takes width from
+   the two of them together rather than from the avatar alone. */
+.main-space.is-panel-open {
+  --panel-w: var(--conversation-width);
 }
 
+/* The band: weather, the front page, the notes, music. Row 2, so it sits between
+   the stage and the call controls — the order the eye actually travels in. */
+.widget-strip {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  /* Scoped to the inline axis, so the cards can answer *the room they are in*
+     rather than the window. The panel taking 380px off the side changes what fits
+     without changing a single pixel of viewport, which no `@media` can observe. */
+  container-type: inline-size;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 6px var(--strip-gutter) 6px;
+  background: var(--color-canvas);
+}
+
+/*
+ * The call, in its own strip and centred.
+ *
+ * `84px` rather than `68px`. The old figure was the row's exact content height —
+ * a 56px button with 6px of padding above and below it — which left *zero* slack,
+ * and `outline-offset: 3px` paints three pixels of focus ring outside that button.
+ * It was being clipped by the row, which is what made the bar read as "trying to
+ * go below the screen". A row is allowed to be taller than its tallest child, and
+ * this one now is by 16px.
+ */
+.call-strip {
+  grid-column: 1;
+  grid-row: 3;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 var(--strip-gutter) 6px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+/* Both asides occupy one track. They are mutually exclusive in state as well, so
+   this rule only decides which of them draws when the slot is open — and saying
+   it once for both is why a third panel would cost one selector. */
+.main-space > .conversation-panel,
+.main-space > .notes-panel {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+
+/*
+ * The gate sits inside the stage, over the lower half, and the stage's own rows
+ * do not change to make room for it — which is the point of it being an overlay.
+ *
+ * It used to be a third grid row, which meant the stage had to be shrunk to make
+ * room for it. Someone who has not set Lumine up yet is exactly the person who
+ * should already be able to see her, so nothing is displaced, and the call strip
+ * below stays reachable while the gate is up.
+ */
+
+/* `justify-self: stretch` is not optional here.
+   `.command-stage` sets `justify-items: center` so the avatar and the state copy
+   centre themselves without each declaring a centring rule — and a grid item with
+   `justify-self: auto` inherits that as `fit-content`, which is why the header
+   first rendered as a 378px block floating in the middle of the stage with the
+   date and the search button stacked beside each other. A header is the one child
+   of this stage that must always be full width, so it says so. */
 .topbar {
+  justify-self: stretch;
+  width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 42px;
-}
-
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  padding: 0 var(--stage-gutter);
 }
 
 /* Header toggles. One convention across the app: a control is a raised surface,
@@ -1269,8 +1541,8 @@ input {
    text alone was not enough on an icon-only button -- there is no label to read
    and the glyph is the same shape whatever its state. */
 .visual-mode-toggle {
-  width: 36px;
-  height: 36px;
+  width: var(--icon-btn-size);
+  height: var(--icon-btn-size);
   display: grid;
   place-items: center;
   border-radius: var(--radius-sm);
@@ -1290,81 +1562,480 @@ input {
   box-shadow: var(--elevation-1);
 }
 
-.conversation-toggle {
-  width: 36px;
-  height: 36px;
-  display: grid;
-  place-items: center;
+/*
+ * The palette affordance in the topbar.
+ *
+ * A search field, not an icon button. Three details make it worth the width:
+ *
+ * - The label says what it does, so it does not have to be guessed at.
+ * - The `<kbd>` says which key to press. `mod+k` is Ctrl+K on Windows and Linux
+ *   and ⌘K on macOS, and no other surface in the app ever named it — so a shortcut
+ *   nobody could see read as a shortcut that did not work, and the chord people
+ *   reach for on Windows (Win+K) is taken by the operating system before any
+ *   webview sees the keystroke at all.
+ * - It is `disabled`-looking rather than absent when the palette cannot open, so
+ *   the control never becomes a dead end.
+ *
+ * The kbd is deliberately quieter than the label: it is the reference half of the
+ * line, and an accent-coloured shortcut next to an accent-coloured glyph turns a
+ * hint into a second button.
+ */
+.palette-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 8px 0 11px;
+  border: 0;
   border-radius: var(--radius-sm);
   color: var(--color-control-icon);
-  background: transparent;
-  cursor: pointer;
-  transition:
-    color 140ms ease,
-    background-color 140ms ease,
-    box-shadow 140ms ease;
-}
-
-.conversation-toggle:hover,
-.conversation-toggle.is-open {
-  color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  background: var(--color-surface-muted);
   box-shadow: var(--elevation-1);
+  font: 500 12px var(--font-ui);
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
 }
 
+.palette-hint > span {
+  color: var(--color-text-soft);
+}
+
+.palette-hint > kbd {
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--color-text-faint);
+  background: var(--color-canvas);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+  font: 500 10px var(--font-mono);
+  letter-spacing: 0.04em;
+  text-transform: none;
+}
+
+.palette-hint:hover {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface-muted));
+  box-shadow: var(--elevation-2);
+}
+
+.palette-hint:hover > span {
+  color: var(--color-text);
+}
+
+.palette-hint:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ==========================================================================
+   Conversation panel
+   ========================================================================== */
+
+/*
+ * The aside.
+ *
+ * It is a grid item of `.main-space`, not of the app shell, so its width is one
+ * variable and the stage absorbs the rest without either measuring the other.
+ *
+ * `overflow: hidden` is load-bearing rather than defensive: the header and the
+ * composer are fixed rows and the scroll area is the flexible one, but a `rows:
+ * 83px 1fr auto` grid with `min-height: 0` missing on the scroll track will let
+ * the bubbles push the composer past the bottom edge instead of scrolling. The
+ * two `min-height: 0` declarations on the children are the other half of the
+ * same rule.
+ *
+ * The entrance is a slide from the right, which is the direction the panel
+ * actually arrives from — the dock that briefly replaced it animated `translateX`
+ * on a bottom sheet, which is why that read as wrong.
+ */
 .conversation-panel {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: 83px minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
-  color: var(--color-text);
-  font-family: var(--conversation-font);
   background: var(--conversation-surface);
-  border-left: 0;
-  animation: conversation-in 260ms ease-out both;
-  transition: width 260ms ease, background-color 180ms ease, border-color 180ms ease;
+  /* A shadow rather than a hairline. The stage behind it is dark and the panel is
+     the surface colour, so a 1px rule across the full height would be a *lighter*
+     line between two dark planes — which reads as a seam the product did not put
+     there. A shadow cast leftward says the panel is in front. */
+  box-shadow: -14px 0 34px -22px rgb(0 0 0 / 0.75);
+  animation: conversation-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
-/* The panel's header and composer are the top and bottom of a scrollable column.
-   Both edges are where a shadow cast from the panel itself lands, so both read as
-   depth rather than as two rules drawn across the width. */
+/* `hidden` rather than `display: none` in CSS, so the browser removes it from the
+   accessibility tree and from tab order with one attribute that the component
+   already owns. The animation above then never runs while shut, which is what
+   makes reopening feel like an arrival rather than a restart. */
+
 .conversation-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 18px 0 22px;
-  box-shadow: 0 1px 0 var(--conversation-border);
+  gap: 12px;
+  /* 20 on both edges, and the same 20 the transcript below it reads at. It was
+     20 left and 16 right while the composer under the messages sat at 16 on both
+     — three horizontal positions in one 380px column, none of them an accident
+     anyone chose, and the composer field's left edge was four pixels adrift from
+     the message text directly above it. */
+  padding: 0 20px;
+  min-height: 68px;
+  border-bottom: 1px solid var(--color-border);
 }
 
-.conversation-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-text);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.04em;
-}
-
-.conversation-brand .brand-mark {
-  color: var(--conversation-accent);
+.conversation-brand svg {
+  color: var(--color-accent);
 }
 
 .conversation-head p {
   display: flex;
   align-items: center;
   gap: 7px;
-  margin: 6px 0 0 24px;
-  color: var(--conversation-muted);
+  margin: 5px 0 0;
+  color: var(--color-text-soft);
   font-size: 12px;
 }
 
-.conversation-status-dot {
-  width: 6px;
-  height: 6px;
+/* A control is a raised surface, and it is raised a little further when pressed
+   or hovered. Icon-only buttons cannot carry state in their colour alone — the
+   glyph is the same shape whatever it is doing — so the hover is the only affordance
+   these three have and it has to be visible without being loud. */
+.panel-icon {
+  width: var(--icon-btn-size);
+  height: var(--icon-btn-size);
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--color-control-icon);
+  background: transparent;
+  cursor: pointer;
+}
+
+.panel-icon:hover {
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+}
+
+.panel-icon:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+/* ==========================================================================
+   Notes: the aside, the surface, and the Focus page
+   ========================================================================== */
+
+/* Same shape, same track, same width as the transcript. The two are mutually
+   exclusive in state as well as in CSS — one slot, one at a time — so this only
+   has to look like its neighbour, not coexist with it. */
+.notes-panel {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--conversation-surface);
+  box-shadow: -14px 0 34px -22px rgb(0 0 0 / 0.75);
+  animation: conversation-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.notes-surface.is-compact {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.notes-surface {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 236px) minmax(0, 1fr);
+}
+
+.notes-list {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 12px;
+  border-right: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-canvas) 60%, transparent);
+}
+
+.notes-list-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notes-list-item:hover {
+  background: var(--color-surface-muted);
+}
+
+.notes-list-item.is-active {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.notes-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  margin-top: auto;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-soft);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notes-new:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.notes-editor-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 54px;
+  /* The reading edge of the textarea below is 20px, so this is too — the same
+     rule as the transcript header, in the sibling panel. It was 14 on the right
+     there while the transcript's was 16, which is two answers to one question
+     about where a trailing control belongs. */
+  padding: 0 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* No border and no box: a textarea with its own outline *and* the pane's own
+   divider is two rules meeting at a corner for no reason. The bottom rule of the
+   header is already the editor's top edge. */
+.notes-area {
+  width: 100%;
+  min-height: 0;
+  resize: none;
+  padding: 18px 20px 24px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.7;
+  outline: none;
+}
+
+.notes-area::placeholder {
+  color: var(--color-text-faint);
+}
+
+.notes-surface.notes-surface--empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 32px;
+  text-align: center;
+}
+
+.notes-surface--empty p {
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 14px;
+}
+
+.notes-empty-mark {
+  width: 58px;
+  height: 58px;
+  display: grid;
+  place-items: center;
   border-radius: 50%;
-  background: var(--color-text-faint);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+}
+
+/* ---- Focus ---- */
+
+/* One page for the two things that need a decision rather than a glance. The
+   checking cards stayed on home; these did not, because a countdown you have to
+   watch and a paragraph you have to think in are both the opposite of what a
+   home stage is for. */
+.focus-page {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: clamp(34px, 5vh, 58px) clamp(24px, 5vw, 72px) 64px;
+  background: var(--color-canvas);
+}
+
+.focus-header,
+.focus-grid {
+  max-width: 1120px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.focus-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.8fr) minmax(0, 1.2fr);
+  gap: clamp(18px, 3vw, 34px);
+  margin-top: clamp(24px, 4vh, 44px);
+  align-items: stretch;
+}
+
+.focus-notes {
+  min-width: 0;
+  min-height: clamp(420px, 64vh, 760px);
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-1);
+}
+
+@media (max-width: 940px) {
+  .focus-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- The timer ---- */
+
+.pomodoro {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(14px, 2.4vh, 24px);
+  padding: clamp(22px, 4vh, 44px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(
+    150deg,
+    color-mix(in srgb, var(--color-accent) 7%, var(--color-surface)),
+    var(--color-surface) 62%
+  );
+  box-shadow: var(--elevation-1);
+}
+
+.pomodoro-round {
+  color: var(--color-text-faint);
+  font: 500 11px var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.pomodoro.is-done .pomodoro-phase {
+  color: var(--color-accent);
+}
+
+/* The dial is `aspect-ratio`, not two fixed numbers: the card's width comes from
+   the grid column and its height from the viewport, and a square that agreed with
+   neither would clip the arc at one end of the range. */
+.pomodoro-dial {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: clamp(150px, 26vh, 230px);
+  aspect-ratio: 1;
+}
+
+.pomodoro-dial svg {
+  width: 100%;
+  height: 100%;
+}
+
+.pomodoro-track,
+.pomodoro-fill {
+  fill: none;
+  stroke-width: 6;
+}
+
+.pomodoro-track {
+  stroke: color-mix(in srgb, var(--color-text) 12%, transparent);
+}
+
+.pomodoro-fill {
+  stroke: var(--color-accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s linear;
+}
+
+.pomodoro-readout {
+  position: absolute;
+  color: var(--color-text);
+  font-size: clamp(32px, 5.4vh, 48px);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.055em;
+}
+
+.pomodoro-phases,
+.pomodoro-lengths {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.pomodoro-phases button,
+.pomodoro-lengths button {
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-soft);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pomodoro-phases button:hover,
+.pomodoro-lengths button:hover {
+  color: var(--color-text);
+}
+
+.pomodoro-phases button.is-on,
+.pomodoro-lengths button.is-on {
+  border-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+
+/* The label sits on a line of its own so the six lengths read as one row of
+   choices beneath a heading, rather than as seven chips where the first one is a
+   word. */
+.pomodoro-lengths span {
+  flex: 0 0 100%;
+  text-align: center;
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.pomodoro-actions .widget-button {
+  flex: 1 1 auto;
 }
 
 .conversation-status-dot.is-listening,
@@ -1373,24 +2044,18 @@ input {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--conversation-accent) 13%, transparent);
 }
 
+.conversation-status-dot.is-connecting {
+  background: var(--conversation-accent);
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+
 .conversation-status-dot.is-thinking {
   background: var(--color-text);
   animation: status-pulse 1.2s ease-in-out infinite;
 }
 
 .conversation-status-dot.is-error {
-  background: #ca5545;
-}
-
-.conversation-head-actions {
-  display: flex;
-  gap: 3px;
-}
-
-.conversation-scroll {
-  min-height: 0;
-  overflow-y: auto;
-  padding: 23px 19px 28px 22px;
+  background: var(--color-danger);
 }
 
 .conversation-list {
@@ -1476,7 +2141,11 @@ input {
 }
 
 .conversation-message[data-variant="default"] > [data-slot="bubble-content"] {
-  color: #fffaf5;
+  /* Set by `Home.tsx` from the very accent this bubble is filled with, so a
+     reader who drags the chat accent to something pale gets a label that can
+     still be read on it. The `#fffaf5` fallback is only for a mount where the
+     variable has not been written yet. */
+  color: var(--conversation-accent-text, #fffaf5);
   background: var(--conversation-accent) !important;
 }
 
@@ -1501,13 +2170,6 @@ input {
 .conversation-message[data-variant="ghost"] > [data-slot="bubble-content"] {
   padding: 0;
   background: transparent !important;
-}
-
-.conversation-message-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 .conversation-message-head.is-hidden {
@@ -1557,9 +2219,22 @@ input {
   animation: message-pulse 1.4s ease-in-out infinite;
 }
 
+/* Centred in the scroll area rather than pushed down by `23vh`.
+   The old margin was tuned for a 600px-tall side panel; in a dock that can be
+   300px or 560px depending on the window, a viewport-relative margin lands the
+   empty state below the fold half the time. `place-content: center` on the flex
+   container puts it in the middle of whatever space exists. */
 .conversation-empty {
-  max-width: 220px;
-  margin: 23vh auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 100%;
+  min-height: 180px;
+  max-width: 46ch;
+  margin: 0 auto;
+  padding: 24px;
   text-align: center;
 }
 
@@ -1589,10 +2264,15 @@ input {
   line-height: 1.5;
 }
 
+/* Sits at the bottom of the scroll area, which is a `position: relative` wrapper
+   around it. Not a fixed offset from the viewport: the old `bottom: 76px` was the
+   panel's composer height plus its margin, and it broke the moment the composer
+   grew to two lines — the button landed on top of the text. Anchored to the scroll
+   area it is correct at any composer height. */
 .conversation-new-messages {
   position: absolute;
   right: 18px;
-  bottom: 76px;
+  bottom: 12px;
   z-index: 2;
   border: 0;
   border-radius: 999px;
@@ -1616,68 +2296,110 @@ input {
   font: 10px var(--font-mono);
 }
 
-.conversation-tool.is-completed { color: #91bd9a; }
-.conversation-tool.is-failed { color: #d48d7d; }
+.conversation-tool.is-completed { color: var(--color-ok); }
+.conversation-tool.is-failed { color: var(--color-danger); }
 .conversation-tool small { color: color-mix(in srgb, var(--conversation-text) 48%, transparent); }
 
-/* The composer is a recessed trough -- it sits below the message list, so it is a
-   step down rather than a step up -- and the focus ring is an inset shadow for
-   the same reason every other focus ring in the app is: `border-color` would
-   reflow the field, and the second ring would have to restate the trough. */
+/* ==========================================================================
+   Composer
+   ========================================================================== */
+
+/*
+ * The trough.
+ *
+ * The composer sits below the message list, so it is a step *down* rather than a
+ * step up — hence a recessed field rather than a raised one. The focus ring is an
+ * inset shadow rather than a `border-color` for the same reason every other focus
+ * ring in the app is: a border would reflow the field on focus, and the second
+ * ring would have to restate the trough it is replacing.
+ *
+ * `overflow: hidden` on the field lets the textarea grow to its `rows` height
+ * without the padding drifting. The field's own min-height is what stops a single
+ * line from looking squeezed against the send button.
+ */
 .conversation-composer {
   display: flex;
-  align-items: end;
+  align-items: flex-end;
   gap: 8px;
-  margin: 0 16px 16px;
-  padding: 9px 9px 9px 12px;
-  background: var(--color-canvas);
-  border: 0;
-  border-radius: 14px;
-  box-shadow: var(--elevation-1);
-  transition: box-shadow 140ms ease;
+  /* The field starts where the message text starts. */
+  padding: 14px 20px 16px;
+  background: var(--conversation-surface);
+  /* Both edges are where a shadow cast from the panel lands, so both read as depth
+     rather than as two rules drawn across the width. */
+  box-shadow: 0 -14px 26px -24px rgb(0 0 0 / 0.75);
+  border-top: 1px solid var(--color-border);
 }
 
 .conversation-composer:focus-within {
-  box-shadow:
-    inset 0 0 0 1px var(--conversation-accent),
-    0 0 0 3px color-mix(in srgb, var(--conversation-accent) 8%, transparent);
+  /* The focus state changes the field, not the row, so nothing above the composer
+     moves when the user starts typing. */
+  border-top-color: var(--color-border);
 }
 
-.conversation-composer textarea {
-  min-width: 0;
+.conversation-composer > textarea {
   flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  max-height: 132px;
   resize: none;
-  outline: none;
-  color: var(--color-text);
-  background: transparent;
+  padding: 10px 12px;
+  color: var(--conversation-text);
+  background: var(--color-surface-muted);
   border: 0;
-  font-size: 14px;
-  line-height: 1.5;
+  border-radius: var(--radius-md);
+  font: 400 13px/1.55 var(--conversation-font);
+  /* A trough rather than a raised surface, and the inset ring is the focus
+     treatment that does not reflow it. */
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.22);
+  transition: box-shadow 160ms ease, background-color 160ms ease;
 }
 
-.conversation-composer textarea::placeholder {
+.conversation-composer > textarea::placeholder {
   color: var(--color-text-faint);
 }
 
-.conversation-composer button {
-  width: 27px;
-  height: 27px;
+.conversation-composer > textarea:focus {
+  outline: none;
+  box-shadow:
+    inset 0 1px 2px rgb(0 0 0 / 0.22),
+    inset 0 0 0 1.5px color-mix(in srgb, var(--conversation-accent) 55%, transparent);
+}
+
+.conversation-composer > textarea:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-faint);
+}
+
+.conversation-composer > button {
+  width: 38px;
+  height: 38px;
+  flex: none;
   display: grid;
   place-items: center;
-  flex: 0 0 auto;
-  color: var(--color-text-faint);
-  background: transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
+  color: var(--color-control-icon);
+  background: var(--color-surface-muted);
   cursor: pointer;
 }
 
-.conversation-composer button.is-ready {
-  color: #ffffff;
-  background: var(--conversation-accent);
+.conversation-composer > button.is-ready {
+  color: var(--voice-button-icon);
+  background: var(--color-accent);
 }
 
-.eyebrow,
-.section-label {
+.conversation-composer > button.is-ready svg {
+  color: var(--voice-button-icon);
+}
+
+.conversation-composer > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* `.section-label` was in this group and is gone with the context panel — it was
+   that panel's caption style, and `.eyebrow` is the same typography under the name
+   everything else uses. */
+.eyebrow {
   margin: 0;
   color: var(--color-text-soft);
   font: 500 11px var(--font-mono);
@@ -1705,16 +2427,35 @@ input {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 12%, transparent);
 }
 
+/* Full bleed, and a grid rather than a flex column.
+   The `margin: 0 20px` and `var(--radius-xl)` are gone: the stage was a card
+   floating on the canvas with a visible border of canvas around it, which cost the
+   avatar 40px of width and read as "inset" when nothing was inset. The stage is the
+   canvas now, and the radial glow below is what separates it from the background.
+   The three rows are the header, the presence block, and the state line — so the
+   avatar centres in the space that is actually left rather than in a flex column
+   that has to account for absolutely-positioned corners by guesswork. */
 .command-stage {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  /* Container-scoped, exactly like the widget band two sections down, and for
+     the same reason: the aside can starve this section without touching the
+     viewport. `inline-size` rather than `size` so the stage still takes its
+     height from the row — the query at the end of the responsive section is
+     about how much *width* is left. It is also safe with the absolutely
+     positioned corner instruments, which need this element as their containing
+     block: it is already `position: relative`, and `contain: layout` would make
+     it one regardless. */
+  container-type: inline-size;
+  /* Header, presence, greeting — and the header row is 72px rather than 82px
+     because the stage's height is now a budget the section actually has to fit
+     inside, rather than whatever the window had left over. */
+  grid-template-rows: 72px minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: center;
-  margin: 0 20px;
+  justify-items: center;
+  min-height: 0;
   overflow: hidden;
   isolation: isolate;
-  border-radius: var(--radius-xl);
   color: var(--color-stage-text);
   background: var(--color-stage);
 }
@@ -1735,53 +2476,108 @@ input {
   );
 }
 
-.stage-kicker {
-  position: absolute;
-  top: 28px;
-  left: 32px;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--color-stage-text-soft);
-  font: 500 10px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+/* The setup gate, over the stage's lower half.
+   Not a grid row — it is an overlay, and the reason is in the note on
+   `.main-space.is-gated`. */
+.stage-gate {
+  position: relative;
+  z-index: 3;
+  width: min(880px, 100%);
+  margin: 0 auto;
+  /* The stage's gutter, not a number of its own. This card is 880px wide where
+     there is room and `100%` where there is not, and `100%` used to come with
+     84px of its own padding — so the narrower the stage got, the larger share of
+     it was padding, down to 132px of content in the 216px column the open aside
+     left behind. */
+  padding: 0 var(--stage-gutter) 22px;
 }
 
-.stage-kicker .signal-dot {
-  width: 5px;
-  height: 5px;
-  box-shadow: none;
+/*
+ * The two panel switches, beside the palette affordance.
+ *
+ * They are icon-only and they say which surface they drive only through
+ * `aria-label` and `title`, which is a deliberate exception to the rule that a
+ * two-state control writes its state out: these two are the twin of
+ * `.visual-mode-toggle` three buttons to their left, they sit in a row of four
+ * controls where four labels would be a toolbar of text, and each one *moves*
+ * something on screen when pressed — which is a state change you can see without
+ * reading it. The presentation switch is the opposite case: pressing it does not
+ * move anything, so its state has nowhere to come from but the label.
+ */
+.stage-toggle {
+  width: var(--icon-btn-size);
+  height: var(--icon-btn-size);
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--color-control-icon);
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
+.stage-toggle:hover,
+.stage-toggle.is-open {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  box-shadow: var(--elevation-1);
+}
+
+/* The greeting, and only the greeting.
+
+   The bottom padding is the clearance above the two corner instruments, and it is
+   a `clamp` on *height* rather than the `110px` this was at one fixed width. Both
+   blocks are anchored to the stage's bottom edge, so what separates them is a
+   vertical number — and a vertical number on a window 600px tall has to be a
+   different one from the same window at 1080, or one of the two stops fitting.
+   The old value also only applied above 1050px, so on a laptop the two blocks
+   overlapped and only a short headline saved you. */
+/* The padding exists to clear the corner instruments, which are absolutely
+   positioned off the stage floor — not to make a gap. `9vh` tracks the clock's
+   own growth (`bottom: 3vh` plus a `2.6vh` figure) instead of outrunning it, so
+   at 900 tall it is 76px against a clock top edge at 71px, where the old
+   `clamp(38px, 12vh, 100px)` was 100px against the same 71px. That 24px is the
+   stage presence's growth budget; taking it from here rather than from the
+   widget band keeps the banner band's height contract untouched. */
 .stage-copy {
   position: relative;
   z-index: 2;
-  margin-top: -18px;
+  align-self: end;
+  padding-bottom: clamp(34px, 9vh, 76px);
   text-align: center;
   animation: rise 0.5s both;
 }
 
+/* Sized against the window rather than a fixed `58px` max. The stage's width is a
+   variable now — whole width with the slot beside it shut, ~400px less with it
+   open — and a greeting set for the wider of the two wraps to a third line in the
+   narrower one, which is precisely how this section runs out of height. */
 .stage-copy h2 {
   margin: 0;
   color: var(--color-stage-text);
-  font: 400 clamp(35px, 4vw, 58px) / 0.98 var(--font-display);
+  font: 400 clamp(28px, 3.4vw, 50px) / 1.02 var(--font-display);
   letter-spacing: -0.06em;
 }
 
-.stage-copy p {
-  margin: 12px 0 0;
-  color: var(--color-stage-text-soft);
-  font-size: 15px;
-}
-
+/*
+ * The corner instruments: local time on the left, the call's length on the right.
+ * Both sit in the turn counter's slot, holding a fact that is true whether or not
+ * a conversation has started — which a count of turns never was.
+ *
+ * Two lines rather than three. The date is already in the header's eyebrow a
+ * few hundred pixels above, and "America/New_York · UTC-5 · New York" is one
+ * fact written three ways.
+ */
 .stage-context {
   position: absolute;
-  bottom: 32px;
-  width: 118px;
+  bottom: clamp(18px, 3vh, 32px);
+  width: clamp(104px, 13vw, 138px);
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   color: var(--color-stage-text-soft);
 }
 
@@ -1794,37 +2590,48 @@ input {
 
 .stage-context strong {
   color: var(--color-stage-text);
-  font-size: 25px;
+  font-size: clamp(21px, 2.6vh, 26px);
+  font-variant-numeric: tabular-nums;
   line-height: 1;
-  letter-spacing: -0.06em;
+  letter-spacing: -0.07em;
 }
 
 .context-left {
-  left: 32px;
+  left: var(--stage-gutter);
 }
 
 .context-right {
-  right: 32px;
+  right: var(--stage-gutter);
   align-items: flex-end;
   text-align: right;
-}
-
-.stage-line {
-  position: absolute;
-  bottom: 29px;
-  width: 1px;
-  height: 52px;
-  background: var(--color-stage-border);
 }
 
 /* ==========================================================================
    Lumine presence / avatar
    ========================================================================== */
 
+/* The avatar scales with the window, and it has to: the stage is a band with a
+   ceiling now, not whatever height the window happens to have left over, so a
+   fixed 270px square would be the one thing in the section that refused to fit
+   it. The height is what drives the clamp, because the band's height is the
+   budget this has to share with the greeting above it.
+
+   `33vh` rather than `30vh`, and `150px` rather than `140px` at the floor. The
+   growth is paid for out of `.stage-copy`'s `padding-bottom`, not out of the
+   widget band: that padding was `clamp(38px, 12vh, 100px)` — 100px of dead
+   space at 900 tall, against a corner clock whose top edge reaches only 71px
+   above the stage floor. It is now sized against the clock rather than against
+   the window, which is where the extra 3vh comes from.
+
+   Width and height are the *same expression*, on purpose and permanently: this
+   square is the aspect ratio, and `.presence-body` at `64.4%` and its object at
+   `88.5%` are percentages of it, so the head stays 68% of the disc whatever
+   number the clamp picks. Change one without the other and the badge stops
+   being a badge. */
 .presence {
   position: relative;
-  width: 270px;
-  height: 270px;
+  width: clamp(150px, 33vh, 440px);
+  height: clamp(150px, 33vh, 440px);
   display: grid;
   place-items: center;
 }
@@ -1835,37 +2642,45 @@ input {
   border-radius: 50%;
 }
 
+/* The rings are expressed as a share of the square rather than in pixels for the
+   same reason the body is: at `inset: 52px` a fixed ring stops meaning the same
+   thing the moment the square stops being 270px, and halo-two in particular
+   would have slipped *behind* the body at the small end — invisible, in a rule
+   nobody would think to check. */
 .halo-one {
-  inset: 22px;
+  inset: 8.15%;
   background: color-mix(in srgb, var(--color-accent) 18%, transparent);
   filter: blur(24px);
   animation: breath 5s ease-in-out infinite;
 }
 
 .halo-two {
-  inset: 52px;
+  inset: 19.26%;
   border: 1px solid rgba(255, 231, 215, 0.14);
 }
 
 .orbit-one {
-  inset: 13px;
+  inset: 4.81%;
   border: 1px solid rgba(255, 255, 255, 0.11);
   border-left-color: color-mix(in srgb, var(--color-accent) 70%, transparent);
   animation: spin 12s linear infinite;
 }
 
 .orbit-two {
-  inset: 39px;
+  inset: 14.44%;
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-right-color: color-mix(in srgb, var(--color-accent) 42%, transparent);
   animation: spin 8s linear infinite reverse;
 }
 
+/* `64.4%` rather than `174px`, because `.presence` is a clamp now. At 270px it
+   is 173.9 — the same square to within a rounding error — and below that it
+   follows the avatar down instead of overflowing it. */
 .presence-body {
   position: relative;
   z-index: 1;
-  width: 174px;
-  height: 174px;
+  width: 64.4%;
+  height: 64.4%;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -1876,14 +2691,68 @@ input {
     var(--color-avatar)
   );
   box-shadow: 0 0 56px color-mix(in srgb, var(--color-avatar) 38%, transparent);
-  animation: avatar-float 7s ease-in-out infinite;
+  /* The `animation: avatar-float` that was here is gone, and the three
+     state-dependent cycles below it with it.
+
+     The silhouette has one owner now, and it is not CSS. `LumineAvatarEngine`
+     writes `transform` on the `<object>` every frame from the montage gesture,
+     the breath cycle, and the live audio level. The wrapper used to run a
+     7-second float on top of that, and a 1.5s / 2.5s / 0.65s cycle for
+     listening / thinking / speaking, which meant the body was being driven by two
+     independent systems on two nested elements at two unrelated rates — and the
+     outer one was the one you saw, because it is the larger amplitude.
+
+     That is the "boring scale-up/down" this replaced. Four CSS keyframes cannot
+     be audio-reactive, cannot layer with a breath cycle without beating against
+     it, and cannot know that `bounce` is about to fire. The state modifiers that
+     remain are the ones CSS is actually good at — a halo's brightness, an orbit's
+     speed, a shadow's reach. */
 }
 
+/* `width`/`height` size it; `left`/`top` place it. Both halves are required, and
+   the rule this replaces had only `inset: 5.75%`.
+
+   The theory behind that was sound for an ordinary box — with both offsets
+   definite, the element fills the gap between them. It is *false for a replaced
+   one*. CSS 2.1 §10.3.8 gives an absolutely positioned replaced element its used
+   width from `width`, and `width: auto` there means the element's intrinsic
+   width, never the distance from `left` to `right`; `right` is then left
+   over-constrained and dropped. `lumine_face.svg` declares `width="250"`, so the
+   `<object>` laid out at 250x250 inside a 174x174 body, and the body's
+   `overflow: hidden` plus `border-radius: 42%` cut the lower-right third of the
+   face away — what rendered was a dark crescent with a single eye in it, the
+   head's own edge replaced by the body's.
+
+   The Avatar Lab never broke because it sizes its object in pixels; this one
+   cannot, because the body is `64.4%` of a clamp'd `.presence` and a pixel size
+   would freeze the avatar at one viewport width. `left`/`top` rather than
+   `inset` so that no declaration is left sitting there being ignored.
+
+   `88.5%`, centred by `5.75%` — because `0.885 * 174 = 154`, the object size
+   the original shipped at, and the head is 76.8% of whatever box the object
+   takes: 118px inside a 174px disc, 68% of it, with a 28px peach ring left
+   round it. That ring is the badge reading as a badge, and the design went back
+   to it. `108%` was tried first and took the head to 83% of the disc; it bought
+   face by spending the ring down to ~15px, and what it looked like was the badge
+   going away rather than the avatar getting bigger.
+
+   The ring is also the engine's motion budget, and it is measured rather than
+   guessed. `LumineAvatarEngine` translates this element in raw pixels — no
+   viewport factor, as the original did — so the same gesture costs the same
+   travel at every window size while the ring shrinks with it: 28px on a 174px
+   body, 16px on the 100px one 800x600 renders. Adding the authored squash's
+   vertical growth on top of the translate — `bounce` pairs `y: -7` with
+   `squash: -0.06`, and `scale(1, 1.051)` raises the head's top edge a few more
+   pixels — still leaves the head inside the disc at every size tested, though
+   most of the slack is spent at the small end. That is the trade, and it is why
+   gesture amplitude gets re-measured against the 100px case before it changes. */
 .presence-body object {
-  position: relative;
+  position: absolute;
+  left: 5.75%;
+  top: 5.75%;
+  width: 88.5%;
+  height: 88.5%;
   z-index: 1;
-  width: 154px;
-  height: 154px;
   pointer-events: none;
   filter: sepia(0.08) saturate(1.08);
 }
@@ -1980,14 +2849,6 @@ input {
   filter: blur(8px);
 }
 
-.presence-glass {
-  position: absolute;
-  z-index: 2;
-  inset: 1px;
-  display: none;
-  pointer-events: none;
-}
-
 .presence--listening .orbit-one {
   animation-duration: 2.4s;
   border-left-color: #fff1e8;
@@ -1998,21 +2859,12 @@ input {
   animation-duration: 1.5s;
 }
 
-.presence--listening .presence-body {
-  animation: avatar-listen 1.5s ease-in-out infinite;
-}
-
-.presence--thinking .presence-body {
-  animation: avatar-think 2.5s ease-in-out infinite;
-}
-
 .presence--thinking .orbit-one,
 .presence--thinking .orbit-two {
   animation-duration: 2s;
 }
 
 .presence--speaking .presence-body {
-  animation: avatar-speak 0.65s ease-in-out infinite;
   box-shadow: 0 0 78px color-mix(in srgb, var(--color-avatar) 68%, transparent);
 }
 
@@ -2020,30 +2872,9 @@ input {
   filter: sepia(0.2) saturate(1.22);
 }
 
-/* The Avatar Lab is a full page (`AvatarLabPage.tsx`) and styles its own panel.
-   What was left here were the old overlay's box, drag handle and trigger pill,
-   none of which match anything, plus a *second* copy of the emotion-chip rules
-   that the panel block above had already replaced â€” the two copies disagreed on
-   `margin-top` and on which element a caption styled, so which one applied
-   depended on source order rather than on intent.
-
-   Only the layout that is still true survives. */
-.avatar-lab-section {
-  margin-top: 20px;
-}
-
 .avatar-lab-section > span {
   display: block;
   margin-bottom: 6px;
-}
-
-/* The montage switch row: caption, switch, and the hint that explains it. The
-   `?` is inside the row rather than after it so the three read as one unit. */
-.avatar-lab-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 18px;
 }
 
 .avatar-lab-row > span {
@@ -2054,13 +2885,6 @@ input {
   margin-left: auto;
 }
 
-.avatar-lab-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 18px;
-}
-
 .avatar-lab-actions button:first-child {
   color: var(--color-text);
   background: color-mix(in srgb, var(--color-accent) 16%, var(--color-canvas));
@@ -2068,85 +2892,134 @@ input {
 }
 
 /* ==========================================================================
-   Bottom command controls
+   Activity timeline
    ========================================================================== */
 
-.command-bottom {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  align-items: center;
-  gap: 32px;
+/* A 3px edge in the row's tone, rather than a coloured dot.
+   A dot has to be looked at; an edge is read peripherally, which is what a
+   timeline wants — you are scanning for the one red line, not reading. */
+.activity-timeline,
+.activity-timeline-head {
   padding: 0 42px;
 }
 
-/*
- * The setup gate takes the whole row.
- *
- * Two half-width quick-intent cards cannot hold a list of providers and the
- * buttons that fill them in, and squeezing them would produce exactly the
- * cramped screen the gate exists to replace. It also needs to be scrollable
- * without the page scrolling behind it, because the voice dock stays pinned.
- */
-.command-bottom.is-gated {
-  display: block;
-  padding: 0 42px 8px;
+.activity-timeline {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow: hidden;
+  height: 100%;
 }
 
-.feature-surface {
+.activity-row {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 22px 25px;
-  background: var(--color-surface);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--elevation-1);
+  gap: 12px;
+  padding: 8px 12px 8px 15px;
+  border-radius: 8px;
+  transition: background-color 140ms ease;
 }
 
-.feature-surface h3 {
-  margin: 5px 0 2px;
+.activity-row:hover {
+  background: color-mix(in srgb, var(--color-text) 3.5%, transparent);
+}
+
+/* Above the list, not fixed to the bottom: a timeline's "there is more below" sits
+   at the end of what is visible. */
+.activity-jump {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  padding: 7px 12px;
   color: var(--color-text);
-  font-size: 16px;
+  background: var(--color-surface);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: var(--elevation-2);
+  font: 500 11px var(--font-ui);
+  cursor: pointer;
+}
+
+.activity-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  border-radius: 50%;
+}
+
+/* The absence is not stretched to fill the window. It is a short paragraph, and a
+   short paragraph centred in 500px of vertical space reads as a page that thinks
+   it has more to say.
+
+   The base rule's `min-height: 420px` and `margin: 38px auto 0` are the two
+   things to override: the first is what centres it, the second is a top gap that
+   stacks with `.memory-page`'s own 22px and pushes the page off-balance. The rest
+   -- the icon's `margin-bottom` and the heading's `margin` -- are zeroed so that
+   `gap` is the only source of space. Leaving them in place is the kind of thing
+   that works until someone edits the base rule, at which point this page quietly
+   gains 34px it was never designed for. */
+.memory-page .workspace-empty {
+  min-height: 0;
+  height: auto;
+  max-width: none;
+  margin: 0;
+  padding: 24px;
+  gap: 12px;
+}
+
+.memory-page .workspace-empty-icon {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.memory-page .workspace-empty h2 {
+  margin: 0;
+  font-size: 19px;
+}
+
+.memory-page .workspace-empty p {
+  max-width: none;
+}
+
+.memory-card h2 {
+  margin: 5px 0 0;
+  color: var(--color-text);
+  font-size: 19px;
   letter-spacing: -0.04em;
 }
 
-.subtle {
-  margin: 0;
+.memory-card p {
+  margin: 13px 0 0;
   color: var(--color-text-soft);
+  font-size: 14px;
+  line-height: 1.62;
+}
+
+/* The qualifier. It is set apart because it is the sentence that stops the card
+   above being read as "memory, but manual" — which is a feature nobody asked for
+   and this build does not have. */
+.memory-card .memory-card-note {
+  padding-left: 13px;
+  color: var(--color-text-faint);
   font-size: 13px;
+  border-left: 2px solid var(--color-border);
 }
 
-.text-button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--color-accent);
-  background: transparent;
-  font-size: 13px;
-  cursor: pointer;
+.memory-card .workspace-action {
+  margin-top: 18px;
 }
 
-.quick-actions > div {
-  display: flex;
-  gap: 7px;
-  margin-top: 9px;
-}
+/* `.quick-actions` is gone with the bottom feature row. It held one line of copy —
+   "Voice session controls are ready below." — which described the chrome that was
+   taking up the space rather than doing anything.
 
-.quick-actions button {
-  padding: 0;
-  color: var(--color-text);
-  background: transparent;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.quick-actions span {
-  margin-left: 3px;
-  color: var(--color-accent);
-}
-
-/* A translucent bar pinned to the bottom of the command space. The hairline it
+   A translucent bar pinned to the bottom of the command space. The hairline it
    had was the one element of chrome that got in the way of the avatar, which sits
    directly above it; a shadow cast upward fades instead of cutting. */
 /* ---- Call bar ----------------------------------------------------------- */
@@ -2154,11 +3027,20 @@ input {
 /*
  * The call controls, in the shape a call has.
  *
- * This replaced a dock with a microphone button and a mute button side by side â€”
+ * This replaced a dock with a microphone button and a mute button side by side —
  * two controls for one thing, in the same state, told apart only by size. What is
  * here now is one handset while off, and the four controls that exist once there
- * is a call. The bar's own background is a shadow cast upward, so it fades
- * instead of cutting, and the avatar directly above it stays legible.
+ * is a call.
+ *
+ * The bar has no background and no shadow of its own any more: `.call-strip`
+ * owns both, because the bar is now a centred *group* inside a row rather than
+ * the row itself. Giving a centred child its own surface draws a box around the
+ * controls, which is exactly the read the old right-aligned arrangement had —
+ * the controls as a remainder of something else's layout.
+ *
+ * `min-height: 0` and a 6px padding so the whole strip fits in `--call-h: 68px`.
+ * The 72px it was is above that budget, and 72 was itself the reduced number: it
+ * was sized for a touch target a desktop mouse never needs.
  */
 .call-bar {
   position: relative;
@@ -2166,16 +3048,10 @@ input {
   align-items: center;
   justify-content: center;
   gap: 16px;
-  /* 72px, not 92. The bar's job is to hold four controls at the bottom edge of a
-     window, and every pixel it takes is a pixel off the avatar it sits under. It
-     was sized for a touch target that a desktop mouse never needs, which is why
-     it read as a dock rather than a control strip. */
-  min-height: 72px;
-  padding: 10px 0;
-  background: color-mix(in srgb, var(--color-surface) 76%, transparent);
-  box-shadow:
-    0 -1px 0 rgb(0 0 0 / 0.05),
-    0 -12px 26px -20px rgb(0 0 0 / 0.45);
+  min-height: 0;
+  padding: 6px 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .call-bar--live {
@@ -2209,7 +3085,18 @@ input {
     box-shadow 180ms ease;
 }
 
-.call-button:hover:not(:disabled) {
+/*
+ * The unavailable state, in two spellings.
+ *
+ * `CallBar` marks an unavailable control with `aria-disabled` rather than the
+ * `disabled` attribute, because a natively disabled button leaves the tab order
+ * and the reason it is carrying would then be unreadable by focus — which is the
+ * only way a screen reader ever reaches a control's name. So every selector here
+ * that means "this control is off" has to accept both, and every selector that
+ * means "this control is live" has to reject both: the hover halo on a blocked
+ * call mark is precisely the accent the block exists to suppress.
+ */
+.call-button:hover:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(-2px);
   box-shadow:
     inset 0 0 0 2px color-mix(in srgb, var(--voice-button-icon, #ffffff) 42%, transparent),
@@ -2218,7 +3105,8 @@ input {
     var(--shadow-soft);
 }
 
-.call-button:disabled {
+.call-button:disabled,
+.call-button[aria-disabled="true"] {
   cursor: default;
 }
 
@@ -2250,30 +3138,6 @@ input {
   transform: none;
 }
 
-.call-button-contents {
-  display: grid;
-  place-items: center;
-  width: 100%;
-  height: 100%;
-}
-
-/* The timer. The only text in the bar, because a call's length is the one number
-   a person actually wants from it, and it is set in the mono face so the digits
-   do not shuffle sideways once a second. */
-.call-timer {
-  min-width: 4.5ch;
-  color: var(--color-text-soft);
-  font: 500 12.5px var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.02em;
-}
-
-.call-controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .call-control {
   width: 44px;
   height: 44px;
@@ -2290,12 +3154,13 @@ input {
     color 140ms ease;
 }
 
-.call-control:hover:not(:disabled) {
+.call-control:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-surface);
   box-shadow: var(--elevation-2);
 }
 
-.call-control:disabled {
+.call-control:disabled,
+.call-control[aria-disabled="true"] {
   opacity: 0.32;
   cursor: default;
 }
@@ -2314,7 +3179,7 @@ input {
   background: var(--color-accent);
 }
 
-.call-control.is-off:hover:not(:disabled) {
+.call-control.is-off:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--color-accent);
   box-shadow: var(--elevation-2);
 }
@@ -2338,7 +3203,7 @@ input {
   color: #ffffff;
 }
 
-.call-control--end:hover:not(:disabled) {
+.call-control--end:hover:not(:disabled):not([aria-disabled="true"]) {
   background: #e04f4f;
   box-shadow: 0 6px 18px -6px rgb(214 69 69 / 0.8);
 }
@@ -2352,15 +3217,18 @@ input {
   animation: lumine-spin 0.9s linear infinite;
 }
 
-/* A refusal or a missing device, said once and quietly. `role="status"` rather
-   than an alert: nothing is on fire, and a camera permission prompt that shouts
-   is a camera permission prompt people dismiss. */
-.call-error {
-  margin: -4px 40px 12px;
-  color: var(--color-text-soft);
-  font-size: 12px;
-  text-align: center;
-}
+/* `.call-error` is gone from here; it moved to a toast.
+ *
+ * It used to be a `<p>` sitting between the stage and the call strip, which meant
+ * a camera permission failure *grew the strip by a line* — the controls the user
+ * was about to click moved downward exactly as they reached for them, in the one
+ * state where they were already having trouble with the platform. A toast says
+ * the same thing, is dismissible, does not move anything, and does not need a
+ * fixed-height parent to fit inside.
+ *
+ * `role="status"` was the right *tone* and that is preserved: nothing is on fire,
+ * and a camera permission prompt that shouts is one people dismiss. The toast's
+ * default severity is the same quiet register. */
 
 @keyframes lumine-spin {
   to { transform: rotate(360deg); }
@@ -2403,348 +3271,9 @@ input {
   transform: none;
 }
 
-.self-view-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 9px;
-  background: var(--color-surface);
-}
-
-.self-view-source {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--color-text-soft);
-  font-size: 11px;
-}
-
-.self-view-badge {
-  padding: 2px 6px;
-  border-radius: 999px;
-  color: var(--color-text-faint);
-  background: var(--color-surface-muted);
-  font-size: 10px;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-}
-
 .self-view-badge.is-shared {
   color: var(--color-accent);
   background: color-mix(in srgb, var(--color-accent) 14%, transparent);
-}
-
-
-/* ==========================================================================
-   Context panel
-   ========================================================================== */
-
-.context-panel {
-  min-width: 0;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: 83px 1fr auto;
-  overflow: hidden;
-  background: var(--color-surface);
-  border-left: 1px solid var(--color-border);
-  animation: conversation-in 260ms ease-out both;
-  transition: width 260ms ease, background-color 180ms ease, border-color 180ms ease;
-}
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 22px;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.panel-brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-text);
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.04em;
-}
-
-.panel-brand .brand-mark {
-  color: var(--color-accent);
-}
-
-.panel-brand i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-accent);
-}
-
-.panel-head p {
-  margin: 5px 0 0 24px;
-  color: var(--color-text-soft);
-  font-size: 12px;
-}
-
-.panel-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-}
-
-.panel-icon:hover {
-  background: var(--color-surface-muted);
-}
-
-.context-scroll {
-  overflow-y: auto;
-  padding: 23px 22px;
-}
-
-.section-label {
-  margin-bottom: 13px;
-}
-
-.activity-live {
-  display: grid;
-  grid-template-columns: 32px 1fr 24px;
-  gap: 10px;
-  align-items: start;
-  padding: 14px;
-  color: var(--color-stage-text);
-  background: var(--color-stage);
-  border: 1px solid var(--color-stage-border);
-  border-radius: 17px;
-}
-
-.activity-icon {
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border-radius: 11px;
-  color: #ffffff;
-  background: var(--color-accent);
-}
-
-.activity-live strong {
-  font-size: 13px;
-}
-
-.activity-live p {
-  margin: 4px 0 0;
-  color: var(--color-stage-text-soft);
-  font-size: 12px;
-}
-
-.activity-live button {
-  padding: 2px;
-  color: #aaa39d;
-  background: transparent;
-  cursor: pointer;
-}
-
-.today-list {
-  margin-top: 27px;
-}
-
-.today-list > div {
-  display: grid;
-  grid-template-columns: 25px 1fr 25px;
-  gap: 7px;
-  align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--color-border);
-}
-
-.today-list > div > span {
-  color: var(--color-accent);
-  font: 500 10px var(--font-mono);
-}
-
-.today-list p {
-  margin: 0;
-}
-
-.today-list strong {
-  display: block;
-  color: var(--color-text);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.today-list small {
-  color: var(--color-text-soft);
-  font-size: 12px;
-}
-
-.today-list button {
-  width: 22px;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  color: var(--color-text-faint);
-  background: transparent;
-  border: 1px solid var(--color-border);
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.today-list button:hover {
-  color: #ffffff;
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-}
-
-.recent {
-  margin-top: 27px;
-}
-
-.recent-entry {
-  display: grid;
-  grid-template-columns: 25px 1fr;
-  gap: 9px;
-  padding: 9px 0;
-}
-
-.entry-icon {
-  width: 25px;
-  height: 25px;
-  display: grid;
-  place-items: center;
-  color: color-mix(in srgb, var(--color-accent) 65%, var(--color-text));
-  background: var(--color-accent-soft);
-  border-radius: 8px;
-}
-
-.recent-entry.note .entry-icon {
-  color: var(--color-text-soft);
-  background: var(--color-surface-muted);
-}
-
-.recent-entry.message .entry-icon {
-  color: var(--color-text);
-  background: color-mix(in srgb, var(--color-surface-muted) 88%, var(--color-text));
-}
-
-.recent-entry p {
-  margin: 0;
-  color: var(--color-text);
-  font-size: 13px;
-  line-height: 1.42;
-}
-
-.recent-entry small {
-  color: var(--color-text-faint);
-  font-size: 11px;
-}
-
-/* ==========================================================================
-   Composer
-   ========================================================================== */
-
-.composer {
-  padding: 14px 16px 16px;
-  border-top: 1px solid var(--color-border);
-}
-
-.composer > div {
-  padding: 10px 11px 8px;
-  background: var(--color-canvas);
-  border: 1px solid var(--color-border);
-  border-radius: 16px;
-  transition: 0.2s ease;
-}
-
-.composer > div:focus-within {
-  border-color: var(--color-accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 8%, transparent);
-}
-
-.composer textarea {
-  display: block;
-  width: 100%;
-  resize: none;
-  outline: none;
-  color: var(--color-text);
-  background: transparent;
-  border: 0;
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.composer textarea::placeholder {
-  color: var(--color-text-faint);
-}
-
-.composer-actions {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 7px;
-}
-
-.composer-actions button {
-  width: 27px;
-  height: 27px;
-  display: grid;
-  place-items: center;
-  color: var(--color-text-faint);
-  background: transparent;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.composer-actions button.ready {
-  color: #ffffff;
-  background: var(--color-accent);
-}
-
-.composer > p {
-  margin: 7px 0 0;
-  color: var(--color-text-faint);
-  text-align: center;
-  font-size: 11px;
-}
-
-/* ==========================================================================
-   Local model discovery
-
-   A list of things a server on this machine reported. It is a list rather than a
-   dropdown because it is not a choice being narrowed to one: the point is to see
-   what exists, and a menu hides the rest. Each row is a button, so picking one
-   writes the id straight into the profile without a second control.
-
-   The current model is marked by its fill, like every other selected state in
-   this app, and is still clickable â€” re-picking it is harmless and better than a
-   disabled row that looks broken.
-   ========================================================================== */
-
-.local-models {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  align-items: flex-start;
-}
-
-.local-models-result {
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-muted);
-  box-shadow: var(--elevation-1);
-}
-
-.local-models-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
 .local-models-list button {
@@ -2771,14 +3300,6 @@ input {
   background: color-mix(in srgb, var(--color-accent) 14%, var(--color-canvas));
 }
 
-.local-model-id {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-mono);
-}
-
 .local-model-size {
   margin-left: auto;
   flex: none;
@@ -2798,13 +3319,10 @@ input {
    component rules that genuinely differ by mode belong below.
    ========================================================================== */
 
-.theme-dark .voice-dock {
-  background: color-mix(in srgb, var(--color-surface) 82%, transparent);
-}
-
-.theme-dark .activity-icon {
-  background: var(--color-accent);
-}
+/* `.theme-dark .voice-dock` and `.theme-dark .activity-icon` are gone with the
+   components they styled — the voice dock and the context panel's activity card
+   were both deleted. The dock that replaced the voice dock reads the palette
+   directly, so it has no mode-specific override to keep in sync. */
 
 /* ==========================================================================
    Appearance dialog
@@ -2853,12 +3371,6 @@ input {
   max-width: 100%;
 }
 
-.ap-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
 /* --------------------------------------------------------------------------
    Cards
    -------------------------------------------------------------------------- */
@@ -2868,24 +3380,6 @@ input {
   border-radius: var(--radius-lg);
   background: var(--color-surface-muted);
   box-shadow: var(--elevation-1);
-}
-
-.ap-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 15px;
-}
-
-.ap-card-title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  font-size: 14.5px;
-  font-weight: 500;
-  letter-spacing: -0.015em;
 }
 
 /* The caption above a group of swatches or fields. */
@@ -2902,25 +3396,6 @@ input {
 
 .ap-swatch-group + .ap-swatch-group {
   margin-top: 18px;
-}
-
-.ap-empty {
-  margin: 0;
-  color: var(--color-text-soft);
-  font-size: 12.5px;
-}
-
-.ap-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.ap-field-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13.5px;
 }
 
 /* --------------------------------------------------------------------------
@@ -2991,14 +3466,6 @@ input {
   border-radius: 50%;
 }
 
-.ap-proof-main {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
 /* The stage takes the height the proof has rather than a fixed one, so the large
    preview fills the column beside the mode cards instead of leaving dead space
    under a 62px band. `min-height` keeps the compact variant's proportion when
@@ -3017,12 +3484,6 @@ input {
   width: var(--ap-halo);
   height: var(--ap-halo);
   border-radius: 50%;
-}
-
-.ap-proof-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
 }
 
 .ap-proof-line {
@@ -3053,50 +3514,11 @@ input {
   border-radius: var(--ap-radius);
 }
 
-.ap-proof-bubble {
-  display: block;
-  padding: 4px 7px;
-  border-radius: 6px;
-}
-
-/* --------------------------------------------------------------------------
-   Colour mode
-
-   A narrow column of the two mode cards, and a wide live preview beside them.
-
-   The mode cards are two miniature renderings of the app, one per mode, and the
-   preview is the same rendering at size. Placing them side by side answers two
-   different questions at one height: the cards are "which one", the preview is
-   "what does mine look like now". Stacked, they were 340px of column and the
-   second was a smaller copy of the first.
-
-   This section deliberately departs from the app's "one picker" rule, which
-   sends every chooser to `Dropdown`. The rule exists because native popups are
-   drawn by the OS and read as a different application — but its reach, taken
-   literally, made the most-used control on this page a two-option dropdown. That
-   is a click to read the current answer and a second to change it, for a
-   question whose options are pictures. The other pickers here stay in `Dropdown`;
-   this one is a visual choice, and a list of two words cannot answer it.
-   -------------------------------------------------------------------------- */
-
 .ap-themes {
   display: grid;
   grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
   gap: 14px;
   align-items: stretch;
-}
-
-.ap-modes {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.ap-preview {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
 }
 
 .ap-preview-label {
@@ -3158,32 +3580,6 @@ input {
   box-shadow: 0 0 0 2px var(--color-surface-muted), 0 0 0 4px var(--color-accent);
 }
 
-.ap-mode-name {
-  padding-left: 3px;
-  font-size: 13px;
-  font-weight: 500;
-}
-
-/* --------------------------------------------------------------------------
-   Typefaces
-   -------------------------------------------------------------------------- */
-
-.ap-types {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.ap-type {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  border-radius: var(--radius-md);
-  background: var(--color-canvas);
-  box-shadow: var(--elevation-1);
-}
-
 .ap-type-label {
   color: var(--color-text-soft);
   font: 500 10px var(--font-mono);
@@ -3216,28 +3612,6 @@ input {
 
 .ap-row + .ap-row {
   border-top: 1px solid var(--color-border);
-}
-
-.ap-row-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.ap-row-label {
-  font-size: 13.5px;
-}
-
-.ap-row-desc {
-  color: var(--color-text-soft);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.ap-row-control {
-  flex: 0 0 auto;
 }
 
 .ap-switch {
@@ -3275,24 +3649,6 @@ input {
 .ap-switch.is-on .ap-switch-knob {
   transform: translateX(18px);
 }
-
-/* --------------------------------------------------------------------------
-   The swatch strip
-
-   All twelve colours stay on screen at once, and the editor below handles
-   whichever one is selected. The page used to show twenty-four controls — a
-   swatch and a ten-pixel hex field for each colour, across two grids — which
-   was the least usable part of the tab: nothing said what any of the colours
-   did, and the two columns were near-identical rows.
-
-   The column count comes from the row's own length rather than from `auto-fit`,
-   which chose six tracks for the seven interface colours and left the seventh
-   alone on a second row beside five empty cells. A count cannot orphan a
-   swatch. The narrow override exists because "cannot orphan" and "fits" pull
-   against each other at the window's 940px minimum, where seven columns are
-   67px and clip "Lumine's bubbles" to an ellipsis; splitting seven into 4 + 3
-   and leaving the five alone keeps every name whole.
-   -------------------------------------------------------------------------- */
 
 .ap-swatches {
   display: grid;
@@ -3373,36 +3729,6 @@ input {
   letter-spacing: 0.02em;
 }
 
-/* --------------------------------------------------------------------------
-   The selected colour's editor
-   -------------------------------------------------------------------------- */
-
-.ap-editor {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-top: 18px;
-  padding: 14px;
-  border-radius: var(--radius-md);
-  background: var(--color-canvas);
-  box-shadow: var(--elevation-1);
-}
-
-/* The label is painted in the colour and the native input is stretched over it
-   invisibly, which makes the whole 64px square the target. A native swatch is
-   about 24px and sits in a row of text; this is the control the page is about,
-   so it is the largest thing on it. */
-.ap-editor-picker {
-  position: relative;
-  flex: 0 0 auto;
-  width: 64px;
-  height: 64px;
-  overflow: hidden;
-  border-radius: 14px;
-  box-shadow: var(--elevation-1);
-  cursor: pointer;
-}
-
 .ap-editor-picker input {
   position: absolute;
   inset: 0;
@@ -3412,25 +3738,6 @@ input {
   border: 0;
   opacity: 0;
   cursor: pointer;
-}
-
-.ap-editor-text {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.ap-editor-name {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.ap-editor-desc {
-  color: var(--color-text-soft);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .ap-editor-hex {
@@ -3449,16 +3756,6 @@ input {
 .ap-editor-hex:focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
-}
-
-/* --------------------------------------------------------------------------
-   Saved palettes
-   -------------------------------------------------------------------------- */
-
-.ap-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
 }
 
 .ap-preset {
@@ -3482,13 +3779,6 @@ input {
   box-shadow: 0 0 0 1px var(--color-accent);
 }
 
-/* Three overlapping dots rather than one: a palette's identity is the
-   relationship between its canvas, its panels and its accent, and a single
-   swatch cannot show that. */
-.ap-preset-dots {
-  display: flex;
-}
-
 .ap-preset-dots span {
   width: 13px;
   height: 13px;
@@ -3498,10 +3788,6 @@ input {
 
 .ap-preset-dots span + span {
   margin-left: -5px;
-}
-
-.ap-preset-name {
-  font-size: 12.5px;
 }
 
 .ap-applied {
@@ -3515,13 +3801,6 @@ input {
 
 .ap-applied > span {
   flex: 1;
-}
-
-.ap-preset-save {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 16px;
 }
 
 .ap-preset-save input {
@@ -3562,21 +3841,8 @@ input {
   transition: box-shadow 0.15s ease;
 }
 
-.ap-ghost-button {
-  color: var(--color-text);
-  background: var(--color-surface-muted);
-  border: 1px solid var(--color-border);
-}
-
 .ap-ghost-button:hover {
   box-shadow: var(--elevation-2);
-}
-
-.ap-solid-button {
-  color: var(--color-stage-text);
-  background: var(--color-accent);
-  border: 0;
-  font-weight: 500;
 }
 
 .ap-ghost-button:disabled,
@@ -3601,41 +3867,9 @@ input {
   outline-offset: 2px;
 }
 
-/* --------------------------------------------------------------------------
-   Conversation sample and import
-   -------------------------------------------------------------------------- */
-
-.ap-bubble-preview {
-  margin-top: 12px;
-  padding: 16px;
-  border-radius: var(--radius-md);
-  background: var(--color-canvas);
-  box-shadow: var(--elevation-1);
-}
-
 .ap-bubble-preview [data-slot="bubble-content"] {
   font-size: 12.5px;
   line-height: 1.5;
-}
-
-.ap-import {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.ap-import-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-}
-
-.ap-import-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
 }
 
 /* The file input covers its label rather than hiding inside it, so the whole
@@ -3671,17 +3905,6 @@ input {
 .ap-import textarea:focus {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 12%, transparent);
-}
-
-.ap-import-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.ap-import-message {
-  margin: 0;
-  color: var(--color-accent);
-  font-size: 12px;
 }
 
 /* ==========================================================================
@@ -3815,13 +4038,6 @@ input {
     background-color 140ms ease;
 }
 
-.settings-rail-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
 .settings-rail-name {
   font-weight: 500;
   line-height: 1.35;
@@ -3917,16 +4133,6 @@ input {
   font: 500 10px var(--font-mono);
 }
 
-/* The content pane is a column, not a scroller: a section with sub-tabs has a
-   strip that has to stay put while the stage below it scrolls, and a strip inside
-   a scroller scrolls away from the page it is meant to be labelling. */
-.settings-content {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
 .settings-content-scroll {
   flex: 1;
   min-height: 0;
@@ -3999,12 +4205,6 @@ input {
   box-shadow: var(--elevation-1);
 }
 
-/* The animated wrapper. A plain inner element keeps the slide on one node
-   instead of fighting the scroll container's own overflow. */
-.settings-content-inner {
-  min-height: 100%;
-}
-
 .settings-page {
   display: flex;
   flex-direction: column;
@@ -4014,25 +4214,6 @@ input {
   min-height: 100%;
   max-width: 780px;
   padding: 34px 40px 40px;
-}
-
-.settings-page-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.settings-page-head-text {
-  min-width: 0;
-}
-
-.settings-page-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
-  padding-top: 4px;
 }
 
 .settings-page-head h1 {
@@ -4050,6 +4231,13 @@ input {
   text-wrap: pretty;
 }
 
+.settings-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
 /* The About screen: who made the app, stated plainly.
    A definition list rather than paragraphs, so "owner / copyright / licence" read
    as labelled facts instead of as three more blocks of marketing prose. */
@@ -4062,12 +4250,6 @@ input {
   box-shadow: 0 3px 12px rgb(0 0 0 / 16%);
 }
 
-.about-identity {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-}
-
 .about-mark {
   width: 96px;
   height: 96px;
@@ -4076,10 +4258,6 @@ input {
   object-fit: cover;
   background: var(--color-surface);
   box-shadow: 0 8px 26px rgb(0 0 0 / 18%);
-}
-
-.about-identity-text {
-  min-width: 0;
 }
 
 .about-name {
@@ -4099,12 +4277,6 @@ input {
   margin: 8px 0 0;
   color: var(--color-text-soft);
   font: 400 12px/1.4 var(--font-mono);
-}
-
-.about-facts {
-  display: grid;
-  gap: 14px;
-  margin: 0;
 }
 
 .about-fact {
@@ -4182,6 +4354,699 @@ input {
   box-shadow: var(--elevation-1);
 }
 
+.voice-section + .voice-section {
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+
+.voice-section-head h3 {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.voice-section-head p {
+  max-width: 64ch;
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* Knobs sit side by side when there is room and stack when there is not — the
+   same grid the language model's options use, so both stages lay out alike. */
+.voice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 16px;
+}
+
+.voice-gate::before {
+  content: "";
+  flex: none;
+  width: 3px;
+  height: 3px;
+  margin-top: 0.5em;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.voice-saved ul {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+  box-shadow: var(--elevation-1);
+  overflow: hidden;
+  list-style: none;
+}
+
+.voice-saved li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+}
+
+.voice-saved li + li {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.voice-saved li.is-current {
+  background: color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+.voice-saved-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-saved-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  color: var(--color-accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.voice-saved-remove {
+  flex: none;
+  padding: 3px 7px;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-faint);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.voice-saved-remove:hover {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+}
+
+.voice-saved-remove:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ---- Audio path: which stage is speaking ---- */
+
+/* The one fact that decides whether the controls below mean anything, so it is
+   stated above them and *looks* like a statement rather than like another field
+   to fill in. A card rather than a hint on purpose: a hint is read after
+   something has already gone wrong, and this is meant to be read before it can.
+   The accent rail matches the delivery-gate note further down, because both are
+   the same kind of sentence -- "this will not do what you think". */
+.audio-path {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--color-border);
+  border-left: 2px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--elevation-1);
+}
+
+.audio-path-head h3 {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.audio-path-arrow {
+  margin: 0 7px;
+  color: var(--color-text-faint);
+}
+
+.audio-path-stage.is-speaking {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.audio-path-all {
+  margin-left: 8px;
+  color: var(--color-text-faint);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.audio-path-note strong {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* ---- The everyday band ---- */
+
+/*
+ * Four cards that have to read as one instrument.
+ *
+ * The band already gives them their rhythm — one gap, one scroll, one shared
+ * baseline — so the card itself only has to decide what a heading and a figure
+ * look like. Everything large in the band is the same treatment: a tabular number
+ * and a caption under it, because four different sizes in one row is four
+ * different reasons to look away from the avatar.
+ */
+/* The card clips, and only the body is allowed to move.
+
+   The band's row is the band's height by arithmetic, so a card that is taller
+   than it has to lose something — and what must not move is the heading above it
+   and the action below it. `overflow: hidden` on the card plus `overflow-y` on
+   the body is that decision: the weather's four figures and the headline list
+   both scroll behind their own title, and `.widget-foot`'s `margin-top: auto`
+   keeps the button on the card's floor either way. */
+.widget-card {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px 14px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-canvas) 72%, transparent);
+  box-shadow: var(--elevation-1);
+}
+
+.widget-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  /* The card is fixed at the band's height, so this — not the card — is the one
+     that gives way. A head and a foot that move when the body scrolls would turn
+     a short list into a hunt for the button. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The clock is set larger and lighter than the weather: a time is read as a
+   shape first and a number second, and a bold 38px time reads as an alarm. */
+.widget-clock .widget-figure {
+  font-size: 38px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.widget-unit {
+  margin-left: 3px;
+  color: var(--color-text-soft);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.widget-caption.faint {
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+.widget-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.widget-stats dt {
+  color: var(--color-text-faint);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.widget-stats dd {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.widget-caption {
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.widget-pulse {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  animation: widget-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes widget-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+.widget-empty p {
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.widget-empty small {
+  margin: 0;
+  color: var(--color-text-faint);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.widget-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-soft);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.widget-button:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.widget-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.widget-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.widget-button.primary {
+  border-color: transparent;
+  background: var(--color-accent);
+  /* The app's own white-on-accent, not a literal — see the note where this token
+     is declared: a hardcoded near-black survived there for exactly as long as
+     nobody looked. */
+  color: var(--voice-button-icon);
+}
+
+.widget-button.primary:hover:not(:disabled) {
+  filter: brightness(1.07);
+}
+
+.widget-link:hover {
+  text-decoration: underline;
+}
+
+.widget-place input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.widget-place input::placeholder {
+  color: var(--color-text-faint);
+}
+
+.widget-place input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.widget-places button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 7px 9px;
+  text-align: left;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.widget-places button:hover {
+  background: var(--color-surface-muted);
+}
+
+.widget-places span {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.widget-places small {
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+.widget-headlines li + li {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
+}
+
+.widget-headlines button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 0;
+  text-align: left;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.widget-link {
+  color: var(--color-accent);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.widget-headline-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-text);
+  font-size: 12.5px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  transition: color 0.15s ease;
+}
+
+.widget-headlines button:hover .widget-headline-title {
+  color: var(--color-accent);
+}
+
+.widget-headlines button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.widget-timer {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 84px;
+  height: 84px;
+  margin: 2px auto;
+}
+
+.widget-ring {
+  width: 84px;
+  height: 84px;
+  transform: rotate(-90deg);
+}
+
+.widget-ring-track,
+.widget-ring-fill {
+  fill: none;
+  stroke-width: 6;
+}
+
+.widget-ring-track {
+  stroke: var(--color-surface-muted);
+}
+
+.widget-ring-fill {
+  stroke: var(--color-accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s linear;
+}
+
+.widget-timer-readout {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--color-text);
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.widget-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.widget-presets button {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-faint);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.widget-presets button:hover {
+  color: var(--color-text);
+}
+
+.widget-presets button.is-on {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.widget-timer-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.widget-timer-actions .widget-button {
+  flex: 1 1 auto;
+}
+
+.widget-notes {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.55;
+  outline: none;
+}
+
+.widget-notes::placeholder {
+  color: var(--color-text-faint);
+}
+
+.widget-notes:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* The one card whose subject is absence, so it gets the accent rail the audio
+   path notice uses for the same reason — the eye should find it without
+   reading it, and then find out it is empty. */
+.widget-done {
+  border-color: var(--color-accent);
+}
+
+/*
+ * The band's grid, and the one rule that decides how many columns it has.
+ *
+ * The container is `.widget-strip` (see its `container-type`), so these queries
+ * answer "how much room is *left after the aside*", not "how wide is the window".
+ * That distinction is the whole reason this is a container query: opening the
+ * transcript removes 380px from the band and changes not one pixel of viewport,
+ * so a media query would keep the four-column layout through a 644px card row.
+ *
+ * News is double width wherever four cards fit — a headline needs about 45
+ * characters a line to stay two lines, and 210px gives it a line and a half.
+ * Below that the band is a row that scrolls sideways rather than four columns
+ * nobody can read. The `repeat(4, …)` in the base rule is the fallback for a
+ * browser without container queries, and it is deliberately the one nobody
+ * should see: four equal columns beat no cards at all, which is what the base
+ * would otherwise be.
+ */
+/* `height: 100%`, not `min-height`, and `minmax(0, 1fr)` for the rows. The two
+   are one decision, not two.
+
+   `min-height: 100%` leaves the box's own height `auto`, and an `auto` row sizes
+   to its content — so the headline list, at about 350px, made the row 405px in a
+   261px band, and every card in it was 144px taller than the strip they sit in.
+   The band's `max` in the parent's `minmax(0, var(--band-h))` caps the *strip*,
+   never its contents: a grid item's `overflow` cannot make a track smaller.
+
+   A definite `height` gives the tracks something to resolve `1fr` against, and
+   `minmax(0, …)` takes the floor off, so a row is the band's height by arithmetic
+   rather than by hoping the content is short enough. Cards whose body still
+   exceeds it scroll inside the card, where the heading and the action stay put. */
+.widget-strip-inner {
+  height: 100%;
+  display: grid;
+  gap: 14px;
+  grid-auto-rows: minmax(0, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* News double-width wherever four of them fit — a headline needs about 45
+   characters a line to stay two lines, and 210px gives it a line and a half.
+
+   1000px is the point at which `1fr` reaches 185px after the double-width card
+   takes its 1.9 share of four. Below it, four columns means the three single ones
+   fall under 150, which is where the weather's figures start colliding with its
+   own padding — so the band stops being a grid and becomes a row instead. */
+@container (min-width: 1000px) {
+  .widget-strip-inner {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.9fr) minmax(0, 1fr) minmax(0, 1fr);
+  }
+}
+
+/* Below that, a row of cards that scrolls sideways instead of four columns nobody
+   can read. Two-by-two was tried first and is worse: the band is ~225px of usable
+   height, so half of it is 105, which is a heading and a button with nothing
+   between them. Keeping the cards whole and letting the *band* scroll costs a
+   swipe and loses no height. This is also what the band becomes when the aside is
+   open, because the aside takes 380px out of the container and changes not one
+   pixel of viewport — which is the whole reason these are container queries.
+
+   On a phone the band's row is a fixed `clamp` rather than `auto`, so `height:
+   100%` still resolves and the cards keep the same height they have on a
+   desktop. */
+@container (max-width: 999.98px) {
+  .widget-strip-inner {
+    display: flex;
+    gap: 12px;
+  }
+
+  .widget-strip-inner > * {
+    flex: 0 0 clamp(190px, 58%, 250px);
+  }
+}
+
+/* The band's own scrollbar, when a short window leaves it less than a card tall. */
+.widget-strip::-webkit-scrollbar,
+.widget-body::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.widget-strip::-webkit-scrollbar-track,
+.widget-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.widget-strip::-webkit-scrollbar-thumb,
+.widget-body::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-border) 85%, transparent);
+  background-clip: padding-box;
+}
+
+/* The same for the card bodies, where the strip's 8px would eat a twelfth of a
+   190px card. Thin, and drawn in the border colour rather than the system's own
+   light grey — a stock scrollbar on a card this dark is a white bar across a
+   near-black face, which is the loudest thing in the band. */
+.widget-body {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-border) 85%, transparent) transparent;
+}
+
+.widget-strip {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-border) 85%, transparent) transparent;
+}
+
+/* The notes preview is a button because it *is* one — the door into the surface
+   that writes it — but a button that looks like a button would add a third border
+   to a card that already has one. It reads as the text it carries. */
+.widget-note-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+}
+
+.widget-note-preview span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
+
+.widget-note-preview:hover span {
+  color: var(--color-accent);
+}
+
 /* ---- Active configuration card ---- */
 
 /* The one thing on the page worth looking at, so it is the one thing raised off
@@ -4222,14 +5087,6 @@ input {
   text-transform: uppercase;
 }
 
-.active-flow {
-  display: flex;
-  align-items: stretch;
-  gap: 10px;
-  margin-top: 18px;
-  flex-wrap: wrap;
-}
-
 /* The stages of the active stack. One level above the card they sit in, which is
    the hierarchy the old border was approximating. */
 .active-node {
@@ -4254,21 +5111,6 @@ input {
   font: 500 9px var(--font-mono);
   letter-spacing: 0.11em;
   text-transform: uppercase;
-}
-
-.active-node-value {
-  overflow: hidden;
-  color: var(--color-text);
-  font-size: 13px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.active-arrow {
-  align-self: center;
-  color: var(--color-text-faint);
-  font-size: 15px;
 }
 
 .active-facts {
@@ -4298,16 +5140,6 @@ input {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.field-label {
-  color: var(--color-text-soft);
-  font-size: 12px;
-}
-
-.field-row {
-  display: flex;
-  gap: 8px;
 }
 
 .field-row select {
@@ -4370,37 +5202,10 @@ input {
   box-shadow: var(--elevation-1);
 }
 
-/* --------------------------------------------------------------------------
- * Profile picker
- *
- * The list of profiles used to be a bordered row per profile, each with its own
- * Duplicate and Delete buttons. It is a dropdown now, so all that survives here is
- * the confirmation panel -- the rest of this section moved to Tailwind with the
- * component that uses it.
- * ----------------------------------------------------------------------- */
-
-.profile-confirm {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px;
-  border-radius: var(--radius-sm);
-  background: var(--color-stage);
-  /* Depth, not a border: the panel sits inside the block it confirms an action in,
-     and a shadow says "closer" where a line only says "different". */
-  box-shadow: var(--elevation-2);
-}
-
 .profile-confirm p {
   margin: 0;
   font-size: 12px;
   color: var(--color-text);
-}
-
-.profile-confirm-actions {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
 }
 
 /* A destructive action is outlined, not filled: the border is the only thing
@@ -4438,39 +5243,12 @@ input {
   margin-top: 4px;
 }
 
-.probe-result {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-  padding-top: 10px;
-}
-
-.probe-verdict {
-  font-size: 11px;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  color: var(--color-text-faint);
-}
-
 .probe-result.is-ok .probe-verdict {
   color: var(--color-accent);
 }
 
 .probe-result.is-missing .probe-verdict {
   color: var(--color-danger);
-}
-
-.secret-field {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-  padding: 14px;
-  border-radius: var(--radius-sm);
-  background: var(--color-stage);
-  box-shadow: var(--elevation-1);
 }
 
 /*
@@ -4586,21 +5364,9 @@ input {
   font-size: 11.5px;
 }
 
-.setup-slot-mark {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--color-accent);
-}
-
 .setup-slot-summary li.is-owed .setup-slot-mark {
   background: transparent;
   box-shadow: inset 0 0 0 1.5px var(--color-text-faint);
-}
-
-.setup-slot-label {
-  color: var(--color-text-soft);
 }
 
 .setup-slot-state {
@@ -4615,11 +5381,6 @@ input {
 
 .setup-slot-summary li.is-owed .setup-slot-state {
   color: var(--color-danger);
-}
-
-.secret-input {
-  display: flex;
-  gap: 6px;
 }
 
 .secret-input input {
@@ -4647,17 +5408,6 @@ input {
   color: var(--color-accent);
 }
 
-.secret-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.field-hint {
-  color: var(--color-text-faint);
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-
 /* The one border left in the settings dialog, and it earns its place: a 2px rule
    down the leading edge is how the kind of message is read without reading it,
    and it survives at a glance in a way a background tint does not. The box around
@@ -4681,7 +5431,7 @@ input {
 }
 
 .notice.is-warning {
-  border-left-color: #c49a5a;
+  border-left-color: var(--color-warn);
 }
 
 /* ---- Validation ---- */
@@ -4700,7 +5450,7 @@ input {
 }
 
 .validation.is-ok svg {
-  color: #68ae82;
+  color: var(--color-ok);
   flex: 0 0 auto;
   margin-top: 2px;
 }
@@ -4710,25 +5460,16 @@ input {
 }
 
 .validation.is-error {
-  color: #d48d7d;
+  color: var(--color-danger);
 }
 
 .validation.is-warn {
-  color: #d9b27a;
+  color: var(--color-warn);
 }
 
 .validation svg {
   flex: 0 0 auto;
   margin-top: 2px;
-}
-
-.validation-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
 .validation-list .validation strong {
@@ -4742,14 +5483,6 @@ input {
   color: var(--color-text-soft);
   font-size: 11.5px;
   font-style: normal;
-}
-
-/* ---- Providers ---- */
-
-.provider-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
 
 .provider-card {
@@ -4797,20 +5530,13 @@ input {
 }
 
 .provider-status.is-ok {
-  color: #68ae82;
-  background: color-mix(in srgb, #68ae82 14%, transparent);
+  color: var(--color-ok);
+  background: color-mix(in srgb, var(--color-ok) 14%, transparent);
 }
 
 .provider-status.is-missing {
-  color: #d9b27a;
-  background: color-mix(in srgb, #c49a5a 14%, transparent);
-}
-
-.provider-caps {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 11px;
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 14%, transparent);
 }
 
 .provider-cap {
@@ -4838,12 +5564,6 @@ input {
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--color-border);
-}
-
-.provider-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 /*
@@ -4876,13 +5596,6 @@ input {
   border-top: 1px solid var(--color-border);
 }
 
-.key-slot-text {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
 /*
  * An open field takes the full width under its own row rather than being squeezed
  * into the second column, where a server address would be truncated exactly where
@@ -4893,24 +5606,8 @@ input {
   margin-top: 4px;
 }
 
-.provider-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--color-accent);
-  font-size: 11.5px;
-  text-decoration: none;
-}
-
 .provider-link:hover {
   text-decoration: underline;
-}
-
-.runtime-state {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
 }
 
 .runtime-state p {
@@ -4991,6 +5688,20 @@ input {
   background: var(--color-surface);
 }
 
+.settings-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.settings-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.settings-quiet:hover {
+  color: var(--color-text);
+}
+
 .settings-primary {
   padding: 9px 17px;
   border-radius: 10px;
@@ -5001,11 +5712,6 @@ input {
   cursor: pointer;
 }
 
-.settings-primary:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
 .settings-secondary {
   padding: 9px 15px;
   border: 1px solid var(--color-border);
@@ -5014,28 +5720,6 @@ input {
   background: var(--color-surface-muted);
   font-size: 12.5px;
   cursor: pointer;
-}
-
-.settings-secondary:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.settings-quiet {
-  padding: 9px 6px;
-  color: var(--color-text-soft);
-  background: transparent;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.settings-quiet:hover {
-  color: var(--color-text);
-}
-
-.settings-action-error {
-  color: #d48d7d;
-  font-size: 12px;
 }
 
 @media (max-width: 780px) {
@@ -5110,35 +5794,11 @@ input {
   }
 }
 
-@keyframes avatar-float {
-  50% {
-    transform: translateY(-6px) rotate(2deg);
-  }
-}
-
-@keyframes avatar-listen {
-  50% {
-    transform: scale(1.045) translateY(-3px);
-  }
-}
-
-@keyframes avatar-think {
-  0%,
-  100% {
-    transform: rotate(-2deg);
-  }
-
-  50% {
-    transform: rotate(3deg) translateY(-4px);
-  }
-}
-
-@keyframes avatar-speak {
-  50% {
-    transform: scale(1.035) translateY(-2px);
-  }
-}
-
+/* `avatar-float`, `avatar-listen`, `avatar-think` and `avatar-speak` are gone.
+   They animated `transform` on `.presence-body` while the engine animated
+   `transform` on the `<object>` inside it — two nested transforms, two unrelated
+   periods, and the outer one was always the larger. See the note on
+   `.presence-body`. */
 @keyframes rise {
   from {
     opacity: 0;
@@ -5191,40 +5851,62 @@ input {
    Responsive layout
    ========================================================================== */
 
-@media (max-width: 1050px) {
-  :root {
-    --side-panel-width: 310px;
+/* The stage's height, and the two things that trade against it.
+
+   The avatar's size and the clearance above the corner instruments are both
+   `vh` clamps, so a short window shrinks both instead of pushing the greeting off
+   the bottom of the section. This is the low end of those two clamps — not a
+   second opinion about them, just their minimum said once, beside the other media
+   queries where someone changing one will find the other.
+
+   The floor is 66px, not 40. The left-hand instrument is `bottom: 18px` and
+   38px tall, so its top edge sits at 56px from the stage's floor — a clearance
+   computed against a number rather than felt out, because at 800x600, the window
+   this app opens at, 40px leaves the clock and the greeting two pixels apart and
+   a headline one line longer would have closed it. */
+@media (max-height: 760px) {
+  .presence {
+    width: clamp(150px, 29vh, 340px);
+    height: clamp(150px, 29vh, 340px);
   }
 
-  .route-home.conversation-open {
-    grid-template-columns: var(--sidebar-width) minmax(520px, 1fr);
-  }
-
-  .conversation-panel {
-    position: absolute;
-    z-index: 10;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(var(--side-panel-width), calc(100vw - var(--sidebar-width)));
-    box-shadow: -18px 0 40px rgba(0, 0, 0, 0.16);
-  }
-
-  .topbar {
-    padding: 0 28px;
-  }
-
-  .command-bottom {
-    gap: 20px;
-    padding: 0 25px;
-  }
-
-  .voice-dock > span,
-  .stage-context {
-    display: none;
+  /* Unchanged from the floor that was measured here: at 600 tall the clock's
+     top edge sits 56px up and this stays at 66px, so the greeting clears it by
+     10px. The short window has no slack to give the avatar, which is why the
+     avatar's own short-window figure only moved 26vh -> 29vh instead of
+     following the desktop one to 33vh. */
+  .stage-copy {
+    padding-bottom: clamp(66px, 11vh, 84px);
   }
 }
 
+/* The gutter is what moves here, not the header. `.context-left` and
+   `.context-right` read the same variable, so the corner clock comes down with
+   the date instead of holding 42px while the header beside it took 28 — two
+   edges of the same box measured by two different rules. */
+@media (max-width: 1050px) {
+  .main-space {
+    --stage-gutter: 28px;
+  }
+}
+
+/* The aside, when the window is too narrow to give a third of itself to it.
+   `--conversation-width` is a fixed 380 everywhere else because a transcript
+   reads better with a measure; below 1100px the arithmetic stops working. At
+   800 — the size this app opens at — a 380px panel and a 204px rail leave the
+   stage 216px, and its header needs 398, so the three controls that close the
+   panel were being cut off by the panel they belong to. The cap is proportional
+   so the *ratio* is what is protected across the whole range, not one width. */
+@media (max-width: 1100px) {
+  :root {
+    --conversation-width: min(380px, 40vw);
+  }
+}
+
+/* The phone. Three sections stacked to their own height and the *window* doing
+   the scrolling; the rail below them is a fixed thumb bar and everything above
+   leaves 78px for it. The grid itself is set in the final mobile block at the
+   end of the sheet, which is the one that has to win. */
 @media (max-width: 780px) {
   html,
   body,
@@ -5235,55 +5917,59 @@ input {
   .lumine-app {
     min-height: 100dvh;
     height: auto;
-    grid-template-columns: 64px 1fr;
-  }
-
-  .route-home {
-    grid-template-columns: 64px 1fr;
-  }
-
-  .route-home.conversation-open {
-    grid-template-columns: 64px 1fr;
-  }
-
-  .sidebar {
-    position: sticky;
-    top: 0;
-    height: 100vh;
   }
 
   .main-space {
-    min-height: 100dvh;
-    grid-template-rows: 72px minmax(390px, 1fr) 126px 92px;
+    --stage-gutter: 20px;
   }
+}
 
-  .context-panel {
-    display: none;
-  }
+/* ==========================================================================
+   The stage header, when the stage itself is what has been squeezed
 
-  .conversation-panel {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(var(--side-panel-width), calc(100vw - 64px));
-  }
+   This is a *container* query and cannot be a media query, which is the whole
+   point. Opening the transcript removes a track from the grid without changing
+   a single pixel of viewport: at 1440 with the panel shut the stage is 856px
+   and at 1440 with it open it is 476, and no `@media` in the world can tell
+   those two apart. The widget band answered this months ago with
+   `container-type: inline-size`; the header never did, and it is why the one
+   state the app is in at first launch — transcript open, 800x600 — cut the
+   glass switch, the transcript switch and the notes switch off the right edge,
+   leaving a panel whose own close button was unreachable.
 
-  .command-stage {
-    margin: 0 12px;
-  }
+   Two things go, and only when there is genuinely no room:
 
-  .command-bottom {
-    grid-template-columns: 1fr;
-    padding: 0 18px;
-  }
+   - the identity block. "Command space" is a heading the rail already names,
+     and the date reappears on any wider window; the clock in the corner keeps
+     the time either way.
+   - the word "Search". The magnifier and the chord remain, and the chord is the
+     half that earns its place — it is what stops a shortcut reading as broken.
 
-  .quick-actions {
-    display: none;
-  }
-
+   The gutter drops with them because it is part of the same budget: 16px here
+   matches the bands below rather than inventing a fourth margin. */
+@container (max-width: 430px) {
   .topbar {
-    padding: 0 20px;
+    padding: 0 16px;
+  }
+
+  .stage-gate {
+    padding: 0 16px 22px;
+  }
+
+  .topbar-identity {
+    display: none;
+  }
+
+  .palette-hint > span {
+    display: none;
+  }
+
+  .context-left {
+    left: 16px;
+  }
+
+  .context-right {
+    right: 16px;
   }
 }
 
@@ -5308,9 +5994,7 @@ input {
     var(--color-canvas);
 }
 
-.visual-glass .sidebar,
-.visual-glass .conversation-panel,
-.visual-glass .context-panel {
+.visual-glass .sidebar {
   background: var(--glass-surface);
   border-color: var(--glass-border);
   -webkit-backdrop-filter: blur(24px) saturate(1.08);
@@ -5332,31 +6016,22 @@ input {
 }
 
 .visual-glass .command-stage {
+  /* The margin is back here, and only here. The stage is full bleed in the
+     classic presentation; in glass it is a pane inside a pane, and the pane needs
+     an inset edge to read as one. The two presentations are allowed to disagree
+     about that — which is the point of having two. */
   margin-right: 14px;
   margin-left: 14px;
   border: 1px solid color-mix(in srgb, #ffffff 12%, transparent);
+  border-radius: 22px;
   box-shadow: 0 22px 54px color-mix(in srgb, #000000 18%, transparent);
 }
 
-.visual-glass .feature-surface,
-.visual-glass .quick-actions {
-  background: color-mix(in srgb, var(--color-surface) 58%, transparent);
-  border-color: var(--glass-border);
+.visual-glass .session-dock {
+  background: var(--glass-surface);
+  border-top: 1px solid var(--glass-border);
   -webkit-backdrop-filter: blur(18px) saturate(1.06);
   backdrop-filter: blur(18px) saturate(1.06);
-}
-
-.visual-glass .voice-dock {
-  margin-right: 18px;
-  margin-left: 18px;
-  border-top-color: var(--glass-border);
-}
-
-.visual-glass .conversation-panel {
-  margin: 14px 14px 14px 0;
-  border: 1px solid var(--glass-border);
-  border-radius: 22px;
-  overflow: hidden;
 }
 
 @media (max-width: 780px) {
@@ -5369,21 +6044,16 @@ input {
     margin: 8px 8px 8px 6px;
     border-radius: 18px;
   }
-
-  .visual-glass .conversation-panel {
-    margin: 8px;
-    border-radius: 18px;
-  }
 }
 
 /* Final mobile shell overrides: the companion rail becomes thumb-friendly navigation. */
 @media (max-width: 780px) {
   .lumine-app,
   .route-home,
-  .route-home.conversation-open,
   .route-tools,
   .route-memory,
-  .route-activity {
+  .route-activity,
+  .route-focus {
     display: block;
     min-height: 100dvh;
     height: auto;
@@ -5417,15 +6087,22 @@ input {
     display: none;
   }
 
-  .sidebar nav {
+  .sidebar .sidebar-nav {
+    display: none;
+  }
+
+  /* Four cells: home, Focus, Activity, and the door to the rest. Six labelled
+     rows do not fit in a 64px thumb bar at any font size that can be read — they
+     fit as six 9px glyphs, which is a different and worse interface. */
+  .sidebar .sidebar-compact {
     width: 100%;
     max-width: 100%;
-    flex: 0 1 auto;
+    flex: 1 1 0;
     min-width: 0;
     min-height: 0;
-    overflow: hidden;
+    overflow: visible;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     align-items: stretch;
     gap: 2px;
   }
@@ -5441,7 +6118,7 @@ input {
     margin: 0;
     border: 0;
     border-radius: 12px;
-    font-size: 9px;
+    font-size: 9.5px;
     text-align: center;
   }
 
@@ -5455,14 +6132,114 @@ input {
     margin-top: 0;
   }
 
+  /* Three sections stacked to their own height, and `overflow: visible` so the
+     *window* is what scrolls.
+
+     This is the one place `--dock-h` used to be read and never declared, which
+     collapsed the second grid row to `none` and dropped the everyday band off the
+     bottom of the page entirely. Three explicit rows say the same thing the two
+     were reaching for, with nothing left to be undefined.
+
+     The middle one is a fixed `clamp` and not `auto`, because `.widget-strip-inner`
+     is `height: 100%` and a percentage against an `auto` track resolves to nothing:
+     the cards would take their natural 450px and the band would become the
+     tallest thing on the page. A track of fixed length is still definite, so the
+     band keeps a height the cards can be measured against — and, unlike on the
+     desktop grid, it is one this layout chose rather than inherited from `vh`. */
   .main-space {
     min-height: 100dvh;
+    overflow: visible;
+    grid-template-rows: auto clamp(170px, 32vh, 300px) auto;
+    /* One column, so `.main-space.is-panel-open`'s `--panel-w: 380px` has nothing
+       to widen a second track into. It was still doing its job: the template read
+       `10px 380px`, the stage was the 10px, and the aside was a full-bleed panel
+       pressed against the right edge of a phone with the home screen reduced to a
+       hairline beside it. */
+    grid-template-columns: minmax(0, 1fr);
     padding-bottom: 78px;
+  }
+
+  /* The band keeps its own scroll and its own padding at phone width: it is a
+     horizontal list of cards on a screen that has no room for a row of them. */
+  .widget-strip {
+    padding: 14px 16px 18px;
+  }
+
+  .stage-context {
+    display: none;
+  }
+
+  .stage-copy {
+    padding-bottom: 22px;
+  }
+
+  .topbar {
+    min-height: 64px;
+    padding: 0 16px;
+    gap: 10px;
+  }
+
+  .palette-hint kbd {
+    display: none;
+  }
+
+  /* The search button keeps its label only while the date can sit beside it.
+
+     At 390px the two of them squeeze `.eyebrow` until it breaks, which puts "29"
+     on a line of its own directly above "Command space" — the date and the page
+     name reading as one four-word sentence. Dropping "Search" gives the eyebrow
+     its 157px back, and an icon the button already has an `aria-label` for costs
+     less than a wrapped date costs to read. */
+  .palette-hint > span {
+    display: none;
+  }
+
+  .topbar > div:first-child {
+    min-width: 0;
+  }
+
+  .eyebrow {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .workspace-view {
     min-height: 100dvh;
     padding: 42px 24px 120px;
+  }
+
+  .focus-page {
+    min-height: 100dvh;
+    padding: 34px 20px 120px;
+  }
+
+  .focus-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .notes-surface {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .notes-list {
+    display: none;
+  }
+
+  /* `.main-space > .conversation-panel` above is (0,2,0) and decides where the
+     panel sits, so naming the panel alone cannot answer it: it kept
+     `grid-column: 2; grid-row: 1 / -1` and stayed an aside over a collapsed
+     stage. Same selector, later rule — the panel stops being a column and
+     becomes a section under the call strip, which is where a phone reads it. */
+  .main-space > .conversation-panel,
+  .main-space > .notes-panel {
+    position: relative;
+    z-index: 12;
+    grid-column: 1;
+    grid-row: auto;
+    min-height: 70vh;
+    border-left: 0;
+    box-shadow: none;
   }
 
   .workspace-header h1 {
@@ -5476,6 +6253,40 @@ input {
 
   .visual-glass .main-space {
     margin: 8px 8px 0;
-    padding-bottom: 78px;
+    padding-bottom: 86px;
   }
+}
+
+/* ==========================================================================
+   Focus, as a line rather than a ring — and deliberately the last rule here
+   ==========================================================================
+
+   There are eighteen `:focus-visible` declarations above this one, spread across
+   nine components, and every one of them draws an outline. That is the right
+   treatment for a *button*: a button is clicked, the click is over in a frame,
+   and a ring is the only thing that says which of six identical shapes was under
+   the pointer. A field that takes text is the opposite case — it is entered, the
+   cursor stays, and a box drawn around something that has just become a caret is
+   two indicators for one position, one of which is louder than the other.
+
+   So text fields get one thin line at their own bottom edge instead. It is the
+   edge the reading line already runs along, it does not consume any of the field's
+   height, and it cannot be mistaken for a border the field has while resting.
+
+   `!important`, and last, because a single rule cannot out-specify
+   `.field input:focus-visible` — that is three selectors' worth to one. The
+   alternative is eighteen edits that every future component has to remember, and
+   one edit in a place nobody has to find. The line above this one says so: the
+   mechanism is the override, not a coincidence of ordering.
+*/
+.lumine-app :is(input, textarea, select):focus,
+.lumine-app :is(input, textarea, select):focus-visible {
+  outline: none !important;
+  border-color: transparent !important;
+  border-bottom-width: 1px !important;
+  border-bottom-style: solid !important;
+  border-bottom-color: var(--color-accent) !important;
+  box-shadow: none !important;
+}
+
 }

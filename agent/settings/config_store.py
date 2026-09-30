@@ -37,15 +37,19 @@ try:
     from .session_preferences import normalize_interruption_mode
     from .validation import CONFIG_VERSION, Diagnostic, diagnostic, validate_document
 except ImportError:  # running as a top-level module
-    from llm_config import llm_config
-    from pipeline_config import cartesia_tts_settings, gemini_settings, pipeline_name
-    from providers import Capability, get_model
-    from session_preferences import normalize_interruption_mode
-    from validation import CONFIG_VERSION, Diagnostic, diagnostic, validate_document
+    from settings.llm_config import llm_config
+    from settings.pipeline_config import cartesia_tts_settings, gemini_settings, pipeline_name
+    from settings.providers import Capability, get_model
+    from settings.session_preferences import normalize_interruption_mode
+    from settings.validation import CONFIG_VERSION, Diagnostic, diagnostic, validate_document
 
 logger = logging.getLogger("lumine")
 
-AGENT_DIR = Path(__file__).resolve().parent
+# This module now lives in ``agent/settings/``, so ``__file__`` points one level
+# deeper than the directory it is describing. ``AGENT_DIR`` is the *agent* folder
+# -- it is where ``.env`` and the saved ``lumine.config.json`` live, and Tauri
+# resolves that same folder independently -- hence ``parent.parent``.
+AGENT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_FILENAME = "lumine.config.json"
 CONFIG_PATH_ENV = "LUMINE_CONFIG_PATH"
 
@@ -348,7 +352,7 @@ class ResolvedStage:
 
 @dataclass(frozen=True)
 class ResolvedProfile:
-    """A profile normalized for :mod:`agent.pipeline_factory`.
+    """A profile normalized for :mod:`agent.pipeline.pipeline_factory`.
 
     Every field is already filled in from the environment or the catalog, so the
     factory never has to consult configuration itself. That keeps configuration

@@ -41,7 +41,7 @@ export function AiSaveFooter({
       <button type="button" className="settings-primary" onClick={onSave} disabled={!canSave}>
         {saving ? "Saving…" : `Save ${what}`}
       </button>
-      {saveError && <span className="settings-action-error">{saveError}</span>}
+      {saveError && <span className="settings-action-error text-danger text-[12px]">{saveError}</span>}
     </footer>
   );
 }

@@ -61,17 +61,17 @@ export function ActiveCard({ catalog, profile, isEnvironmentBacked, hasUnsavedCh
     return (
       <article className="active-card">
         {header}
-        <div className="active-flow">
+        <div className="active-flow flex items-stretch gap-2.5 mt-4.5 flex-wrap">
           <div className="active-node">
             <Icon name="mic" size={16} />
             <span className="active-node-label">Realtime</span>
-            <span className="active-node-value">{stageLabel(catalog, realtime)}</span>
+            <span className="active-node-value overflow-hidden text-foreground text-[13px] font-medium text-ellipsis whitespace-nowrap">{stageLabel(catalog, realtime)}</span>
           </div>
-          <span className="active-arrow">→</span>
+          <span className="active-arrow self-center text-faint text-[15px]">→</span>
           <div className="active-node">
             <Icon name="waveform" size={16} />
             <span className="active-node-label">{customTts ? "Custom TTS" : "Model voice"}</span>
-            <span className="active-node-value">
+            <span className="active-node-value overflow-hidden text-foreground text-[13px] font-medium text-ellipsis whitespace-nowrap">
               {customTts ? stageLabel(catalog, ttsRef) : (realtime.voice ?? "Model default")}
             </span>
           </div>
@@ -92,23 +92,23 @@ export function ActiveCard({ catalog, profile, isEnvironmentBacked, hasUnsavedCh
   return (
     <article className="active-card">
       {header}
-      <div className="active-flow">
+      <div className="active-flow flex items-stretch gap-2.5 mt-4.5 flex-wrap">
         <div className="active-node">
           <Icon name="mic" size={16} />
           <span className="active-node-label">STT</span>
-          <span className="active-node-value">{stageLabel(catalog, pipeline?.stt)}</span>
+          <span className="active-node-value overflow-hidden text-foreground text-[13px] font-medium text-ellipsis whitespace-nowrap">{stageLabel(catalog, pipeline?.stt)}</span>
         </div>
-        <span className="active-arrow">→</span>
+        <span className="active-arrow self-center text-faint text-[15px]">→</span>
         <div className="active-node">
           <Icon name="spark" size={16} />
           <span className="active-node-label">LLM</span>
-          <span className="active-node-value">{stageLabel(catalog, pipeline?.llm)}</span>
+          <span className="active-node-value overflow-hidden text-foreground text-[13px] font-medium text-ellipsis whitespace-nowrap">{stageLabel(catalog, pipeline?.llm)}</span>
         </div>
-        <span className="active-arrow">→</span>
+        <span className="active-arrow self-center text-faint text-[15px]">→</span>
         <div className="active-node">
           <Icon name="waveform" size={16} />
           <span className="active-node-label">TTS</span>
-          <span className="active-node-value">{stageLabel(catalog, pipeline?.tts)}</span>
+          <span className="active-node-value overflow-hidden text-foreground text-[13px] font-medium text-ellipsis whitespace-nowrap">{stageLabel(catalog, pipeline?.tts)}</span>
         </div>
       </div>
       <ul className="active-facts">

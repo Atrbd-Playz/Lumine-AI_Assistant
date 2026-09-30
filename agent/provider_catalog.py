@@ -20,9 +20,9 @@ import json
 import sys
 
 try:
-    from .providers import CATALOG_VERSION, catalog_issues, to_public_catalog
+    from .settings.providers import CATALOG_VERSION, catalog_issues, to_public_catalog
 except ImportError:  # running as `python agent/provider_catalog.py`
-    from providers import CATALOG_VERSION, catalog_issues, to_public_catalog
+    from settings.providers import CATALOG_VERSION, catalog_issues, to_public_catalog
 
 
 def main(argv: list[str] | None = None) -> int:

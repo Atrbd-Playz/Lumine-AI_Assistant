@@ -5,9 +5,9 @@ import typing
 import unittest
 from pathlib import Path
 
-from agent import providers as providers_module
+from agent.settings import providers as providers_module
 from agent.provider_catalog import main as catalog_main
-from agent.providers import (
+from agent.settings.providers import (
     CAPABILITIES,
     CATALOG_VERSION,
     MODALITIES,
@@ -101,7 +101,7 @@ class CatalogIntegrityTests(unittest.TestCase):
         # `DEFAULT_GEMINI_VOICE` is what an environment-derived profile uses when
         # there is no saved document. If they disagree, a fresh install and a
         # configured one sound different for no reason the user can see.
-        from agent.pipeline_config import DEFAULT_GEMINI_VOICE
+        from agent.settings.pipeline_config import DEFAULT_GEMINI_VOICE
 
         google = PROVIDERS["google"]
         defaults = [voice.id for voice in google.voices if voice.default]
@@ -267,6 +267,30 @@ class CatalogIntegrityTests(unittest.TestCase):
         # dropdown would therefore produce a setting that always fails.
         self.assertEqual(definition.values, ())
         self.assertEqual(definition.control_kind, "slider")
+
+    def test_the_sonic_3_gate_matches_the_plugins_own_predicate(self):
+        """`_CARTESIA_SONIC_3_MODELS` is a copy, so something has to police it.
+
+        It is a copy for the same reason the emotion list is: `providers.py`
+        stays free of a livekit import. The cost is a set that can fall behind
+        the plugin, and a gate one model wide in either direction is invisible
+        until someone buys a voice that ignores the slider.
+
+        Expressed over the catalog's own model ids rather than over a fixed
+        list, so adding `sonic-4` without touching the gate fails here instead
+        of failing in somebody's session.
+        """
+        try:
+            from livekit.plugins.cartesia.models import _is_sonic_3
+        except ImportError:  # pragma: no cover - plugin not installed
+            self.skipTest("livekit-plugins-cartesia is not installed")
+
+        cartesia = PROVIDERS["cartesia"]
+        self.assertEqual(
+            tuple(model.id for model in cartesia.models if _is_sonic_3(model.id)),
+            providers_module._CARTESIA_SONIC_3_MODELS,
+            "the catalog's sonic-3 gate has drifted from the plugin's predicate",
+        )
 
     def test_the_default_realtime_model_is_recommended_and_available(self):
         # Google labels 3.1 and 2.5 Live legacy and points at 3.8. A deprecated
@@ -626,6 +650,13 @@ class PublicCatalogTests(unittest.TestCase):
             # rather than from a provider branch. `hidden` is what keeps that
             # argument out of the screen.
             "default", "hidden",
+            # Which models an option does anything on, and whether its value
+            # leaves the worker as an integer. Both are numbers and id lists
+            # rather than credentials -- `integer` exists because a sample rate
+            # sent as `"24000"` is a request the API refuses, and `models`
+            # because Cartesia honours `speed` on sonic-3 alone, so a slider
+            # shown against sonic-2 is a control that does nothing.
+            "integer",
             "probe", "method", "url", "authHeader", "authPrefix", "headers", "invalidStatus", "costs",
             # How a probe authenticates, and -- for the minted-token kind -- the
             # rooted path it appends to the server address. Both are request
@@ -848,7 +879,7 @@ class CatalogCliTests(unittest.TestCase):
         self.assertEqual(catalog_main(["--check"]), 0)
 
     def test_check_mode_fails_on_a_broken_catalog(self):
-        import agent.providers as providers_module
+        import agent.settings.providers as providers_module
 
         broken = dict(PROVIDERS["groq"].__dict__)
         broken["models"] = ()

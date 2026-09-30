@@ -13,8 +13,8 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from agent.config_store import ResolvedProfile, ResolvedStage, resolve_profile
-from agent.pipeline_factory import (
+from agent.settings.config_store import ResolvedProfile, ResolvedStage, resolve_profile
+from agent.pipeline.pipeline_factory import (
     ConfigurationRejected,
     build_resolved,
     provider_module,
@@ -54,13 +54,13 @@ class ProviderModuleTests(unittest.TestCase):
         self.assertIsNone(provider_module("acme"))
 
     def test_a_missing_plugin_produces_an_actionable_error(self):
-        with mock.patch("agent.pipeline_factory.provider_module", return_value=None):
+        with mock.patch("agent.pipeline.pipeline_factory.provider_module", return_value=None):
             with self.assertRaises(RuntimeError) as caught:
                 require_module("acme", "speech")
         self.assertIn("livekit-plugins-acme", str(caught.exception))
 
     def test_a_missing_plugin_names_the_capability(self):
-        with mock.patch("agent.pipeline_factory.provider_module", return_value=None):
+        with mock.patch("agent.pipeline.pipeline_factory.provider_module", return_value=None):
             with self.assertRaises(RuntimeError) as caught:
                 require_module("acme", "speech-to-text")
         self.assertIn("speech-to-text", str(caught.exception))
@@ -101,10 +101,10 @@ class IndependentStageSelectionTests(unittest.TestCase):
             STT=lambda **kw: recorded.setdefault("stt", kw) or "google-stt-instance"
         )
         installed = {"groq": groq, "cartesia": cartesia, "silero": silero, "google": google}
-        with mock.patch("agent.pipeline_factory._groq", groq), mock.patch(
-            "agent.pipeline_factory._cartesia", cartesia
-        ), mock.patch("agent.pipeline_factory._silero", silero), mock.patch(
-            "agent.pipeline_factory.provider_module", side_effect=lambda pid: installed.get(pid)
+        with mock.patch("agent.pipeline.pipeline_factory._groq", groq), mock.patch(
+            "agent.pipeline.pipeline_factory._cartesia", cartesia
+        ), mock.patch("agent.pipeline.pipeline_factory._silero", silero), mock.patch(
+            "agent.pipeline.pipeline_factory.provider_module", side_effect=lambda pid: installed.get(pid)
         ):
             components, _ = asyncio.run(build_resolved(resolved, validate=False))
         return components, recorded
@@ -184,8 +184,8 @@ class RealtimeAssemblyTests(unittest.TestCase):
 
     def test_a_plain_realtime_profile_has_no_external_tts(self):
         fake_google = SimpleNamespace(realtime=SimpleNamespace(RealtimeModel=lambda **kw: SimpleNamespace(**kw)))
-        with mock.patch("agent.pipeline_factory._google", fake_google), mock.patch(
-            "agent.pipeline_factory.provider_module", return_value=fake_google
+        with mock.patch("agent.pipeline.pipeline_factory._google", fake_google), mock.patch(
+            "agent.pipeline.pipeline_factory.provider_module", return_value=fake_google
         ):
             components, _ = asyncio.run(build_resolved(self._realtime(), validate=False))
         self.assertIsNone(components.tts)
@@ -200,10 +200,10 @@ class RealtimeAssemblyTests(unittest.TestCase):
             output_mode="custom_tts",
             tts=stage("cartesia", "sonic-3", voice="f786b574-daa5-4673-aa0c-cbe3e8534c02", language="en"),
         )
-        with mock.patch("agent.pipeline_factory._google", fake_google), mock.patch(
-            "agent.pipeline_factory._cartesia", fake_cartesia
+        with mock.patch("agent.pipeline.pipeline_factory._google", fake_google), mock.patch(
+            "agent.pipeline.pipeline_factory._cartesia", fake_cartesia
         ), mock.patch(
-            "agent.pipeline_factory.provider_module",
+            "agent.pipeline.pipeline_factory.provider_module",
             side_effect=lambda pid: {"google": fake_google, "cartesia": fake_cartesia}.get(pid),
         ):
             components, _ = asyncio.run(build_resolved(resolved, validate=False))
@@ -234,8 +234,8 @@ class RealtimeAssemblyTests(unittest.TestCase):
         fake_google = SimpleNamespace(
             realtime=SimpleNamespace(RealtimeModel=lambda **kw: captured.update(kw) or SimpleNamespace(**kw))
         )
-        with mock.patch("agent.pipeline_factory._google", fake_google), mock.patch(
-            "agent.pipeline_factory.provider_module", return_value=fake_google
+        with mock.patch("agent.pipeline.pipeline_factory._google", fake_google), mock.patch(
+            "agent.pipeline.pipeline_factory.provider_module", return_value=fake_google
         ), mock.patch("google.genai"):
             asyncio.run(build_resolved(self._realtime(interruption_mode="finish_response"), validate=False))
         # Realtime owns turn detection, so "finish reply" is expressed on the
@@ -249,7 +249,7 @@ class RealtimeAssemblyTests(unittest.TestCase):
         rather than a session that cannot be interrupted correctly.
         """
         resolved = self._realtime(realtime=stage("openai", "gpt-realtime", voice="ash"))
-        with mock.patch("agent.pipeline_factory.require_module") as require:
+        with mock.patch("agent.pipeline.pipeline_factory.require_module") as require:
             # A plugin that exposes no `realtime` attribute.
             del require.return_value.realtime
             with self.assertRaises(RuntimeError) as caught:

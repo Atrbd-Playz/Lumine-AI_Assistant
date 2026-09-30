@@ -23,7 +23,7 @@ export class DesktopUnavailableError extends Error {
 }
 
 /**
- * The catalog shape this screen was written against. See `agent/providers.py`.
+ * The catalog shape this screen was written against. See `agent/settings/providers.py`.
  *
  * v9 added a probe's `authKind`/`tokenPath`, which is how LiveKit became
  * testable: its credential is a URL, an API key and an API secret used together
@@ -46,10 +46,10 @@ export class DesktopUnavailableError extends Error {
  * out of the screen: a required value the user cannot usefully change is not a
  * setting, and drawing it would present a non-problem as a setup step.
  *
- * Bump in step with `CATALOG_VERSION` in `agent/providers.py`; a test asserts the
+ * Bump in step with `CATALOG_VERSION` in `agent/settings/providers.py`; a test asserts the
  * two agree.
  */
-const CATALOG_VERSION = 12;
+const CATALOG_VERSION = 13;
 
 export class CatalogTooNewError extends Error {
   constructor(received: number) {

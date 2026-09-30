@@ -23,10 +23,68 @@ intent. See `docs/ai-control-center.md` for why.
 The voice path is real. The desktop orchestration *around* it — tray, window
 lifecycle, wake word, sidecar packaging — is not built yet.
 
+## Directory layout
+
+The module list was a flat folder of thirty files, so the ones that answer a
+common question now live together. Two constraints shaped the split, and both are
+load-bearing:
+
+- **Everything Tauri runs by filename stays at `agent/` root.** `lib.rs`,
+  `credential_probe.rs` and `setup_status.rs` call
+  `python_env::run_agent_script("<name>.py")`, which resolves against the agent
+  directory. Moving `validate_config.py`, `provider_catalog.py`, `tool_catalog.py`,
+  `voice_preview.py`, `local_models.py` or `provider_probe.py` would break the
+  settings, providers and voice screens at runtime, not at build time.
+- **A module is loaded two ways**, so each import is a `try: from .x import` /
+  `except ImportError: from x import` pair. Through a subpackage the relative
+  branch is the live one; as a bare top-level module — `python agent/agent.py`,
+  with `agent/` on `sys.path` — the fallback is. `tests/test_import_shapes.py`
+  exercises both, and its module list names regrouped modules *through* their
+  subpackage (`settings.config_store`, not `config_store`).
+
+```text
+agent/
+├── agent.py                  worker entrypoint: AgentServer, per-room sessions
+├── settings/                 what a profile says, and whether it is valid
+│   ├── config_store.py       precedence: saved document > agent/.env > defaults
+│   ├── validation.py         pure rules over plain dicts -> diagnostics
+│   ├── providers.py          the catalog: providers, models, voices, capabilities
+│   ├── llm_config.py         Groq/cascade budget and retry settings
+│   ├── pipeline_config.py    env-backed pipeline settings
+│   └── session_preferences.py  dispatch metadata -> per-job preferences
+├── pipeline/
+│   └── pipeline_factory.py   capability-driven stage builders
+├── runtime/                  behaviour that only matters during a live session
+│   ├── runtime_events.py     LUMINE_EVENT records and the tool-lifecycle bridge
+│   ├── failure_gate.py       consecutive-failure circuit and the spoken apology
+│   ├── llm_errors.py         status + message -> a named, sayable failure
+│   ├── context_trim.py       chat context trimmed to an item budget
+│   ├── latency.py            turn latency recorder
+│   ├── emotion_contract.py   canonical emotion vocabulary and extraction
+│   └── emotion_voice.py      the same signal as a per-turn TTS control
+├── tools/                    model-facing tools (registry is the source of truth)
+├── prompts/                  persona_core.md (always sent) and persona.md (recall)
+├── tests/                    the suite; discovers test_*.py from the repo root
+├── validate_config.py        CLI -- describe and validate a configuration
+├── provider_catalog.py       CLI -- redacted provider catalog
+├── tool_catalog.py           CLI -- tool registry for the Tools page
+├── voice_preview.py          CLI -- speak one phrase with a candidate TTS
+├── local_models.py           CLI -- ask a local server which models it has
+├── provider_probe.py         CLI -- one cheap authenticated request per provider
+├── livekit_token.py          helper -- mint a participant token
+├── livekit_dispatch.py       helper -- dispatch an agent to a room
+├── livekit_room.py           helper -- inspect or delete a room
+├── multisession_check.py     check -- three sequential sessions at one worker
+└── broken_stdout_check.py    check -- a dead stdout must not kill the job
+```
+
+The grouping is a reading order, not a layering rule: `settings` resolves a
+profile, `pipeline` builds stages from it, `runtime` behaves while it runs.
+
 ## Verified current architecture
 
 The session components are no longer a single hardcoded block in `agent.py`. They
-are built per job by `agent/pipeline_factory.py`, driven by a **voice profile**:
+are built per job by `agent/pipeline/pipeline_factory.py`, driven by a **voice profile**:
 the saved `lumine.config.json` if one exists, otherwise the environment-derived
 profile. The two stacks look like this.
 
@@ -70,8 +128,8 @@ leaves nothing to say with — the turn produces an internal monologue and no au
 pay latency and tokens for reasoning the user will never hear.
 
 The values above are the **defaults**, not hardcoding. Every one of them is
-declared per model in `agent/providers.py` and overridable per profile, and
-`agent/validation.py` refuses a combination the runtime would reject. The factory
+declared per model in `agent/settings/providers.py` and overridable per profile, and
+`agent/settings/validation.py` refuses a combination the runtime would reject. The factory
 itself has no provider branches.
 
 ## Agent lifecycle
@@ -171,7 +229,7 @@ Camera is unaffected.
   `gemini-3.8-live-extended-thinking`, or a deprecated `gemini-3.1-flash-live-preview`
 - Status: implemented and active. All Gemini Live models are native-audio, so a
   realtime profile cannot also use a separate TTS; validation blocks that pairing.
-- The catalog in `agent/providers.py` is checked against the plugin's own
+- The catalog in `agent/settings/providers.py` is checked against the plugin's own
   `KNOWN_GEMINI_API_MODELS` by a test, because the plugin rejects a model id it
   does not recognise.
 
@@ -217,10 +275,10 @@ a deletion of the persona's detail.
 - [agent/agent.py](agent/agent.py) calls `load_dotenv()`, so environment variables are
   expected to be loaded from a local environment file if present.
 - Precedence is **saved `lumine.config.json` > `agent/.env` > catalog defaults**,
-  implemented in `agent/config_store.py`. `config_path()` searches
+  implemented in `agent/settings/config_store.py`. `config_path()` searches
   `LUMINE_CONFIG_PATH`, then the desktop local-data directory, then
   `agent/lumine.config.json`.
-- [agent/providers.py](agent/providers.py) is the schema. Every provider declares its
+- [agent/settings/providers.py](agent/settings/providers.py) is the schema. Every provider declares its
   credential variables as `KeySlot`s with a `kind` and a `label`, so the UI is handed
   one field per variable and holds no provider knowledge.
 - `agent/.env.example` ships, and **every credential line in it is empty**. An empty
@@ -248,9 +306,9 @@ Current verified implementation:
 - `logging.basicConfig(level=logging.INFO)`
 - `logger = logging.getLogger("lumine")`
 - a startup log line prints the room name
-- `agent/llm_errors.py` classifies a failed LLM call into `rate_limited`,
+- `agent/runtime/llm_errors.py` classifies a failed LLM call into `rate_limited`,
   `quota_exhausted`, `context_length`, `auth`, `provider_down`, or `unknown`
-- `agent/failure_gate.py` counts consecutive failures, opens a circuit after
+- `agent/runtime/failure_gate.py` counts consecutive failures, opens a circuit after
   three, and speaks one short apology per opening
 - classified failures are published on the `lumine.notice` data channel so the
   desktop app can show a toast
@@ -376,7 +434,7 @@ Platform-specific considerations that should be isolated later include:
 - [x] start / stop / restart commands, invoked by the voice path
 - [x] health/status monitoring — a readiness gate in Rust, and a live event
       subscription in `lib/agentRuntime.ts`
-- [x] structured config contract (`lumine.config.json` + `agent/validation.py`)
+- [x] structured config contract (`lumine.config.json` + `agent/settings/validation.py`)
 - [ ] app-sidecar packaging
 - [~] graceful shutdown handling
 - [ ] crash recovery
@@ -436,5 +494,5 @@ VAD, STT, LLM and TTS, a failure path that names its cause, and a catalog that i
 single source of truth for what can be configured. The next step is not to rewrite the
 agent, but to package it as a real sidecar and finish the desktop shell around it.
 
-`../docs/ai-control-center.md` is the decision record, and `agent/providers.py` is
+`../docs/ai-control-center.md` is the decision record, and `agent/settings/providers.py` is
 the executable authority. Where the three disagree, the code wins.

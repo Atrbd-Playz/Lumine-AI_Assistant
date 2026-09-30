@@ -16,23 +16,37 @@ import unittest
 from pathlib import Path
 
 AGENT_DIR = Path(__file__).resolve().parent.parent
+
+# The script path -- what ``python agent/agent.py`` actually exercises -- resolves
+# each module by its bare name with ``agent/`` on ``sys.path``. A module regrouped
+# into a subpackage is therefore imported *through* that subpackage:
+# ``settings.config_store``, not ``config_store``. Listing the old flat name here
+# would pass silently while production broke.
 AGENT_MODULES = [
     "agent",
-    "emotion_contract",
-    "latency",
-    "runtime_events",
-    "session_preferences",
-    "llm_config",
-    "pipeline_config",
-    "providers",
+    # agent/ root -- entrypoint, the CLIs Tauri runs by filename, LiveKit helpers
     "provider_catalog",
-    "validation",
-    "config_store",
     "validate_config",
-    "pipeline_factory",
     "livekit_token",
     "livekit_dispatch",
     "livekit_room",
+    # settings/
+    "settings.config_store",
+    "settings.validation",
+    "settings.llm_config",
+    "settings.pipeline_config",
+    "settings.session_preferences",
+    "settings.providers",
+    # pipeline/
+    "pipeline.pipeline_factory",
+    # runtime/
+    "runtime.runtime_events",
+    "runtime.failure_gate",
+    "runtime.llm_errors",
+    "runtime.context_trim",
+    "runtime.latency",
+    "runtime.emotion_contract",
+    "runtime.emotion_voice",
 ]
 
 
@@ -77,7 +91,12 @@ class TopLevelImportTests(unittest.TestCase):
         import ast
 
         offenders: list[str] = []
-        for path in sorted(AGENT_DIR.glob("*.py")):
+        # Scan the regrouped subpackages as well. The glob used to reach only the
+        # flat `agent/` folder, so moving a module into one of these would have
+        # quietly taken it out of range of the very guard written for it.
+        roots = [AGENT_DIR] + [AGENT_DIR / d for d in ("settings", "pipeline", "runtime")]
+        paths = [p for root in roots for p in sorted(root.glob("*.py"))]
+        for path in paths:
             if path.name in {"__init__.py", "agent.py"}:
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -96,7 +115,7 @@ class TopLevelImportTests(unittest.TestCase):
             "import sys\n"
             f"sys.path.insert(0, {str(AGENT_DIR)!r})\n"
             "import asyncio\n"
-            "import pipeline_factory\n"
+            "import pipeline.pipeline_factory as pipeline_factory\n"
             "resolved = pipeline_factory.resolve_profile(\n"
             "    pipeline_factory.env_profile('legacy_cascade'),\n"
             "    interruption_mode='barge_in',\n"
@@ -137,7 +156,7 @@ class TopLevelImportTests(unittest.TestCase):
 class PackageImportTests(unittest.TestCase):
     def test_modules_also_import_as_a_package(self):
         script = (
-            "import agent.config_store, agent.validation, agent.pipeline_factory\n"
+            "import agent.settings.config_store, agent.settings.validation, agent.pipeline.pipeline_factory\n"
             "print('ok')\n"
         )
         result = subprocess.run(

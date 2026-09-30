@@ -1,7 +1,16 @@
 export type ConversationRole = "user" | "lumine" | "system";
 export type ConversationMessageType = "text" | "voice";
 export type ConversationMessageStatus = "processing" | "complete" | "error";
-export type ConversationAgentStatus = "idle" | "listening" | "thinking" | "speaking" | "error";
+/**
+ * The transcript header's status.
+ *
+ * `connecting` is here because the header used to say "Ready when you are" while
+ * a room was still being negotiated — which is the transcript's version of the
+ * same lie the avatar was telling, in the one place a person reads a sentence
+ * rather than watches a face. Widen the union only with a line of copy to go with
+ * it; `ConversationPanel` has a `Record` over it and will otherwise not compile.
+ */
+export type ConversationAgentStatus = "idle" | "connecting" | "listening" | "thinking" | "speaking" | "error";
 
 export type ConversationEmotion = {
   primary: string;

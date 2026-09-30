@@ -1,6 +1,6 @@
 import unittest
 
-from agent.emotion_contract import (
+from agent.runtime.emotion_contract import (
     EmotionIntent,
     EmotionResponse,
     build_emotion_event,

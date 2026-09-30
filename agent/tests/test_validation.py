@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from agent.validation import (
+from agent.settings.validation import (
     env_credential_status,
     has_errors,
     validate_document,
@@ -168,8 +168,8 @@ class RealtimeValidationTests(unittest.TestCase):
 
     def test_custom_tts_is_allowed_when_the_model_supports_text_only(self):
         # Simulate a future non-native-audio model by patching the catalog entry.
-        import agent.providers as providers_module
-        import agent.validation as validation_module
+        import agent.settings.providers as providers_module
+        import agent.settings.validation as validation_module
 
         original = providers_module.PROVIDERS["google"]
         # Every current Gemini Live model is native audio, so the text-only branch
@@ -202,8 +202,8 @@ class RealtimeValidationTests(unittest.TestCase):
             validation_module.PROVIDERS["google"] = original
 
     def test_model_voice_requires_the_model_to_have_voices(self):
-        import agent.providers as providers_module
-        import agent.validation as validation_module
+        import agent.settings.providers as providers_module
+        import agent.settings.validation as validation_module
 
         original = providers_module.PROVIDERS["google"]
         model = original.get_model("gemini-3.8-live")
@@ -228,8 +228,8 @@ class RealtimeValidationTests(unittest.TestCase):
         self.assertEqual(validate_profile(profile, ALL_PRESENT), [])
 
     def test_unsupported_interruption_mode_names_the_sdk_constraint(self):
-        import agent.providers as providers_module
-        import agent.validation as validation_module
+        import agent.settings.providers as providers_module
+        import agent.settings.validation as validation_module
 
         original = providers_module.PROVIDERS["google"]
         model = original.get_model("gemini-3.8-live")

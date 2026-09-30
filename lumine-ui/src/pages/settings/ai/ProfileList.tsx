@@ -118,7 +118,7 @@ export function ProfileList({
           <>
             <button
               type="button"
-              className="settings-quiet"
+              className="settings-quiet py-[9px] px-1.5 text-soft bg-transparent text-[12px] cursor-pointer"
               title="Copy this profile and switch to the copy"
               onClick={() => onMutate((current) => duplicateProfile(current, active.id))}
             >
@@ -127,7 +127,7 @@ export function ProfileList({
             {anyDeletable && (
               <button
                 type="button"
-                className="settings-quiet"
+                className="settings-quiet py-[9px] px-1.5 text-soft bg-transparent text-[12px] cursor-pointer"
                 onClick={() => setConfirmingDelete((open) => !open)}
               >
                 Delete
@@ -138,12 +138,12 @@ export function ProfileList({
       </div>
 
       {confirmingDelete && active && (
-        <div className="profile-confirm">
+        <div className="profile-confirm flex flex-col gap-2 p-3 rounded-sm bg-[var(--color-stage)] shadow-elev-2">
           <p>
             Delete <strong>{active.name}</strong>?
             {active.id === document.activeProfileId && " Another profile will take over."}
           </p>
-          <div className="profile-confirm-actions">
+          <div className="profile-confirm-actions flex gap-1.5 flex-wrap">
             <button type="button" className="settings-secondary" onClick={() => setConfirmingDelete(false)}>
               Keep it
             </button>
@@ -162,9 +162,9 @@ export function ProfileList({
       )}
 
       {hasUnsavedChanges && (
-        <p className="field-hint">
+        <p className="field-hint text-faint text-[11.5px] leading-[1.5]">
           Changes are part of the draft. Save to make them active, or{" "}
-          <button type="button" className="settings-quiet" onClick={onDiscard}>
+          <button type="button" className="settings-quiet py-[9px] px-1.5 text-soft bg-transparent text-[12px] cursor-pointer" onClick={onDiscard}>
             discard
           </button>
           .

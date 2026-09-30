@@ -366,7 +366,7 @@ the packaging decision, not a failure.
   list belongs. A native popup is drawn by the OS, so it does not belong to the app.
 - **The catalog decides, the UI draws.** Whether a setting exists, whether it is
   advanced, what its default is, and whether it is hidden are all declared in
-  `agent/providers.py` and published. The UI holds no provider knowledge, including
+  `agent/settings/providers.py` and published. The UI holds no provider knowledge, including
   no knowledge of which environment variable a key goes in.
 
 ## Summary

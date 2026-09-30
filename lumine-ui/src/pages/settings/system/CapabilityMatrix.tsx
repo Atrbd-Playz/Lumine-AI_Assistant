@@ -97,14 +97,14 @@ export function CapabilityMatrix({ catalog }: { catalog: ProviderCatalog }) {
             {rows.map(({ provider, model }) => (
               <tr key={`${provider}-${model.id}`} className={model.status === "retired" ? "is-retired" : undefined}>
                 <th scope="row">
-                  <span className="capability-model">{model.label}</span>
-                  <span className="capability-provider">{provider}</span>
+                  <span className="capability-model block text-foreground text-[13px] leading-[1.3]">{model.label}</span>
+                  <span className="capability-provider block mt-px text-faint text-[11px]">{provider}</span>
                 </th>
-                <td className="capability-stage">{STAGE_LABEL[model.capability] ?? model.capability}</td>
+                <td className="capability-stage text-soft text-[12px] whitespace-nowrap">{STAGE_LABEL[model.capability] ?? model.capability}</td>
                 {COLUMNS.map((column) => {
                   const yes = model.inputModalities.includes(column.id);
                   return (
-                    <td key={column.id} className="capability-cell">
+                    <td key={column.id} className="capability-cell text-center">
                       {yes ? (
                         <>
                           <span className="capability-dot" aria-hidden="true" />

@@ -47,12 +47,12 @@ export function SelfView({ stream, source, isPublished }: SelfViewProps) {
   return (
     <aside className={`self-view self-view--${source}`} aria-label="Your camera preview">
       <video ref={videoRef} className="self-view-video" muted playsInline autoPlay />
-      <div className="self-view-bar">
-        <span className="self-view-source">
+      <div className="self-view-bar flex items-center justify-between gap-2 py-1.5 px-[9px] bg-surface">
+        <span className="self-view-source inline-flex items-center gap-1 text-soft text-[11px]">
           <Icon name={source === "camera" ? "video" : "monitor"} size={12} />
           {source === "camera" ? "Camera" : "Screen"}
         </span>
-        <span className={"self-view-badge" + (isPublished ? " is-shared" : "")}>
+        <span className={"self-view-badge py-0.5 px-1.5 rounded-full text-faint bg-surface-muted text-[10px] tracking-[0.01em] whitespace-nowrap" + (isPublished ? " is-shared" : "")}>
           {isPublished ? "Shared with Lumine" : "Only you can see this"}
         </span>
       </div>

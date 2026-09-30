@@ -16,8 +16,8 @@ import sys
 import unittest
 from unittest import mock
 
-from agent import runtime_events
-from agent.runtime_events import RuntimeEventPublisher, write_event_line
+from agent.runtime import runtime_events
+from agent.runtime.runtime_events import RuntimeEventPublisher, write_event_line
 
 
 class _BrokenStream(io.TextIOBase):
@@ -135,7 +135,7 @@ class PublisherSurfaceTests(unittest.TestCase):
                 )
 
     def test_the_bridge_keeps_its_entry_points(self):
-        from agent.runtime_events import ToolEventBridge
+        from agent.runtime.runtime_events import ToolEventBridge
 
         bridge = ToolEventBridge(RuntimeEventPublisher(room=None, room_name="r"))
         for name in ("handle", "handle_function_tools"):
@@ -145,7 +145,7 @@ class PublisherSurfaceTests(unittest.TestCase):
     def test_the_module_level_writer_is_not_a_method(self):
         # It must be reachable both ways: the publisher uses it, and `agent.py`
         # imports it directly for the bootstrap events.
-        from agent.runtime_events import write_event_line
+        from agent.runtime.runtime_events import write_event_line
 
         self.assertTrue(callable(write_event_line))
         self.assertNotIn("write_event_line", vars(RuntimeEventPublisher))

@@ -35,9 +35,9 @@ import time
 from typing import Any
 
 try:
-    from .providers import PROVIDERS, ProbeDefinition, get_provider
+    from .settings.providers import PROVIDERS, ProbeDefinition, get_provider
 except ImportError:  # running as `python agent/provider_probe.py`
-    from providers import PROVIDERS, ProbeDefinition, get_provider
+    from settings.providers import PROVIDERS, ProbeDefinition, get_provider
 
 #: Long enough for a cold TLS handshake on a slow link, short enough that a
 #: wedged provider cannot leave the settings screen waiting.

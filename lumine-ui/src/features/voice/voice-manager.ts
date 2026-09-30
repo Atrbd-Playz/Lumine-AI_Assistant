@@ -4,6 +4,7 @@ import { LIVEKIT_URL, getLiveKitToken } from "../../lib/livekit";
 import { resolveEmotionIntent } from "../emotion/emotion-controller";
 import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
 import { interruptionMetadata, type InterruptionMode } from "./interruption";
+import { AudioLevelMonitor } from "./audioLevel";
 
 export type LumineVoiceStatus =
   | "disconnected"
@@ -98,10 +99,39 @@ type SessionContext = {
    */
   publishedVideo?: LocalVideoTrack;
   publishedVideoSource?: "camera" | "screen";
+  /**
+   * Lumine's loudness, for the presence layer.
+   *
+   * Manager-scoped, not per session. See `subscribeAudioLevel` for why, and
+   * `AudioLevelMonitor.attach` for how one context is re-pointed across calls
+   * rather than accumulated.
+   */
   disposed: boolean;
 };
 
 const AGENT_IDENTITY = "Lumine";
+
+/**
+ * The room topic a typed message must be sent on to become a turn.
+ *
+ * `livekit-client` does not export this, so it is declared here rather than
+ * imported, and it is the one string in this module that can rot silently. It
+ * mirrors `livekit.agents.types.TOPIC_CHAT`, which `RoomIO.__init__` registers
+ * unconditionally:
+ *
+ *     self._room.register_text_stream_handler(TOPIC_CHAT, self._on_chat_text_stream)
+ *
+ * so a message on this topic arrives as a `TextInputEvent` and the model answers
+ * it out loud, through the same pipeline, persona and tools as a spoken turn.
+ * Sending on any other topic is not an error anywhere — it simply never reaches
+ * her, which reads as a broken app rather than as a wrong string.
+ *
+ * To re-verify after a `livekit-agents` upgrade:
+ *   grep -n "TOPIC_CHAT" .venv/Lib/site-packages/livekit/agents/types.py
+ * A mismatch here is a one-line fix. A mismatch found by a user typing into a
+ * composer is a bug report.
+ */
+const TOPIC_CHAT = "lk.chat";
 const TOKEN_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const DISPATCH_TIMEOUT_MS = 10_000;
@@ -250,6 +280,15 @@ export class LumineVoiceManager {
   private lockHeldAt: number | null = null;
   private readonly onStateChange: (snapshot: VoiceManagerSnapshot) => void;
   private readonly callbacks: VoiceLifecycleCallbacks;
+  /**
+   * One audio analyser for the manager's whole life, re-pointed per call.
+   *
+   * Deliberately not per session: see `subscribeAudioLevel`. A field rather than a
+   * lazy getter because the cost of constructing it is a `Set` and the cost of
+   * constructing an `AudioContext` per call is a leak nobody sees until the
+   * browser starts refusing to make more.
+   */
+  private readonly audioLevel = new AudioLevelMonitor();
 
   constructor(callbacks: VoiceLifecycleCallbacks, onStateChange: (snapshot: VoiceManagerSnapshot) => void) {
     this.callbacks = callbacks;
@@ -266,6 +305,23 @@ export class LumineVoiceManager {
       sessionId: this.activeSession?.id ?? null,
       roomName: this.activeSession?.roomName ?? null,
     };
+  }
+
+  /**
+   * Subscribe to Lumine's loudness. Returns an unsubscribe.
+   *
+   * Manager-scoped rather than session-scoped, and that is the whole reason the
+   * monitor lives on the manager. A per-session monitor means a subscription
+   * taken by a component that outlives a call is handed a monitor that
+   * `close()`d at the end of it — the avatar would go permanently still for the
+   * rest of the app's life, with no error anywhere to explain it.
+   *
+   * One monitor also means one `AudioContext` for the whole process rather than
+   * one per call. `attach` releases and rebuilds the graph, so a reconnection
+   * re-points it, and nothing accumulates.
+   */
+  subscribeAudioLevel(onLevel: (level: number) => void): () => void {
+    return this.audioLevel.subscribe(onLevel);
   }
 
   private publish() {
@@ -295,6 +351,15 @@ export class LumineVoiceManager {
     if (session.agentTimer !== undefined) {
       window.clearTimeout(session.agentTimer);
     }
+
+    // Detached, not closed, and before the room teardown so the graph is released
+    // while the track that fed it is still resolvable.
+    //
+    // `detach` and not `close` because the monitor is manager-scoped and its
+    // subscribers outlive this call. Closing here would drop the avatar's
+    // subscription along with the context, and the next call would leave a face
+    // that is permanently still — with nothing in the log to say why.
+    this.audioLevel.detach();
 
     try {
       session.room.removeAllListeners();
@@ -510,6 +575,13 @@ export class LumineVoiceManager {
             session.attachedTrackSids.delete(publication.trackSid);
           }
           element.remove();
+          // Stop metering only once the *last* audio element is gone. Detaching on
+          // the first `ended` would tear the monitor down out from under a
+          // replacement track that had already attached, leaving the avatar
+          // permanently silent for a session that is working fine.
+          if (session.remoteAudioElements.size === 0) {
+            this.audioLevel.detach();
+          }
           if (ownsSession()) {
             this.setState("listening");
           }
@@ -523,6 +595,18 @@ export class LumineVoiceManager {
           void this.handleFailure("Lumine connected, but audio playback was blocked.");
         }
       });
+
+      // Start measuring her voice.
+      //
+      // `track.mediaStream` is the same samples the element is about to play, so
+      // the meter and the speaker cannot disagree — which is the failure you get
+      // from a second `getUserMedia`, and the reason the meter is a tap on this
+      // track rather than an independent capture.
+      //
+      // Attached after `play()` and not before: `mediaStream` exists as soon as
+      // the track is attached, and a monitor started earlier would spend its
+      // first frames on a stream with no audio in it yet.
+      this.audioLevel.attach(track.mediaStream);
     };
 
     const handlePublished = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
@@ -601,6 +685,36 @@ export class LumineVoiceManager {
       }
     };
 
+    /**
+     * Lumine's spoken words, as text.
+     *
+     * ## Why this is still on the deprecated `TranscriptionReceived`
+     *
+     * The modern replacement is a `registerTextStreamHandler("lk.transcription", …)`
+     * on the room, and it is deliberately *not* used. With the defaults this
+     * project runs, the agent publishes the same words twice:
+     *
+     * - `RoomIO` builds a `_ParticipantTranscriptionOutput` and drives
+     *   `capture_text()`, which writes to the `lk.transcription` text stream.
+     * - Because `sync_transcription` is left at its default, it *also* builds a
+     *   `TranscriptSynchronizer`, whose `push_text`/`flush` call the deprecated
+     *   `room.local_participant.publish_transcription()` — which is what raises
+     *   `TranscriptionReceived` here.
+     *
+     * Both carry the same content, so registering the stream handler alongside
+     * this would post every message twice. Migrating means setting
+     * `sync_transcription=False` in `agent/pipeline/pipeline_factory.py` first, which is an
+     * agent-side change and therefore out of scope for a frontend pass.
+     *
+     * The `deprecated` tag is a warning, not a removal: the event still fires on
+     * 1.8.3, and it is the only channel that delivers this content. What is *not*
+     * delivered here is the user's own speech — the agent consumes user STT
+     * internally as `user_input_transcribed` and never republishes it — so the
+     * branch that would mark a message `role: "user"` from this event cannot fire
+     * today. It is kept because the day the agent does publish it, the transcript
+     * should already be able to show it; dropping the branch would lose the text
+     * rather than merely mislabel it.
+     */
     const handleTranscription = (segments: TranscriptionSegment[], participant?: Participant) => {
       if (!ownsSession() || !participant) {
         return;
@@ -789,6 +903,72 @@ export class LumineVoiceManager {
     session.muted = muted;
     this.muted = muted;
     this.publish();
+  }
+
+  /**
+   * Whether a typed message can reach Lumine right now.
+   *
+   * A getter rather than a value the UI keeps in step, because the two drift: a
+   * `canSendText` boolean held in state is a second copy of a fact the manager
+   * already knows, and the copy is wrong for exactly as long as a call ends
+   * between the render and the click.
+   */
+  get canSendText(): boolean {
+    const session = this.activeSession;
+    return Boolean(session && !session.disposed && this.state !== "disconnecting" && this.state !== "ending" && session.agentConnected);
+  }
+
+  /**
+   * Say something to Lumine in text.
+   *
+   * This is a real turn, not a local note. `lk.chat` is the topic `RoomIO`
+   * registers on the agent side unconditionally, so the text arrives as a
+   * `TextInputEvent` and the model answers it in her own voice — the same
+   * pipeline, the same persona, the same tools. Nothing on the Python side had
+   * to change for that to be true, which is why it was worth checking the
+   * installed agent rather than adding an endpoint.
+   *
+   * ## Why the topic is explicit
+   *
+   * `sendText` with no options defaults to `lk.chat`, so naming it looks
+   * redundant. It is named anyway, because this is the one place where a silent
+   * default change would be invisible: send to the wrong topic and the message
+   * vanishes with no error on either side, which reads as "the app is broken"
+   * rather than as "the topic was wrong". The constant is imported from the
+   * client's own types so a rename upstream is a compile error here.
+   *
+   * ## Why the return value is a boolean and not a throw
+   *
+   * The caller is a composer, and a composer must not be able to take the
+   * session down by being submitted at the wrong moment. A rejected promise
+   * inside an input handler is an unhandled rejection; a `false` is something the
+   * UI can leave the draft alone and say nothing about.
+   */
+  async sendText(text: string): Promise<boolean> {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+
+    const session = this.activeSession;
+    if (!session || session.disposed || !this.canSendText) {
+      this.error = "There is no open call to send that to.";
+      this.callbacks.onError(this.error);
+      this.publish();
+      return false;
+    }
+
+    try {
+      await session.room.localParticipant.sendText(trimmed, { topic: TOPIC_CHAT });
+      return true;
+    } catch (error) {
+      // Reported rather than swallowed. A typed message that fails to send is the
+      // one failure where the user has no other way to find out — they pressed
+      // Enter, the draft cleared, and Lumine said nothing.
+      console.warn("[Voice] Text send failed", error);
+      this.error = "That message did not reach Lumine.";
+      this.callbacks.onError(this.error);
+      this.publish();
+      return false;
+    }
   }
 
   /**

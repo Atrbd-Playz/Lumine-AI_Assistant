@@ -3,15 +3,15 @@
  *
  * These types describe the JSON that crosses three boundaries:
  *
- *   1. the provider catalog  - `agent/providers.py`  -> `agent/provider_catalog.py` -> Tauri
+ *   1. the provider catalog  - `agent/settings/providers.py`  -> `agent/provider_catalog.py` -> Tauri
  *   2. the config document   - a Tauri store file, read by Rust and by the worker
- *   3. validation output     - `agent/validation.py` -> Tauri -> this file
+ *   3. validation output     - `agent/settings/validation.py` -> Tauri -> this file
  *
  * The Python modules remain the source of truth. Nothing here decides whether a
  * configuration is valid: the UI renders diagnostics that the worker produced, so
  * the settings screen can never promise a combination the runtime will refuse.
  *
- * Keep this file in step with `agent/providers.py`, `agent/validation.py`, and the
+ * Keep this file in step with `agent/settings/providers.py`, `agent/settings/validation.py`, and the
  * golden example at `agent/tests/fixtures/lumine.config.example.json`.
  */
 
@@ -76,6 +76,27 @@ export type CatalogOption = {
   minimum: number | null;
   maximum: number | null;
   step: number | null;
+  /**
+   * Whether the value leaves the worker as an integer rather than as a float.
+   *
+   * The settings screen never sees the difference — it writes strings either
+   * way — but this is also read by diagnostics, and an option the wire type of
+   * which is not stated is one nobody can check. `sample_rate` sent as
+   * `"24000"` is a request Cartesia refuses; sent as `24000.0` it is a request
+   * Cartesia refuses differently.
+   */
+  integer: boolean;
+  /**
+   * Model ids this option does anything on. Empty means every model that
+   * declares it.
+   *
+   * The catalog is the only place that knows: Cartesia writes `speed`,
+   * `emotion` and `volume` into the request only on the sonic-3 family, and
+   * silently drops them everywhere else. Without this the screen drew a slider
+   * against `sonic-2` that moved and a voice that did not change. The dimmed
+   * row that says so is worth more than the slider itself.
+   */
+  models: string[];
   /**
    * Whether this sits behind the "Advanced" disclosure rather than on the first
    * screen of its stage.
@@ -324,12 +345,45 @@ export type AgentSettings = {
   enableAppLaunch?: boolean;
 };
 
+/**
+ * A voice the user found and chose to keep.
+ *
+ * The picker can only offer what the catalog declares, plus whatever somebody
+ * pastes in. Without somewhere to put it, a pasted voice id is a value typed
+ * once and lost the next time the dropdown is opened — which makes "add your
+ * own voice" a label rather than a feature.
+ *
+ * It lives in the config document rather than in local storage so it travels
+ * with the settings the worker already reads: the same file that says which TTS
+ * stage to build says which voices that stage may be given. The worker itself
+ * never looks at this array — it reads the id off the profile — which is why
+ * nothing in Python had to change for it to exist.
+ */
+export type SavedVoice = {
+  /** The provider's own voice id. This is what reaches synthesis. */
+  id: string;
+  /**
+   * A name a person chose. A list of ids is a list of opaque strings; a list of
+   * names is a list of choices, and the id is still what gets sent.
+   */
+  label: string;
+  /** Language tag, when the person knows it. Used for grouping, never required. */
+  language?: string;
+  /** ISO timestamp of when it was added, so recent voices can come first. */
+  addedAt: string;
+};
+
 export type ConfigDocument = {
   version: number;
   activeProfileId: string;
   providers: Record<string, ProviderEntry>;
   profiles: VoiceProfile[];
   agent?: AgentSettings;
+  /**
+   * Voices the user added themselves. Absent or empty means the picker offers
+   * only what the catalog declares.
+   */
+  voices?: SavedVoice[];
 };
 
 // ---------------------------------------------------------------------------
@@ -410,4 +464,45 @@ export function findModel(
 /** Curated voices for a provider. Providers without a catalog expose none. */
 export function voicesFor(catalog: ProviderCatalog, providerId: string): CatalogVoice[] {
   return findProvider(catalog, providerId)?.voices ?? [];
+}
+
+/**
+ * A readable name for a setting, derived from its key.
+ *
+ * One copy rather than the three it had been: `ModelOptions` called it `label`,
+ * `VoiceControls` called it `title`, and `Knob` had a third. They agreed by
+ * coincidence, which is the sort of coincidence that stops the first time
+ * somebody adds a camelCase option.
+ */
+export function optionTitle(name: string): string {
+  const spaced = name.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+/**
+ * Whether `option` does anything on `modelId`.
+ *
+ * An empty `models` means every model that declares the option, which is the
+ * case for all but a handful.
+ */
+export function optionAppliesTo(option: CatalogOption, modelId: string): boolean {
+  return option.models.length === 0 || option.models.includes(modelId);
+}
+
+/**
+ * Why `option` is being ignored on `modelId`, or `null` when it is not.
+ *
+ * The catalog is the only place that knows this — Cartesia writes `speed` into
+ * the request on the sonic-3 family and drops it everywhere else — so the screen
+ * can only repeat what it was told. It has to, though: a slider whose turn
+ * produces no change is worse than no slider, because the user has no way to
+ * tell the difference between "this did nothing" and "I did not hear it".
+ *
+ * The value stays editable on purpose. Someone who has set a speed, then
+ * changed model to compare, and then changes back, should find their speed
+ * still there.
+ */
+export function optionInapplicableReason(option: CatalogOption, modelId: string): string | null {
+  if (optionAppliesTo(option, modelId)) return null;
+  return `Not sent to ${modelId} — it applies to ${option.models.join(", ")} only.`;
 }

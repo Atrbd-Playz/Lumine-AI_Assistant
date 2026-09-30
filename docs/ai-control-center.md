@@ -20,9 +20,9 @@ silently, and takes the conversation down with it:
 - tool results are compressed at the source and never shown inline
   (`agent/tools/tool_results.py`),
 - the conversation context is trimmed to a budget rather than left to fail
-  (`agent/context_trim.py`),
+  (`agent/runtime/context_trim.py`),
 - a failed turn says so, out loud and in the app
-  (`agent/llm_errors.py`, `agent/failure_gate.py`).
+  (`agent/runtime/llm_errors.py`, `agent/runtime/failure_gate.py`).
 
 `agent.py` now honours a saved configuration when one is valid and falls back to
 `agent/.env` otherwise. A fresh install with nothing saved behaves exactly as
@@ -90,13 +90,13 @@ Recorded so later phases do not relitigate them:
 The only configuration that crosses from the desktop app to the worker is the
 interruption mode, carried in LiveKit dispatch metadata. Provider, model, voice,
 and credential settings come exclusively from `agent/.env` and are resolved by
-`agent/pipeline_config.py` and `agent/llm_config.py` into the hardcoded
-constructors in `agent/pipeline_factory.py`. There is no settings store, no
+`agent/settings/pipeline_config.py` and `agent/settings/llm_config.py` into the hardcoded
+constructors in `agent/pipeline/pipeline_factory.py`. There is no settings store, no
 provider catalog, and no validation layer.
 
 ## Layer 1 — the provider catalog
 
-`agent/providers.py` is the single source of truth for what Lumine can do.
+`agent/settings/providers.py` is the single source of truth for what Lumine can do.
 
 * A provider is **not** an identity to branch on. It is a set of capabilities:
   `stt`, `llm`, `tts`, `realtime`, `vad`, `transport`.
@@ -142,7 +142,7 @@ providers; they never contain credentials.
 
 ## Layer 3 — validation
 
-`agent/validation.py` is a pure function over plain dictionaries. It imports no
+`agent/settings/validation.py` is a pure function over plain dictionaries. It imports no
 provider and makes no network call, so it can run before a room is joined and
 without any credential. It answers "could this work?", not "does this key work?".
 
@@ -174,7 +174,7 @@ The rules that matter, and why they exist:
    model advertises `textOnlyModality`.
 
 2. **The legacy cascade hardcodes a TTS model that is about to be withdrawn.**
-   `agent/pipeline_factory.py` builds `cartesia.TTS(model="sonic-2", ...)`.
+   `agent/pipeline/pipeline_factory.py` builds `cartesia.TTS(model="sonic-2", ...)`.
    Cartesia deprecates Sonic 2 with a retirement date of **2026-10-20**, after
    which it stops being served. The catalog marks it deprecated with
    `sonic-3.5` as its successor, and the golden-config test asserts that the
@@ -284,7 +284,7 @@ shipping them to the webview.
 
 ## Precedence
 
-Implemented in `agent/config_store.py`; the single place the rule lives.
+Implemented in `agent/settings/config_store.py`; the single place the rule lives.
 
 ```
 a saved configuration document
@@ -344,7 +344,7 @@ is what makes the two runtimes agree on one file.
 
 ## Phase 2: the capability-driven factory
 
-`agent/pipeline_factory.py` no longer hardcodes providers. Each capability has
+`agent/pipeline/pipeline_factory.py` no longer hardcodes providers. Each capability has
 its own builder that dispatches on the *provider id* from a
 `ResolvedProfile`, which is what makes stages independently selectable:
 
@@ -669,7 +669,7 @@ the configuration-file mismatch fixed above, so it was closed in the same phase.
 environment at spawn:
 
 1. Read `provider_catalog.py` for the provider-to-variable mapping. It is
-   catalog knowledge — it lives beside the models in `agent/providers.py` — so it
+   catalog knowledge — it lives beside the models in `agent/settings/providers.py` — so it
    is not duplicated in Rust.
 2. For every provider that `requiresKey` and has a stored secret, set each
    variable the catalog names for it.
@@ -932,7 +932,7 @@ The first live voice session after Phase 3 crashed:
 
 ```
 ImportError: attempted relative import with no known parent package
-  agent/config_store.py, in resolve_profile
+  agent/settings/config_store.py, in resolve_profile
 ```
 
 `config_store.py` imported `session_preferences` **inside the function body**
@@ -943,7 +943,7 @@ pair, because the worker is loaded two different ways:
 | How it is loaded | Import form | Relative import works? |
 | --- | --- | --- |
 | `python agent/agent.py` (the worker, and the Tauri helpers) | top-level modules | only via the `except` fallback |
-| `from agent.config_store import ...` (every test) | package modules | yes |
+| `from agent.settings.config_store import ...` (every test) | package modules | yes |
 
 **Every unit test passed and the worker still crashed**, because all 210 tests
 took the package path. A function-level relative import is invisible to the
@@ -954,8 +954,9 @@ Two guards now exist, in `agent/tests/test_import_shapes.py`:
 1. Every module is imported in a subprocess with `agent/` on `sys.path` and no
    parent package — the worker's actual path.
 2. A structural `ast` check that fails on *any* relative import inside a function
-   or method body, across every `agent/*.py`, and points at the module-scope
-   pattern instead.
+   or method body, across every `agent/*.py` **and** the regrouped
+   `agent/{settings,pipeline,runtime}/`, and points at the module-scope pattern
+   instead.
 
 The second one is the cheap one; it would have caught this at commit time. Rule
 for the rest of this repo: **no relative imports below module scope, ever.**
@@ -1020,22 +1021,22 @@ Both are upstream and not fixable here, but they will become upgrade blockers:
 ## Layout
 
 ```
-agent/providers.py                     catalog: providers, models, voices, capabilities
+agent/settings/providers.py                     catalog: providers, models, voices, capabilities
 agent/provider_catalog.py              CLI: redacted JSON + --check self-check
 agent/provider_probe.py                CLI: one authenticated request per provider
 agent/tool_catalog.py                  CLI: the tool registry as a redacted grid
 agent/local_models.py                  CLI: discover a locally hosted inference server
 agent/multisession_check.py            CLI: three sessions against one running worker
 agent/broken_stdout_check.py           CLI: a worker whose stdout is a dead pipe
-agent/validation.py                    pure validation rules -> diagnostics
-agent/config_store.py                  precedence: saved document > agent/.env > defaults
+agent/settings/validation.py                    pure validation rules -> diagnostics
+agent/settings/config_store.py                  precedence: saved document > agent/.env > defaults
 agent/validate_config.py               configuration CLI: --describe and validate
-agent/session_preferences.py           per-job metadata -> JobPreferences (mode + profile ref)
-agent/pipeline_config.py               cartesia_tts_settings() (model no longer hardcoded)
-agent/pipeline_factory.py              capability-driven builders; _PLUGIN_ALIASES
-agent/llm_errors.py                    status + message -> a named, sayable failure
-agent/failure_gate.py                  consecutive-failure circuit; the spoken apology
-agent/context_trim.py                  chat context trimmed to an item budget
+agent/settings/session_preferences.py           per-job metadata -> JobPreferences (mode + profile ref)
+agent/settings/pipeline_config.py               cartesia_tts_settings() (model no longer hardcoded)
+agent/pipeline/pipeline_factory.py              capability-driven builders; _PLUGIN_ALIASES
+agent/runtime/llm_errors.py                    status + message -> a named, sayable failure
+agent/runtime/failure_gate.py                  consecutive-failure circuit; the spoken apology
+agent/runtime/context_trim.py                  chat context trimmed to an item budget
 agent/prompts/persona_core.md          the always-sent persona (short)
 agent/prompts/persona.md               the full persona, read on demand
 agent/tools/tool_results.py            one ceiling, one payload shape, one injection guard
@@ -1167,7 +1168,7 @@ delimiter the model was never told about is just punctuation.
 
 ### The context is trimmed as a backstop
 
-`agent/context_trim.py` calls `ChatContext.truncate(max_items=...)` on
+`agent/runtime/context_trim.py` calls `ChatContext.truncate(max_items=...)` on
 `conversation_item_added`, which keeps the last N items, drops leading orphaned
 function calls, and — the part that matters — **puts the system message back**.
 Losing it mid-conversation would leave a model with no personality and no tool
@@ -1203,7 +1204,7 @@ recovery slower.
 
 ### Naming the failure
 
-`agent/llm_errors.py` classifies by status code and message into
+`agent/runtime/llm_errors.py` classifies by status code and message into
 `rate_limited`, `quota_exhausted`, `context_length`, `auth`, `provider_down`, or
 `unknown`. The distinction that earns its keep is the first two: **both arrive as
 HTTP 429**, and only the message separates "wait a moment" from "come back
@@ -1222,7 +1223,7 @@ turn a provider error into a crash inside the recovery path.
 
 ### Speaking, toasting, and stopping
 
-`agent/failure_gate.py` counts consecutive failures and opens a circuit after three
+`agent/runtime/failure_gate.py` counts consecutive failures and opens a circuit after three
 (45s cooldown, injected clock so the tests do not sleep). It is deliberately **not**
 a retry loop: backing off and telling the user is useful, hammering a rate-limited
 endpoint is how an allowance is spent on requests that cannot succeed.
@@ -1366,7 +1367,7 @@ a job does is emit a latency record:
 ```text
 File "agent/agent.py", line 259, in entrypoint
     latency.mark("entrypoint", room=ctx.room.name)
-  File "agent/runtime_events.py", line 42, in emit_record
+  File "agent/runtime/runtime_events.py", line 42, in emit_record
     print(f"LUMINE_EVENT {encoded}", flush=True)
 OSError: [Errno 22] Invalid argument
 ```

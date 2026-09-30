@@ -9,14 +9,14 @@ import json
 import unittest
 from unittest import mock
 
-from agent.context_trim import (
+from agent.runtime.context_trim import (
     DEFAULT_MAX_ITEMS,
     MIN_ITEMS_BEFORE_TRIM,
     TrimOutcome,
     trim_context,
 )
-from agent.failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
-from agent.llm_errors import (
+from agent.runtime.failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
+from agent.runtime.llm_errors import (
     KIND_AUTH,
     KIND_CONTEXT_LENGTH,
     KIND_MODEL_UNAVAILABLE,

@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from agent import config_store
-from agent.config_store import (
+from agent.settings import config_store
+from agent.settings.config_store import (
     APP_IDENTIFIER,
     CONFIG_PATH_ENV,
     DEFAULT_CONFIG_FILENAME,
@@ -28,13 +28,13 @@ from agent.config_store import (
     env_profile,
     load_document,
 )
-from agent.pipeline_config import (
+from agent.settings.pipeline_config import (
     DEFAULT_CARTESIA_TTS_MODEL,
     cartesia_tts_settings,
     gemini_settings,
 )
-from agent.providers import get_model, get_provider
-from agent.session_preferences import (
+from agent.settings.providers import get_model, get_provider
+from agent.settings.session_preferences import (
     JobPreferences,
     interruption_mode_from_metadata,
     job_preferences_from_metadata,
@@ -148,12 +148,12 @@ class EnvProfileTests(unittest.TestCase):
     def test_env_document_validates_clean(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             document = env_document()
-        from agent.validation import validate_document
+        from agent.settings.validation import validate_document
 
         self.assertEqual(validate_document(document), [])
 
     def test_env_document_is_a_valid_document_at_the_current_version(self):
-        from agent.validation import CONFIG_VERSION
+        from agent.settings.validation import CONFIG_VERSION
 
         self.assertEqual(env_document()["version"], CONFIG_VERSION)
 
@@ -212,7 +212,7 @@ class PrecedenceTests(unittest.TestCase):
             (second / DEFAULT_CONFIG_FILENAME).write_text("{}", encoding="utf-8")
             candidates = [first / DEFAULT_CONFIG_FILENAME, second / DEFAULT_CONFIG_FILENAME]
             with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
-                "agent.config_store.config_path_candidates", return_value=candidates
+                "agent.settings.config_store.config_path_candidates", return_value=candidates
             ):
                 self.assertEqual(config_path(), second / DEFAULT_CONFIG_FILENAME)
 
@@ -222,7 +222,7 @@ class PrecedenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             missing = Path(tmp) / "nope" / DEFAULT_CONFIG_FILENAME
             with mock.patch.dict(os.environ, {}, clear=True), mock.patch(
-                "agent.config_store.config_path_candidates", return_value=[missing]
+                "agent.settings.config_store.config_path_candidates", return_value=[missing]
             ):
                 self.assertEqual(config_path(), missing)
 

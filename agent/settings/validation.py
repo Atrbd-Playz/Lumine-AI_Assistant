@@ -37,7 +37,7 @@ try:
     )
     from .session_preferences import INTERRUPTION_MODES
 except ImportError:  # running as a top-level module
-    from providers import (
+    from settings.providers import (
         PROVIDERS,
         SESSION_OPTIONS,
         Capability,
@@ -46,7 +46,7 @@ except ImportError:  # running as a top-level module
         get_model,
         get_provider,
     )
-    from session_preferences import INTERRUPTION_MODES
+    from settings.session_preferences import INTERRUPTION_MODES
 
 Severity = Literal["error", "warn", "info"]
 

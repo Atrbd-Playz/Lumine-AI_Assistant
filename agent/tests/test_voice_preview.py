@@ -17,8 +17,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agent import voice_preview
-from agent.config_store import ResolvedStage
-from agent.pipeline_factory import ConfigurationRejected  # noqa: F401 - import shape check
+from agent.settings.config_store import ResolvedStage
+from agent.pipeline.pipeline_factory import ConfigurationRejected  # noqa: F401 - import shape check
 
 
 def _frame(payload: bytes, sample_rate: int = 24_000, channels: int = 1) -> SimpleNamespace:

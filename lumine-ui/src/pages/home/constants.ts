@@ -1,4 +1,4 @@
-import type { Appearance, AppearancePreset, Entry, LumineState, ThemePalettes } from "./types";
+import type { Appearance, AppearancePreset, LumineState, ThemePalettes } from "./types";
 
 /** The user-editable palette used by the appearance dialog. */
 export const DEFAULT_APPEARANCE: Appearance = {
@@ -66,24 +66,83 @@ export const DEFAULT_THEME_PRESETS: Record<keyof ThemePalettes, Record<string, A
   },
 };
 
+/**
+ * What the stage says, per state.
+ *
+ * Every one of the seven states has its own line, and none of them is a
+ * placeholder. That is the point of the table: it is a `Record` over
+ * `LumineState`, so a state that reaches the UI without copy is a compile error
+ * rather than an empty headline, and a state that lies — "here's what I found"
+ * printed while a connection is still being negotiated — is a line someone has to
+ * defend rather than a default.
+ *
+ * The greeting is deliberately *not* here. It is the only line that would have
+ * been fabricated, and a static "Good evening" drawn at an arbitrary hour is the
+ * kind of detail that makes a presence feel like a template.
+ */
 export const STATE_COPY: Record<LumineState, { eyebrow: string; title: string; detail: string }> = {
-  idle: { eyebrow: "Lumine · online", title: "Good evening, Master.", detail: "Everything is quiet. What should we work on?" },
-  listening: { eyebrow: "Voice channel open", title: "I’m listening.", detail: "Speak naturally — I’ll keep the context." },
-  thinking: { eyebrow: "Lumine is processing", title: "Working on it.", detail: "Pulling together the next best step." },
-  speaking: { eyebrow: "Lumine is speaking", title: "Here’s what I found.", detail: "I’m ready for your next instruction." },
+  idle: { eyebrow: "Lumine · resting", title: "Here whenever you are, Master.", detail: "Start a call and I’ll be right with you." },
+  connecting: { eyebrow: "Reaching Lumine", title: "One moment, Master.", detail: "Waking the worker and joining the room." },
+  online: { eyebrow: "Voice channel open", title: "I’m here.", detail: "Say anything — I’ll pick it up." },
+  listening: { eyebrow: "Listening", title: "I’m listening.", detail: "Speak naturally — I’ll keep the context." },
+  thinking: { eyebrow: "Thinking", title: "Working on it.", detail: "Putting the next best step together." },
+  speaking: { eyebrow: "Speaking", title: "Here’s what I found.", detail: "I’m ready for your next instruction." },
+  error: { eyebrow: "Connection needs attention", title: "I lost the thread, Master.", detail: "The reason is below — nothing was lost from this conversation." },
 };
 
-export const INITIAL_ENTRIES: Entry[] = [
-  { id: 1, kind: "action", content: "Reminder created · Physics notes, 9:00 PM", time: "8:42 PM" },
-  { id: 2, kind: "message", content: "Play something calm while I study.", time: "8:43 PM" },
-  { id: 3, kind: "note", content: "Ambient focus music is playing", time: "Now" },
-];
-
+/**
+ * The rail's items, and the union of their ids.
+ *
+ * `NavId` is derived from the array rather than written beside it, so the rail and
+ * the router cannot disagree about what a destination is called. `Home.tsx` holds
+ * `nav` as a `NavId` and narrows it before choosing a page, so a nav row with no
+ * page behind it falls through to the stage rather than to whatever the last
+ * branch happened to be.
+ */
 export const NAV_ITEMS = [
   ["home", "home", "Home"],
+  ["focus", "timer", "Focus"],
   ["avatar", "avatar", "Avatar Lab"],
-  ["conversation", "chat", "Conversation"],
   ["tools", "tools", "Tools"],
   ["memory", "memory", "Memory"],
   ["activity", "activity", "Activity"],
 ] as const;
+
+/**
+ * The destinations that stay on a phone, and the rest go behind a menu.
+ *
+ * Six labelled rows do not fit in a 64px thumb bar at any font size that can be
+ * read — they fit as six 9px glyphs, which is a different, worse interface. Three
+ * carry the app (home, the timer and notes, what the worker reported) and the
+ * fourth control opens the remainder, so nothing is unreachable and the bar stops
+ * reflowing its own text on every rotation.
+ */
+export const PRIMARY_NAV_IDS = ["home", "focus", "activity"] as const satisfies readonly NavId[];
+
+export type NavId = (typeof NAV_ITEMS)[number][0];
+
+/**
+ * The two destinations that render a workspace page.
+ *
+ * `tools` and `memory` are the same view with a different body, so they are one
+ * `kind` rather than two routes. The tuple is `satisfies readonly NavId[]` so a
+ * typo here is a compile error, and `Home.tsx` narrows on it rather than casting
+ * `nav` — which is what let `"conversation"` reach `WorkspaceView` and index an
+ * undefined record.
+ */
+export const WORKSPACE_NAV_IDS = ["tools", "memory"] as const satisfies readonly NavId[];
+
+export type WorkspaceNavId = (typeof WORKSPACE_NAV_IDS)[number];
+
+/**
+ * Whether a destination renders a workspace page.
+ *
+ * Written as a predicate rather than an `as` at the call site, because the call
+ * site is exactly where the original bug lived: `nav as "tools" | "memory"` is
+ * a claim about a value, and it was false for two of the five destinations. Here
+ * the claim is the body of the function, and every caller gets the narrowing for
+ * free.
+ */
+export function isWorkspaceNav(nav: NavId): nav is WorkspaceNavId {
+  return (WORKSPACE_NAV_IDS as readonly string[]).includes(nav);
+}

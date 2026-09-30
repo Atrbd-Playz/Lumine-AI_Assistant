@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { Icon } from "./Icon";
 import type { LumineVoiceConnectionState } from "../../../features/voice/useLumineVoice";
 
@@ -18,12 +17,20 @@ import type { LumineVoiceConnectionState } from "../../../features/voice/useLumi
  * circles leaves the destructive one to be found by hovering, and the answer to
  * "which one ends this" should not require a tooltip.
  *
- * ## The timer
+ * ## Where the vertical space went
  *
- * Only while connected, and counted from the session's own start rather than from
- * when this component mounted, so a reconnect does not reset it to zero. It is the
- * only text in the bar, because a call's length is the one number a person
- * actually wants from it.
+ * This used to be a `126px` grid row of its own, with a `102px` feature row above
+ * it holding two hardcoded cards. That is a quarter of an 800px window spent on a
+ * call button and two pieces of invented copy. The call controls are now one row
+ * inside `SessionDock`'s header — a 64px strip, collapsed or not, call or no call.
+ *
+ * ## The timer moved out
+ *
+ * It used to be the only text in this bar, which is why it is the obvious thing to
+ * want back. It now belongs to `SessionDock`'s header, next to the controls and the
+ * transcript they belong to, and `MainSpace` owns the single interval. A call's
+ * length is a fact about the *call*, and it was sitting in a component that also
+ * renders the idle "call Lumine" button — a component with two unrelated jobs.
  */
 export type CallBarProps = {
   status: LumineVoiceConnectionState;
@@ -36,7 +43,8 @@ export type CallBarProps = {
   screenOn: boolean;
   onScreenToggle: () => void;
   /**
-   * Why camera and screen are unavailable, as their accessible names when off.
+   * Why camera and screen are unavailable, carried in the control's accessible
+   * name and its tooltip when off.
    *
    * Two separate reasons rather than one, because the two failures have nothing
    * to do with each other and different fixes: the model may be unable to read
@@ -44,12 +52,23 @@ export type CallBarProps = {
    * pick one, and whichever it picks is wrong on the other machine -- "choose a
    * realtime model" is nonsense advice to someone on macOS, where no realtime
    * model can capture a screen at all.
+   *
+   * The reason is prefixed with what the control is ("Camera — …"), not used as
+   * the whole name. Replacing the name outright meant the button announced only
+   * a sentence about a model, and a sentence with no control in it is not a
+   * button's name.
    */
   cameraDisabledReason?: string;
   screenDisabledReason?: string;
-  /** Epoch ms the current call started, or null while offline. */
-  startedAt: number | null;
-  /** Why the call cannot start. The call mark's accessible name when off. */
+  /**
+   * Why the call cannot start. The call mark's accessible name when off.
+   *
+   * There is deliberately no `startedAt` prop any more. It used to drive this
+   * component's own timer, and the timer moved to `SessionDock`'s header — so the
+   * prop would now be read by nothing here while a second copy of the duration
+   * logic sat in the file. A prop that survives its only use is how a component
+   * ends up rendering a stale value nobody can find the source of.
+   */
   blockedReason?: string;
 };
 
@@ -61,15 +80,7 @@ const LIVE_STATES: LumineVoiceConnectionState[] = [
   "speaking",
 ];
 
-/** `m:ss`, and then `h:mm:ss` once an hour has passed. */
-function elapsed(since: number, now: number): string {
-  const seconds = Math.max(0, Math.floor((now - since) / 1000));
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
-}
+
 
 export function CallBar({
   status,
@@ -83,7 +94,6 @@ export function CallBar({
   onScreenToggle,
   cameraDisabledReason,
   screenDisabledReason,
-  startedAt,
   blockedReason,
 }: CallBarProps) {
   const live = LIVE_STATES.includes(status);
@@ -91,27 +101,40 @@ export function CallBar({
   const ending = status === "disconnecting" || status === "ending";
   const blocked = Boolean(blockedReason);
 
-  // Ticks only while a call is up. An interval that runs on the home page for no
-  // reason is a wake-up a laptop notices and a person does not.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!live || !startedAt) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [live, startedAt]);
-
   if (!live) {
+    /*
+      `aria-disabled`, not `disabled`.
+
+      A natively disabled button is removed from the tab order, and every reason
+      this component carries lives in the accessible name. So the people the copy
+      was written for — someone who cannot see that the mark went grey, and needs
+      to be told the setup is incomplete — are exactly the ones who can never land
+      on it. Withholding the handler instead of the element keeps the control
+      focusable, so the reason is read on focus, and it keeps `:hover` and `title`
+      working for everyone else. The styling already keys off `is-blocked` and
+      `is-connecting`, so nothing about the appearance moves.
+    */
+    const reason = blocked && blockedReason ? blockedReason : undefined;
+    const unavailable = connecting || ending || blocked;
+    const label = reason
+      ? `Call Lumine — ${reason}`
+      : connecting
+        ? "Connecting to Lumine"
+        : ending
+          ? "Ending the call"
+          : "Call Lumine";
+
     return (
       <footer className="call-bar call-bar--idle">
         <button
           type="button"
           className={`call-button ${connecting ? "is-connecting" : ""} ${ending ? "is-ending" : ""} ${blocked ? "is-blocked" : ""}`}
-          onClick={onConnect}
-          disabled={connecting || ending || blocked}
-          aria-label={blocked ? blockedReason : connecting ? "Connecting to Lumine" : ending ? "Ending the call" : "Call Lumine"}
+          onClick={unavailable ? undefined : onConnect}
+          aria-disabled={unavailable || undefined}
+          aria-label={label}
+          title={reason}
         >
-          <span className="call-button-contents" aria-hidden="true">
+          <span className="call-button-contents grid place-items-center w-full h-full" aria-hidden="true">
             {connecting || ending ? <span className="voice-spinner" /> : <Icon name="phone" size={25} weight="bold" />}
           </span>
         </button>
@@ -119,12 +142,28 @@ export function CallBar({
     );
   }
 
+  /*
+    The same reachability rule as the idle mark above, for the same reason: both
+    reasons here are long, specific sentences about a model or an operating
+    system, and a sentence no screen reader can focus is a sentence nobody is
+    told. Each flag is what `disabled` used to be — the element stays tabbable
+    and the handler is simply not attached while it is set.
+  */
+  const cameraBlocked = Boolean(cameraDisabledReason) && !cameraOn;
+  const screenBlocked = Boolean(screenDisabledReason) && !screenOn;
+
   return (
     <footer className="call-bar call-bar--live">
-      <span className="call-timer" aria-label="Call length">
-        {startedAt ? elapsed(startedAt, now) : "0:00"}
-      </span>
-      <div className="call-controls">
+      {/*
+        The timer used to be here, and it is in the dock's header now.
+
+        Two identical clocks about four hundred pixels apart reads as a rendering
+        bug, and it was going to happen the moment the dock grew a duration of its
+        own. One owner for the number: `MainSpace` computes it once and hands it
+        to whichever of the two places is currently visible. `startedAt` is still
+        a prop because it decides *whether* there is a call to time.
+      */}
+      <div className="call-controls flex items-center gap-3">
         <button
           type="button"
           className={`call-control ${muted ? "is-off" : ""}`}
@@ -137,20 +176,34 @@ export function CallBar({
         <button
           type="button"
           className={`call-control ${cameraOn ? "is-off" : ""}`}
-          onClick={onCameraToggle}
-          disabled={Boolean(cameraDisabledReason) && !cameraOn}
+          onClick={cameraBlocked ? undefined : onCameraToggle}
+          aria-disabled={cameraBlocked || undefined}
           aria-pressed={cameraOn}
-          aria-label={cameraDisabledReason && !cameraOn ? cameraDisabledReason : cameraOn ? "Turn camera off" : "Turn camera on"}
+          aria-label={
+            cameraBlocked && cameraDisabledReason
+              ? `Camera — ${cameraDisabledReason}`
+              : cameraOn
+                ? "Turn camera off"
+                : "Turn camera on"
+          }
+          title={cameraBlocked ? cameraDisabledReason : undefined}
         >
           <Icon name={cameraOn ? "video" : "video-off"} size={19} />
         </button>
         <button
           type="button"
           className={`call-control ${screenOn ? "is-off" : ""}`}
-          onClick={onScreenToggle}
-          disabled={Boolean(screenDisabledReason) && !screenOn}
+          onClick={screenBlocked ? undefined : onScreenToggle}
+          aria-disabled={screenBlocked || undefined}
           aria-pressed={screenOn}
-          aria-label={screenDisabledReason && !screenOn ? screenDisabledReason : screenOn ? "Stop sharing the screen" : "Share the screen"}
+          aria-label={
+            screenBlocked && screenDisabledReason
+              ? `Screen share — ${screenDisabledReason}`
+              : screenOn
+                ? "Stop sharing the screen"
+                : "Share the screen"
+          }
+          title={screenBlocked ? screenDisabledReason : undefined}
         >
           <Icon name="monitor" size={19} />
         </button>
