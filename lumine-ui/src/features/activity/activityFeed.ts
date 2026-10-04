@@ -141,11 +141,27 @@ function stampFrom(event: AgentRuntimeEvent): number {
 function classifyConfig(event: AgentRuntimeEvent): ActivityEntry {
   const base = { id: nextId(), kind: "config" as const, at: stampFrom(event) };
   if (event.type === "config_rejected") {
+    // `reason` first, then the diagnostics' own messages, then what it fell back
+    // to. The reason is the only line that tells somebody what to *do*, and this
+    // panel used to render a bare "Saved profile rejected" with a file path: the
+    // worker had put the cause in `diagnostics`, which nothing here read, so a
+    // profile that was rejected for a missing API key looked identical to one
+    // that was rejected for a typo -- and the fallback voice that replaced it was
+    // not mentioned at all.
+    const diagnostics = Array.isArray(event.diagnostics) ? event.diagnostics : [];
+    const causes = diagnostics
+      .map((entry) => (entry && typeof entry === "object" ? String(entry.message ?? "") : ""))
+      .filter(Boolean);
+    const fellBackTo = text(event, "fell_back_to");
+    const detail =
+      join(text(event, "reason"), ...causes, fellBackTo) ??
+      join(text(event, "config_path")) ??
+      "Falling back to the environment";
     return {
       ...base,
-      tone: "warn",
-      title: "Saved profile rejected",
-      detail: join(text(event, "reason"), text(event, "config_path")) ?? "Falling back to the environment",
+      tone: "bad",
+      title: "Saved profile not used",
+      detail: fellBackTo ? `${detail} — using ${fellBackTo} instead` : detail,
     };
   }
   return {
@@ -156,20 +172,53 @@ function classifyConfig(event: AgentRuntimeEvent): ActivityEntry {
   };
 }
 
-/** `tool_status` — a tool call started, completed or failed. */
+/**
+ * `tool_status` — a tool call started, completed or failed, *or* one step
+ * inside a multi-stage call.
+ *
+ * The step rows are what make a slow call followable. A staged WhatsApp send is
+ * six things over several seconds, and without them the panel shows "running
+ * send whatsapp" and then nothing — which is the exact shape of a hang. Each step
+ * is keyed by `tool.action` so the `started` and `done` records for one step
+ * collapse into a single row that ticks off, and `index`/`total` are carried
+ * through because a step labelled "3 of 6" answers "how far along is this"
+ * without the reader counting.
+ *
+ * `summary` is the worker's own one-line description of the outcome, with no
+ * result text in it — that is what it is for. The `result` field is present in
+ * this payload and is deliberately not read: a retrieved page rendered in a
+ * timeline reads as though the model had been handed it, which is the shape a
+ * prompt injection wants. The payload goes to the toast, which is transient and
+ * not rendered.
+ */
 function classifyTool(event: AgentRuntimeEvent): ActivityEntry {
   const status = text(event, "status") ?? "started";
   const name = text(event, "tool") ?? text(event, "name") ?? "tool";
-  const label = name.replace(/_/g, " ");
+  const action = text(event, "action");
+  const label = (name.replace(/_/g, " ") + (action ? ` · ${action.replace(/_/g, " ")}` : ""));
   const base = { id: nextId(), kind: "tool" as const, at: stampFrom(event) };
-  // `summary` is the worker's own one-line description of the outcome, with no
-  // result text in it — that is what it is for. The `result` field is present in
-  // this payload and is deliberately not read: a retrieved page rendered in a
-  // timeline reads as though the model had been handed it, which is the shape a
-  // prompt injection wants. The payload goes to the toast, which is transient and
-  // not rendered.
   const summary = text(event, "summary");
   const ms = num(event, "duration_ms");
+  const index = num(event, "index");
+  const total = num(event, "total");
+  const position = index && total ? ` (${index} of ${total})` : "";
+
+  // A step, not the call. `status: "done"` is how a finished step closes; the
+  // call itself ends with "completed", and conflating the two would make the
+  // panel say a tool finished while it was still typing.
+  if (action) {
+    const message = text(event, "message") ?? summary;
+    if (status === "failed") {
+      return { ...base, tone: "bad", title: `${label} failed`, detail: summary, ms };
+    }
+    return {
+      ...base,
+      tone: ms && ms > 1000 ? "warn" : "neutral",
+      title: `${label}${position}`,
+      detail: message,
+      ms,
+    };
+  }
 
   if (status === "started") return { ...base, tone: "neutral", title: `Running ${label}` };
   if (status === "failed") {
