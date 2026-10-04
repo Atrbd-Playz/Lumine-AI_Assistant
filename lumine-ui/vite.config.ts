@@ -20,7 +20,10 @@ export default defineConfig(async () => ({
   clearScreen: false,
 
   server: {
-    port: 1420,
+    // 5173/5174 rather than the Tauri-conventional 1420/1421: Hyper-V/WSL
+    // reserves 1351-1450 on Windows, and an excluded port fails to bind with
+    // EACCES rather than EADDRINUSE. Must match build.devUrl in tauri.conf.json.
+    port: 5173,
     strictPort: true,
     host: host || false,
 
@@ -28,7 +31,7 @@ export default defineConfig(async () => ({
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: 5174,
         }
       : undefined,
 
