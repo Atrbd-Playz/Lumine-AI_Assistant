@@ -97,8 +97,12 @@ class RuntimeEventPublisher:
 class ToolEventBridge:
     """Normalize LiveKit tool events into the Lumine tool-status contract."""
 
-    def __init__(self, publisher: RuntimeEventPublisher) -> None:
+    def __init__(self, publisher: RuntimeEventPublisher, latency: Any = None) -> None:
         self.publisher = publisher
+        #: The session's recorder when the worker built this bridge. Optional
+        #: because a bridge built on its own -- a test, a script -- is still a
+        #: bridge; it just has nowhere to put a duration.
+        self.latency = latency
         self._started: dict[str, float] = {}
         self._calls: dict[str, tuple[str, str]] = {}
         self._seen: set[str] = set()
@@ -247,6 +251,21 @@ class ToolEventBridge:
             record["duration_ms"] = duration_ms
         self._finished.add(call_id)
         self._publish(record)
+        if duration_ms is not None and self.latency is not None:
+            # Same duration, second surface: the timeline wants it as a timing
+            # row correlated to the turn, and the tool card wants it as a status.
+            # Never allowed to raise -- this runs after the status is already out.
+            try:
+                self.latency.emit_duration(
+                    "tool_exec",
+                    duration_ms,
+                    phase="tool",
+                    tool=name,
+                    tool_call_id=call_id,
+                    status=status,
+                )
+            except Exception:  # noqa: BLE001 - telemetry
+                pass
 
     def handle(self, event: Any) -> None:
         update = getattr(event, "update", event)

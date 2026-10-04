@@ -68,7 +68,7 @@ class FailureGate:
     @property
     def should_speak_apology(self) -> bool:
         """True exactly once per opening, so a retry storm does not talk over itself."""
-        return self._failures >= self.threshold and not self._spoken and not self._spoken
+        return self._failures >= self.threshold and not self._spoken
 
     def record_failure(self, failure: LlmFailure) -> None:
         self._failures += 1
