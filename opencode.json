@@ -1,10 +1,31 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "livekit-docs": {
-      "type": "remote",
-      "url": "https://docs.livekit.io/mcp",
-      "enabled": true
+    "servers": {
+      "livekit-docs": {
+        "type": "remote",
+        "url": "https://docs.livekit.io/mcp"
+      },
+      "semgrep": {
+        "type": "local",
+        "command": [
+          "uvx",
+          "--from",
+          "semgrep",
+          "--with",
+          "setuptools<81",
+          "semgrep",
+          "mcp",
+          "--transport",
+          "stdio"
+        ],
+        "environment": {
+          "OTEL_SDK_DISABLED": "true"
+        },
+        "timeout": {
+          "startup": 120000
+        }
+      }
     }
   }
 }
