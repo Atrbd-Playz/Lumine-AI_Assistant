@@ -1,8 +1,46 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConversationMessage, ConversationToolEvent } from "../../pages/home/conversation/types";
-import { LumineVoiceManager, type LumineVoiceStatus, type VoiceNotice, type VoiceToolEvent } from "./voice-manager";
+import {
+  LumineVoiceManager,
+  type LumineVoiceStatus,
+  type VoiceBrowserPreview,
+  type VoiceScreenState,
+  type VoiceNotice,
+  type VoicePermissionRequest,
+  type VoiceToolEvent,
+} from "./voice-manager";
 import type { LumineEmotionIntent } from "../../components/avatar/avatarTypes";
 import { DEFAULT_INTERRUPTION_MODE, type InterruptionMode } from "./interruption";
+
+/**
+ * A worker's record, narrowed to the three statuses this surface speaks.
+ *
+ * The worker sends progress steps — "opening WhatsApp", "draft is ready" — which
+ * reuse `started` and `failed` and close with a `done` of their own. Everything
+ * downstream of here knows only `started | completed | failed`, so the mapping
+ * lives in one named function rather than in a ternary at each of two call
+ * sites: two ternaries is how they come to disagree.
+ *
+ * A step's `done` becomes `completed` rather than being passed through, because
+ * the transcript shows this as "this tool call finished", and a fourth status
+ * there would render as neither.
+ */
+function toCallStatus(event: VoiceToolEvent): "started" | "completed" | "failed" {
+  if (event.status === "failed") return "failed";
+  if (event.status === "started") return "started";
+  return "completed";
+}
+
+/**
+ * The same narrowing for the surfaces that only ever describe a *finished* call.
+ *
+ * Separate rather than reusing `toCallStatus` so the return type excludes
+ * `started`: a toast saying "started" is a toast about something that has not
+ * happened yet, and the type is what stops that being written by accident.
+ */
+function toFinishedStatus(event: VoiceToolEvent): "completed" | "failed" {
+  return event.status === "failed" ? "failed" : "completed";
+}
 
 export type LumineVoiceConnectionState = LumineVoiceStatus | "online" | "waiting" | "reconnecting";
 
@@ -81,17 +119,58 @@ export type UseLumineVoiceOptions = {
   onToolResult?: (result: VoiceToolResult) => void;
   /** A rate limit or failure the user should be shown, not just logged. */
   onNotice?: (notice: VoiceNotice) => void;
+  /**
+   * An approval the worker is blocked on. Answer with `respondPermission`.
+   *
+   * Held through a ref rather than captured by the manager's constructor,
+   * because the manager is built once and a permission that reaches a stale
+   * closure never renders: the card would simply not appear, and the worker
+   * would refuse after its deadline. The user would see a tool that "did
+   * nothing" with no question ever asked.
+   */
+  onPermission?: (request: VoicePermissionRequest) => void;
+  /**
+   * A screenshot of the page the browser tools are driving.
+   *
+   * Deliberately its own callback and *not* part of `onToolEvent`: this is a
+   * picture, so it belongs on a panel and not in the transcript, which
+   * accumulates and would otherwise hold a base64 JPEG for the life of the
+   * conversation. Held through a ref for the same reason `onPermission` is — the
+   * manager is built once, so a first-render closure would deliver the next
+   * preview to a component that has since unmounted.
+   */
+  onBrowserPreview?: (preview: VoiceBrowserPreview) => void;
+  /**
+   * The window `desktop_control` is working in.
+   *
+   * Optional because a session that never touches the desktop never publishes
+   * one, and every caller would otherwise have to implement a screen it will
+   * never see.
+   */
+  onScreenState?: (state: VoiceScreenState) => void;
   interruptionMode?: InterruptionMode;
   onError: (message: string) => void;
 };
 
-export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEvent, onToolResult, onNotice, interruptionMode = DEFAULT_INTERRUPTION_MODE, onError }: UseLumineVoiceOptions) {
+export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEvent, onToolResult, onNotice, onPermission, onBrowserPreview, onScreenState, interruptionMode = DEFAULT_INTERRUPTION_MODE, onError }: UseLumineVoiceOptions) {
   const managerRef = useRef<LumineVoiceManager | null>(null);
   const interruptionModeRef = useRef(interruptionMode);
   const onToolResultRef = useRef(onToolResult);
+  const onPermissionRef = useRef(onPermission);
+  const onBrowserPreviewRef = useRef(onBrowserPreview);
+  const onScreenStateRef = useRef(onScreenState);
   useEffect(() => {
     onToolResultRef.current = onToolResult;
   }, [onToolResult]);
+  useEffect(() => {
+    onPermissionRef.current = onPermission;
+  }, [onPermission]);
+  useEffect(() => {
+    onBrowserPreviewRef.current = onBrowserPreview;
+  }, [onBrowserPreview]);
+  useEffect(() => {
+    onScreenStateRef.current = onScreenState;
+  }, [onScreenState]);
   useEffect(() => {
     interruptionModeRef.current = interruptionMode;
   }, [interruptionMode]);
@@ -113,18 +192,25 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
         onUpdateMessage: (id, changes) => onUpdateMessage(id, changes as Partial<Omit<ConversationMessage, "id">>),
         onEmotion: (nextEmotion) => { setEmotion(nextEmotion); onEmotion?.(nextEmotion); },
         onToolEvent: (event: VoiceToolEvent) => {
+          // A progress step reuses `started`/`failed` and closes with its own
+          // `done`, so it is mapped onto the three statuses this surface knows
+          // before it goes anywhere. Steps reach the activity timeline — which
+          // renders them as an ordered list — and deliberately stop there.
           const conversationEvent: ConversationToolEvent = {
             id: `${event.sessionId}:${event.id}`,
             type: "tool",
             name: event.name,
-            status: event.status,
+            status: toCallStatus(event),
             timestamp: event.timestamp,
             sessionId: event.sessionId,
             summary: event.message,
             durationMs: event.durationMs,
           };
           onToolEvent?.(conversationEvent);
-          if (event.status !== "started") {
+          // Only a whole call raises a toast. A six-step send would raise six,
+          // which is the "two signals for one action" problem below at six times
+          // the scale — and the payload belongs to the call, not to a step.
+          if (!event.action && event.status !== "started") {
             // Fires for every finished call, payload or not.
             //
             // It used to fire only when a payload was present, which left a failed
@@ -133,7 +219,7 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
             // to report: two signals is what produced two toasts for one action.
             onToolResultRef.current?.({
               name: event.name,
-              status: event.status,
+              status: toFinishedStatus(event),
               payload: event.payload ?? "",
               durationMs: event.durationMs,
               sessionId: event.sessionId,
@@ -143,6 +229,12 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
         // Optional at the call site but required by the manager, so a caller that
         // does not care about notices is not forced to write a no-op.
         onNotice: (notice) => onNotice?.(notice),
+        // Read from the ref on every delivery: the manager is constructed once,
+        // and a request routed through a first-render closure would be shown to
+        // whoever the component was when the call began.
+        onPermission: (request) => onPermissionRef.current?.(request),
+        onBrowserPreview: (preview) => onBrowserPreviewRef.current?.(preview),
+        onScreenState: (state) => onScreenStateRef.current?.(state),
         onError,
       },
       (next) => setSnapshot(next),
@@ -211,6 +303,19 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
   const sendText = useCallback((text: string) => managerRef.current!.sendText(text), []);
 
   /**
+   * Answer a pending approval. Resolves to whether the answer was delivered.
+   *
+   * `false` means the card should stay up: the packet did not leave, and the
+   * user can try again while the worker's deadline still has time on it.
+   * `true` means it was sent -- the worker owns whether it still counted (an
+   * expired or already-answered id is a no-op there, audited as such).
+   */
+  const respondPermission = useCallback(
+    (requestId: string, decision: "approve" | "deny") => managerRef.current!.sendPermission(requestId, decision),
+    [],
+  );
+
+  /**
    * Whether a typed message can reach Lumine.
    *
    * Derived from the snapshot rather than held as its own state, because it is
@@ -237,6 +342,7 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
     muted: snapshot.muted,
     subscribeAudioLevel,
     sendText,
+    respondPermission,
     canSendText,
     session: snapshot.sessionId ? { sessionId: snapshot.sessionId, roomName: snapshot.roomName ?? "", participantIdentity: "", agentIdentity: "Lumine" } : null,
     connect: () => managerRef.current!.start(interruptionModeRef.current),

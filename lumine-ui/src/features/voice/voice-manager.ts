@@ -50,7 +50,26 @@ export type VoiceNotice = {
 export type VoiceToolEvent = {
   id: string;
   name: string;
-  status: "started" | "completed" | "failed";
+  status: "started" | "completed" | "failed" | "done";
+  /**
+   * The step inside a multi-stage call, when this record is one.
+   *
+   * Present only for the worker's progress steps — "opening WhatsApp", "draft is
+   * ready" — which is what turns a six-second tool call from a pause into a
+   * sequence somebody can follow. Absent on the `started`/`completed` records
+   * that bracket the whole call, so `action === undefined` is exactly what "this
+   * is the call, not a step in it" means.
+   */
+  action?: string;
+  /**
+   * 1-based position within the call's steps, and how many there are.
+   *
+   * Carried rather than counted so a UI can say "step 3 of 6" without knowing
+   * which steps have already arrived — they arrive interleaved with each other,
+   * so a counter would be a guess.
+   */
+  index?: number;
+  total?: number;
   /** A short status for the transcript. Never the tool's payload. */
   message: string;
   /**
@@ -64,6 +83,110 @@ export type VoiceToolEvent = {
   timestamp: Date;
   sessionId: string;
   durationMs?: number;
+};
+
+/**
+ * A picture of the page Lumine is driving, sent so the user can watch.
+ *
+ * This is a *preview*, and the distinction is the whole contract. Lumine may not
+ * have looked at the frame at all — the model only receives an image when it
+ * explicitly asks (`web_control screenshot for_model=true`), because a picture in
+ * its context is re-billed on every later turn for the rest of the conversation.
+ * So the honest rendering is "what Lumine can see", not "what Lumine sees".
+ *
+ * `ageMs` exists for the same reason it does on the camera side
+ * (`visual_state`): a preview with no timestamp reads as live, and Lumine is
+ * holding a photograph.
+ */
+export type VoiceBrowserPreview = {
+  /** A `data:image/jpeg` URL. Never anything else — see `parseBrowserPreview`. */
+  image: string;
+  url: string;
+  title: string;
+  bytes: number;
+  capturedAt: number;
+  /** How stale the picture is, measured on arrival. `undefined` if unknowable. */
+  ageMs?: number;
+  reason: string;
+  sessionId: string;
+};
+
+/**
+ * One look at the user's screen, published by `desktop_control`.
+ *
+ * **Metadata, not a picture.** The desktop tool reads the Windows
+ * accessibility tree rather than capturing pixels, so this names the window and
+ * counts its clickable controls instead of shipping a JPEG. That is the honest
+ * shape of the data, not an omission — and it means the panel can list what
+ * Lumine is about to be able to click, which a screenshot could not.
+ *
+ * `generation` is the worker's own token, carried through unchanged so the
+ * panel can show the same number the model is reasoning about. A user watching
+ * "she is looking at screen #4" and the model clicking ref 7 from screen #3 is
+ * exactly the confusion this makes visible.
+ */
+export type VoiceScreenState = {
+  generation: number;
+  window: string;
+  process: string;
+  /** Whether the window exposes anything clickable by name at all. */
+  addressable: boolean;
+  /**
+   * Whether coordinates this process reads and coordinates it clicks agree.
+   * False on a system too old for per-monitor DPI awareness, where every click
+   * lands at the scale factor's distance from where it was aimed.
+   */
+  dpiAligned: boolean;
+  /** How many controls the observation listed. */
+  elements: number;
+  capturedAt: number;
+  /** How old the observation is, measured on arrival. `undefined` if unknowable. */
+  ageMs?: number;
+  sessionId: string;
+};
+
+/**
+ * One approval the worker is waiting on before it may act.
+ *
+ * The UI half of the permission gate: the tool on the Python side is blocked
+ * until this request is answered or expires, so an unanswered card is not a
+ * prompt the model will work around -- it is a refusal with a clock on it.
+ *
+ * The answer travels back on the same topic as a `permission_response`, and it
+ * must carry `id`: a single-use token the worker minted and is holding in *this*
+ * session's pending set. Nothing here can approve a request from an earlier
+ * call, because the id simply will not exist by then.
+ */
+export type VoicePermissionRequest = {
+  /** Single-use token minted by the worker. Answering it twice does nothing. */
+  id: string;
+  tool: string;
+  /** The verb being asked about: "launch", "close", "send", ... */
+  action: string;
+  /**
+   * The class the worker declared in its own code, never a word from the model.
+   *
+   * An absent or unrecognised class is read as `sensitive` rather than as
+   * something milder: this display must not be the one place the ladder can be
+   * climbed down.
+   */
+  actionClass: "read" | "act" | "sensitive" | "destructive";
+  /** One line for a person, saying in full what will happen. */
+  summary: string;
+  /**
+   * The exact question Lumine is speaking right now.
+   *
+   * Rendered rather than re-derived. The card and the spoken question come from
+   * one function on the worker, and a UI that phrased the action in its own words
+   * would be a second place where "what am I approving" is decided -- the one the
+   * user reads while deciding.
+   */
+  question: string;
+  /** What it acts on: an app name, a window title, a phone number. */
+  target: string;
+  /** Epoch seconds from the worker's clock; the same machine, so it agrees. */
+  expiresAt: number;
+  sessionId: string;
 };
 
 export type VoiceManagerSnapshot = {
@@ -132,6 +255,43 @@ const AGENT_IDENTITY = "Lumine";
  * composer is a bug report.
  */
 const TOPIC_CHAT = "lk.chat";
+/**
+ * The topic approval cards arrive on and answers leave on.
+ *
+ * Named rather than inlined for the same reason `TOPIC_CHAT` is: sent on the
+ * wrong topic, a permission card vanishes on one side with no error on the
+ * other, and the user sees a tool that silently waits until it refuses.
+ */
+const TOPIC_PERMISSION = "lumine.permission";
+
+/**
+ * Where `agent/tools/browser/preview.py` publishes a page screenshot.
+ *
+ * Its own topic rather than a field on `lumine.tool`, because that topic is
+ * transient status text and a picture is not: routing a few hundred KB of base64
+ * through it would put a screenshot in the same queue as "opening WhatsApp" and
+ * let one slow publish reorder the other. Mirrors `preview.TOPIC` on the worker
+ * side.
+ */
+const TOPIC_BROWSER = "lumine.browser";
+
+/**
+ * What Lumine can see of the user's screen, when `desktop_control` observes it.
+ *
+ * Its own topic for the same reason the browser preview has one: this is a
+ * *state* the user is entitled to watch, not transient status text. A person
+ * who has given an agent control of their mouse has a right to know which
+ * window it is looking at, and a toast that vanishes in four seconds is not
+ * that.
+ *
+ * There is no picture here, and that is the honest shape of the data rather
+ * than a missing one: the desktop tool reads the accessibility tree, so it has
+ * names and roles rather than pixels. It is therefore small, and the panel it
+ * feeds lists the controls it can click — which is more useful to a user than a
+ * low-resolution screenshot would be, and costs nothing to re-send.
+ */
+const TOPIC_SCREEN = "lumine.screen";
+
 const TOKEN_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const DISPATCH_TIMEOUT_MS = 10_000;
@@ -155,6 +315,14 @@ type ToolStatusPayload = {
   name?: string;
   tool?: string;
   status?: string;
+  /**
+   * The step within a multi-stage call. Its presence is what distinguishes a
+   * progress step from the record bracketing the whole call — the two share the
+   * `started` and `failed` statuses, so the status cannot do it.
+   */
+  action?: string;
+  index?: number;
+  total?: number;
   message?: string;
   summary?: string;
   /** The payload, kept separate from `summary` so the transcript never shows it. */
@@ -173,6 +341,123 @@ type NoticePayload = {
 };
 
 const NOTICE_KINDS = new Set(["limit", "agent_failure"]);
+
+type PermissionRequestPayload = {
+  type?: string;
+  id?: string;
+  tool?: string;
+  action?: string;
+  action_class?: string;
+  summary?: string;
+  question?: string;
+  target?: string;
+  expires_at?: number;
+};
+
+type BrowserPreviewPayload = {
+  type?: string;
+  reason?: string;
+  url?: string;
+  title?: string;
+  image?: string;
+  bytes?: number;
+  captured_at?: number;
+  /** Stamped by the app on arrival, for the age calculation. */
+  received_at?: number;
+};
+
+const PERMISSION_ACTION_CLASSES = new Set(["read", "act", "sensitive", "destructive"]);
+
+type ScreenStatePayload = {
+  type?: string;
+  generation?: number;
+  window?: string;
+  process?: string;
+  addressable?: boolean;
+  dpiAligned?: boolean;
+  elements?: number;
+  captured_at?: number;
+  received_at?: number;
+};
+
+/**
+ * `screen_preview` — what `desktop_control` can see of the screen right now.
+ *
+ * Every field is validated rather than cast, because this is the one surface
+ * where a wrong value would be *believed*: the generation is what the model
+ * clicks against, and a panel showing a generation the worker never minted
+ * invites a user to approve an action against a screen that has moved.
+ *
+ * `generation` must be a positive integer. Zero and negatives are refused
+ * rather than displayed — the worker counts up from one, so neither can be
+ * real, and rendering them would mean inventing a screen state.
+ */
+function parseScreenState(payload: unknown, sessionId: string): VoiceScreenState | null {
+  if (!payload || typeof payload !== "object") return null;
+  const event = payload as ScreenStatePayload;
+  if (event.type !== "screen_preview") return null;
+  const generation = event.generation;
+  if (typeof generation !== "number" || !Number.isInteger(generation) || generation < 1) {
+    return null;
+  }
+  const capturedAt = typeof event.captured_at === "number" ? event.captured_at : 0;
+  const receivedAt = typeof event.received_at === "number" ? event.received_at : Date.now();
+  return {
+    generation,
+    window: typeof event.window === "string" ? event.window : "",
+    process: typeof event.process === "string" ? event.process : "",
+    addressable: event.addressable !== false,
+    dpiAligned: event.dpiAligned !== false,
+    elements: typeof event.elements === "number" && event.elements >= 0 ? event.elements : 0,
+    capturedAt,
+    ageMs: capturedAt > 0 ? Math.max(0, receivedAt - capturedAt * 1000) : undefined,
+    sessionId,
+  };
+}
+
+/**
+ * `browser_preview` — a screenshot of the page Lumine is driving.
+ *
+ * Separate from `lumine.tool` because it is a different surface: that topic is
+ * transient status text the app renders as a toast, and this is a picture. It
+ * arrives on its own topic so a dropped preview can never delay or reorder a
+ * tool status.
+ *
+ * `age_ms` is carried rather than recomputed here. The picture is a photograph,
+ * not a live view, and a preview shown without its age reads as though Lumine is
+ * still looking at that exact frame — which is the same trap `visual_state` exists
+ * to avoid on the camera side.
+ *
+ * The image is dropped unless it is a `data:image/jpeg` URL: an agent is not a
+ * trusted source of markup, and `src` on anything else would be a way to fetch an
+ * arbitrary address from the app.
+ */
+function parseBrowserPreview(payload: unknown, sessionId: string): VoiceBrowserPreview | null {
+  if (!payload || typeof payload !== "object") return null;
+  const event = payload as BrowserPreviewPayload;
+  if (event.type !== "browser_preview") return null;
+  const image = (event.image ?? "").trim();
+  if (!image.startsWith("data:image/jpeg;base64,")) return null;
+  const capturedAt = typeof event.captured_at === "number" ? event.captured_at : 0;
+  // Read once into a number, because two separate optional accesses are two
+  // separate narrowing checks and the second one is not narrowed by the first.
+  const receivedAt = typeof event.received_at === "number" ? event.received_at : 0;
+  return {
+    image,
+    url: (event.url ?? "").trim(),
+    title: (event.title ?? "").trim(),
+    bytes: typeof event.bytes === "number" ? event.bytes : 0,
+    capturedAt,
+    // Measured on arrival rather than trusted: the worker stamps `captured_at`
+    // from its own clock and the app compares against its own, so the gap is a
+    // real transit time rather than a difference between two machines' opinions
+    // about what time it is. Undefined when either side is missing, and the UI
+    // says nothing about age rather than claiming zero.
+    ageMs: capturedAt > 0 && receivedAt > 0 ? Math.max(0, receivedAt - capturedAt) : undefined,
+    reason: (event.reason ?? "captured").trim() || "captured",
+    sessionId,
+  };
+}
 
 function parseNotice(payload: unknown, sessionId: string): VoiceNotice | null {
   if (!payload || typeof payload !== "object") return null;
@@ -194,19 +479,40 @@ function parseNotice(payload: unknown, sessionId: string): VoiceNotice | null {
   };
 }
 
+/**
+ * `tool_status` — a tool call started, completed or failed, *or* a step inside
+ * one.
+ *
+ * The step records are what make a multi-stage tool legible. A staged WhatsApp
+ * send is six things happening over several seconds; without them the user sees
+ * "running send whatsapp" and then nothing, which for a request they are waiting
+ * on reads as a hang rather than as work.
+ *
+ * A step is told apart from a whole call by its `action`, not by its status:
+ * `started` and `failed` mean both, and keying off the status would make every
+ * call look like a step. Steps arrive twice — `started` when the work begins and
+ * `done` with a duration when it finishes — so the UI shows a slow step while it
+ * is running and ticks it off when it is not. They share an `id` of
+ * `tool.action` so they group, and carry `index`/`total` so the position is
+ * readable without the UI counting.
+ */
 function parseToolStatus(payload: unknown, sessionId: string): VoiceToolEvent | null {
   if (!payload || typeof payload !== "object") return null;
   const event = payload as ToolStatusPayload;
   if (event.type !== "tool_status") return null;
   const name = (event.name || event.tool || "tool").trim();
   const status = event.status;
-  if (!name || !event.id || (status !== "started" && status !== "completed" && status !== "failed")) {
+  const action = (event.action || "").trim();
+  const isStep = action.length > 0 && (status === "started" || status === "done" || status === "failed");
+  const isCall = status === "started" || status === "completed" || status === "failed";
+  if (!name || !event.id || (!isStep && !isCall)) {
     return null;
   }
   return {
     id: event.id,
     name,
     status,
+    action: action || undefined,
     // `summary` first, and never `result`. A transcript records what was *said*,
     // and a tool payload is not something anyone said -- it is the model's input,
     // compressed and (for web data) wrapped in an injection guard. Showing it
@@ -216,6 +522,44 @@ function parseToolStatus(payload: unknown, sessionId: string): VoiceToolEvent | 
     timestamp: typeof event.timestamp === "number" ? new Date(event.timestamp * 1000) : new Date(),
     sessionId,
     durationMs: typeof event.duration_ms === "number" ? event.duration_ms : undefined,
+    index: typeof event.index === "number" ? event.index : undefined,
+    total: typeof event.total === "number" ? event.total : undefined,
+  };
+}
+
+/**
+ * One `permission_request` card from the worker, or null.
+ *
+ * Strict about the shape for the usual reason: a card whose `id` or `summary`
+ * did not survive the wire must not be shown as something that can be answered
+ * -- answering it would send an id the worker cannot use, and the user would
+ * have watched an approval go nowhere. Anything unparseable is dropped here and
+ * the worker's own deadline turns it into a refusal.
+ */
+function parsePermission(payload: unknown, sessionId: string): VoicePermissionRequest | null {
+  if (!payload || typeof payload !== "object") return null;
+  const event = payload as PermissionRequestPayload;
+  if (event.type !== "permission_request") return null;
+  const id = (event.id ?? "").trim();
+  const summary = (event.summary ?? "").trim();
+  if (!id || !summary) return null;
+  const actionClass = (event.action_class ?? "").trim();
+  return {
+    id,
+    tool: (event.tool ?? "").trim() || "tool",
+    action: (event.action ?? "").trim(),
+    // Unknown reads as sensitive, not as something milder.
+    actionClass: PERMISSION_ACTION_CLASSES.has(actionClass)
+      ? (actionClass as VoicePermissionRequest["actionClass"])
+      : "sensitive",
+    summary,
+    // Falls back to the summary when an older worker does not send it, so the
+    // card still renders. The fallback is *not* a re-phrasing: it is the same
+    // words, which is why it is safe to show.
+    question: (event.question ?? "").trim() || summary,
+    target: (event.target ?? "").trim(),
+    expiresAt: typeof event.expires_at === "number" ? event.expires_at : 0,
+    sessionId,
   };
 }
 
@@ -265,6 +609,24 @@ export type VoiceLifecycleCallbacks = {
   onEmotion: (emotion: LumineEmotionIntent) => void;
   onToolEvent: (event: VoiceToolEvent) => void;
   onNotice: (notice: VoiceNotice) => void;
+  /** An approval the worker is waiting on. The UI answers with `sendPermission`. */
+  onPermission: (request: VoicePermissionRequest) => void;
+  /**
+   * A screenshot of the page the browser tools are driving.
+   *
+   * A picture rather than a status line, so it is a separate callback from
+   * `onToolEvent`: it must not become a toast, and it must not end up in the
+   * transcript, which accumulates and would then hold a base64 JPEG forever.
+   */
+  onBrowserPreview?: (preview: VoiceBrowserPreview) => void;
+  /**
+   * The window `desktop_control` is looking at, when it observes one.
+   *
+   * Optional because a session that never touches the desktop never publishes
+   * one, and a required callback would mean every caller having to implement a
+   * screen it will never see.
+   */
+  onScreenState?: (state: VoiceScreenState) => void;
   onError: (message: string) => void;
 };
 
@@ -752,7 +1114,12 @@ export class LumineVoiceManager {
         !ownsSession() ||
         !participant ||
         !isAgent(participant) ||
-        (topic !== "lumine.emotion" && topic !== "lumine.tool" && topic !== "lumine.notice")
+        (topic !== "lumine.emotion" &&
+          topic !== "lumine.tool" &&
+          topic !== "lumine.notice" &&
+          topic !== TOPIC_PERMISSION &&
+          topic !== TOPIC_BROWSER &&
+          topic !== TOPIC_SCREEN)
       ) {
         return;
       }
@@ -763,7 +1130,27 @@ export class LumineVoiceManager {
         const decoded = JSON.parse(new TextDecoder().decode(payload)) as {
           type?: string;
           payload?: Partial<LumineEmotionIntent> & { primary?: string; source?: string };
-        };
+        } & BrowserPreviewPayload & ScreenStatePayload;
+        if (topic === TOPIC_SCREEN) {
+          const state = parseScreenState(
+            { ...decoded, received_at: Date.now() },
+            session.id,
+          );
+          if (state) {
+            this.callbacks.onScreenState?.(state);
+          }
+          return;
+        }
+        if (topic === TOPIC_BROWSER) {
+          const preview = parseBrowserPreview(
+            { ...decoded, received_at: Date.now() },
+            session.id,
+          );
+          if (preview) {
+            this.callbacks.onBrowserPreview?.(preview);
+          }
+          return;
+        }
         if (topic === "lumine.tool") {
           const toolEvent = parseToolStatus(decoded, session.id);
           if (toolEvent) {
@@ -775,6 +1162,13 @@ export class LumineVoiceManager {
           const notice = parseNotice(decoded, session.id);
           if (notice) {
             this.callbacks.onNotice(notice);
+          }
+          return;
+        }
+        if (topic === TOPIC_PERMISSION) {
+          const request = parsePermission(decoded, session.id);
+          if (request) {
+            this.callbacks.onPermission(request);
           }
           return;
         }
@@ -965,6 +1359,51 @@ export class LumineVoiceManager {
       // Enter, the draft cleared, and Lumine said nothing.
       console.warn("[Voice] Text send failed", error);
       this.error = "That message did not reach Lumine.";
+      this.callbacks.onError(this.error);
+      this.publish();
+      return false;
+    }
+  }
+
+  /**
+   * Answer one pending approval card: `approve` or `deny`.
+   *
+   * Reliability matters more than latency here, so the packet is published
+   * reliable -- a lost *approval* would leave the worker waiting out its
+   * deadline and then refuse, which is safe but is a question the user already
+   * answered. A lost refusal would have the same shape from the other side.
+   *
+   * The id travels verbatim. It is a single-use token the worker minted for
+   * this session; the worker decides whether it is still pending, still inside
+   * its window, and its own. This method does not and cannot confirm that --
+   * the caller removes the card because the answer was *sent*, and the worker's
+   * deadline is what makes a no-op impossible to mistake for a success for long.
+   *
+   * Boolean rather than a throw for the same reason `sendText` is: a click
+   * handler must not be able to take the session down by firing at the wrong
+   * moment. `false` leaves the card on screen so the user can try again.
+   */
+  async sendPermission(requestId: string, decision: "approve" | "deny"): Promise<boolean> {
+    const session = this.activeSession;
+    if (!session || session.disposed || !requestId) {
+      this.error = "That approval window has closed.";
+      this.callbacks.onError(this.error);
+      this.publish();
+      return false;
+    }
+
+    try {
+      const payload = new TextEncoder().encode(
+        JSON.stringify({ type: "permission_response", id: requestId, decision }),
+      );
+      await session.room.localParticipant.publishData(payload, {
+        reliable: true,
+        topic: TOPIC_PERMISSION,
+      });
+      return true;
+    } catch (error) {
+      console.warn("[Voice] Permission answer failed", error);
+      this.error = "That answer did not reach Lumine.";
       this.callbacks.onError(this.error);
       this.publish();
       return false;
