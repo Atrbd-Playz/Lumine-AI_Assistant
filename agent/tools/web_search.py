@@ -12,6 +12,11 @@ from . import tool_results
 from .tools_compat import RunContext, ToolError, function_tool
 from .tools_text import clip
 
+try:
+    from ..runtime.permission_gate import require_approval
+except ImportError:  # running as a top-level script with agent/ on sys.path
+    from runtime.permission_gate import require_approval
+
 SEARCH_URL = "https://html.duckduckgo.com/html/"
 TIMEOUT = httpx.Timeout(10.0)
 MAX_RESULTS = 4
@@ -93,6 +98,18 @@ async def search_web(context: RunContext, query: str) -> str:
     search = clip(query, 200).strip()
     if not search:
         raise ToolError("Tell me what to search for.")
+
+    # A read: automatic by default, but consulted so a settings entry for
+    # `search_web` (ask, or off) actually governs the call instead of
+    # decorating a card the tool then ignores.
+    await require_approval(
+        context,
+        tool="search_web",
+        action="read",
+        action_class="read",
+        summary=f"Search the web for {search}",
+        target=search,
+    )
 
     try:
         async with shared_client() as client:

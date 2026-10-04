@@ -23,10 +23,17 @@ try:
     from .tools_compat import RunContext, ToolError, function_tool
     from .tool_results import MAX_RESULT_CHARS as MAX_SECTION_CHARS
     from .tool_results import as_payload
+    from .tools_text import clip
 except ImportError:  # running as a top-level module, which is how the worker loads it
     from tools_compat import RunContext, ToolError, function_tool
     from tool_results import MAX_RESULT_CHARS as MAX_SECTION_CHARS
     from tool_results import as_payload
+    from tools_text import clip
+
+try:
+    from ..runtime.permission_gate import require_approval
+except ImportError:  # running as a top-level script with agent/ on sys.path
+    from runtime.permission_gate import require_approval
 
 PERSONA_PATH = Path(__file__).resolve().parent.parent / "prompts" / "persona.md"
 
@@ -186,4 +193,16 @@ async def recall_persona(context: RunContext, topic: str) -> str:
     cleaned = _normalise(topic)
     if not cleaned:
         raise ToolError("Tell me what you need guidance on.")
+
+    # A read of Lumine's own file, so automatic by default -- consulted so a
+    # settings entry for `recall_persona` has a gate to bite on, the same way
+    # `search_web` and `get_news` do.
+    await require_approval(
+        context,
+        tool="recall_persona",
+        action="read",
+        action_class="read",
+        summary=f"Read Lumine's own guidance about {clip(topic, 60)}",
+        target=cleaned,
+    )
     return recall(topic)

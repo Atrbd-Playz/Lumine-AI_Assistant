@@ -1066,6 +1066,13 @@ lumine-ui/src-tauri/src/credential_probe.rs  the secret's path: keyring -> env -
 lumine-ui/src-tauri/src/credential_injection.rs  every variable, from its own slot
 lumine-ui/src-tauri/src/setup_status.rs  can this install hold a conversation?
 lumine-ui/src-tauri/src/python_env.rs        shared interpreter/agent-dir resolution
+agent/tools/messaging/whatsapp_ops.py       the operation table: class, paths, verify
+agent/tools/messaging/whatsapp_web.py       WhatsApp Web, in a tab of its own
+agent/tools/messaging/whatsapp_refs.py      ChatRef/MessageRef and their freshness
+agent/tools/messaging/whatsapp_files.py     the attachment allowlist
+agent/runtime/progress.py                   a tool narrating its own steps
+agent/runtime/history_consent.py            the question about reading messages
+agent/whatsapp_probe.py                     which WhatsApp selectors are live now
 ```
 
 ## Verification
@@ -1109,6 +1116,234 @@ instead.
 `scripts/` is inside the `tsconfig.json` include list, so `npm run build` typechecks
 these files. That is how three real type errors in them were found.
 
+## WhatsApp grew past "send", and the privacy promise had to change with it
+
+The messaging tool could do exactly one thing: send. Its module docstring, the
+Tools-page card and the repository instructions all said the same reassuring
+thing — *nothing here reads message history*.
+
+Almost everything people actually want from their WhatsApp needs it. "Did Afia
+reply?", "what was that address she sent?", "what did we agree on?" are all
+questions about messages that already exist. So the capability arrived, and the
+obligation arrived with it: a promise written in three places had become false,
+and leaving it false would be the worst option available.
+
+### What was decided
+
+**One tool per blast radius, not one tool per verb.** Four tools —
+`whatsapp_read`, `send_whatsapp`, `whatsapp_chats`, `whatsapp_account` —
+because listing your chats and deleting a message for everyone are both
+"WhatsApp", and combining them forces either the strictest onto the mildest
+(every read asks, which trains a person to answer "yes" without reading) or
+something irreversible to stop asking. A saved config can tighten one verb of one
+tool, `whatsapp_chats.delete=ask`, the way it already does for
+`manage_window.close=ask`.
+
+**The operation table is the single authority.** `whatsapp_ops.py` holds one row
+per verb: its permission class, which paths can perform it, *how it proves it
+happened*, and whether an unconfirmed outcome blocks a retry. The Tools-page
+badge, the registry's `TOOL_ACTION_CLASS` and the path chooser are all computed
+from it rather than restated, because "I can't read somebody's messages to find
+out who I am" is not a hypothetical risk when the model needs to pick between
+checking presence and ringing a phone.
+
+### Three decisions worth arguing with
+
+**Reading history asks once per conversation, not once per call.** Asking every
+turn makes "read what she said" unusable in a voice conversation, and a voice
+turn is where this feature is used. The cost is that one "yes" is a wider grant
+than the user may picture, so the question says so in words — *for the rest of
+this conversation* — and the grant is released with the session. A per-chat grant
+is stricter and is a one-line change.
+
+**`ask` is the default, and `off` means off.** A capability this private should
+not be what happens when nobody configured anything, so an unset value and an
+unparseable one both resolve to the question. And `off` refuses rather than
+degrading into a question, because a switch that degrades into a prompt is a
+suggestion.
+
+**History uses a tighter result budget than every other tool.**
+`tool_results.MAX_RESULT_CHARS` is 800 and right for headlines. Message history
+gets a third of that, because a tool result joins the conversation permanently
+and is re-sent on every later turn: a generous read is paid for over and over,
+and 8,000 TPM is a per-*minute* budget. History is also the one result that is
+third-party text — a contact is a stranger who can put "ignore previous
+instructions" into a message — so `wrap_untrusted` is load-bearing there in a way
+it is not for a weather lookup.
+
+### There is one path, and it is Web
+
+`PATH_PREFERENCE` is `("web",)`.
+
+The history is worth keeping, because each step was reasonable and each was wrong
+in a way that only a running account could show.
+
+**Desktop first**, because a working desktop path starts *nothing* — no browser,
+no profile, no login. **Then `("web", "desktop")`**, because that advantage applies
+only to sending, and everything else needs something *addressable*: a UI Automation
+tree offers geometry and heuristics where a DOM offers identity. **Now Web only**,
+because keeping Desktop as a *fallback* was three separate faults, all visible to
+the user rather than theoretical:
+
+- **Two applications for one sentence.** A send whose Web tab had not finished
+  loading fell through to Desktop, so the desktop app opened and searched its own
+  chat list while Web sat right there. Measured in the worker log as a 9.1 s
+  resolve — UI Automation speed — against a 411 ms resolve for the same lookup on a
+  warm tab.
+- **A resolve that could not be followed by an open.** The name resolved on one
+  path and the chat was then opened on the other, so a contact WhatsApp had just
+  matched came back as *"I couldn't read your chat list -- nothing matched, and
+  nothing was sent."* Picking one path per operation and using it whole had been
+  the mitigation for that; it helps, and the only way to *guarantee* it is to have
+  one path.
+- **A silent authority question.** Which application a message leaves from is not
+  something a person should have to reason about mid-sentence.
+
+Two supporting decisions make the one path stick:
+
+- `backend_candidates()` does not name `desktop_backend` in its factory mapping.
+  Leaving it in the dict with no caller would be one edit away from returning.
+- `Operation.supports()` answers from `ops.ONLY_PATH`, not from the row's `desktop`
+  field — so a row setting `desktop=True` cannot make the adapter reachable on its
+  own. The field and `PATHS` stay as the *record* of what the adapter could do, so
+  the next question ("could it have handled this?") has a row to point at. Deleting
+  the column would have been a tidier diff and a worse one.
+
+**The installed app is still launchable.** "Open WhatsApp Desktop" is a request to
+start a program, and `router.py` sends it to `open_app` like any other installed
+program. It is a window the user can look at, never the thing a message is written
+into. An unreachable adapter and a launchable application are different states, and
+only one of them was removed.
+
+### The send flow's order is the feature
+
+Resolve → open chat → **type the draft** → ask → send → confirm. The draft step
+happens *before* the approval question, and the text is read back out of the
+composer to confirm it took. Two reasons:
+
+- The user is asked to confirm something that is physically on their own screen,
+  not a sentence Lumine recited. A draft that lost its last few characters is
+  cleared rather than sent, and rather than left for a person to press send on by
+  hand.
+- A declined approval clears the draft. Leaving it would mean every later send
+  refuses with *"there is already something written in WhatsApp's message box"*,
+  so a single "no" would break messaging until they found the window and emptied
+  it themselves. A refused action should cost the user nothing to undo.
+
+### What is still deliberately narrow
+
+- **Every verb is Web-only, and the adapter that could have done two of them is
+  unreachable.** `choose_backend(verb)` still filters by the operation table before
+  asking anything, so a verb the Web path cannot do is reported as such — with the
+  refusal naming the one application rather than leaving the user to work out which
+  of two she meant.
+- **Attachments cannot leave the allowlist.** A path arrives from a language
+  model, and without a boundary "attach `C:\Users\me\.ssh\id_rsa`" is a
+  perfectly reasonable thing for a confused model to produce. The path is
+  *resolved* and then compared against resolved roots, so `..`, an absolute path
+  and a symlink out are all judged by where they land. Extensions are a
+  whitelist; a URL is refused outright, because downloading would mean lifting
+  `accept_downloads=False` — a guard that exists so a page cannot drop files on
+  this disk.
+- **Selector lists are maintained by a probe, not by recollection.**
+  `agent/whatsapp_probe.py` reports which spelling is live in the current build.
+  The lists in `whatsapp_web.py` were written from knowledge, and knowledge is
+  exactly the thing that goes stale. A target that cannot be found is a
+  *refusal* — the module's central rule — so a WhatsApp layout change costs a
+  capability and not a wrong action in somebody's chat.
+
+### The risk that is not engineering
+
+Automating a personal WhatsApp account violates WhatsApp's terms, and enforcement
+is a banned number. No amount of care in the selector lists changes that. It is a
+product risk the feature creates, it was accepted knowingly, and it is the reason
+the Desktop/Web split above puts everything behind a single opt-in
+(`messaging.whatsapp.mode: automation`) rather than enabling any of it by
+default.
+
+### Two findings from the first real run, both now structural
+
+**Voice-first approvals are silent on a native-audio profile.** This is the one
+that took the longest to find, because every layer reported success.
+`AgentActivity.say` raises
+`RuntimeError("trying to generate speech from text without a TTS model or a
+RealtimeSession that supports say()")` unless the session has a TTS stage *or* the
+realtime model advertises `supports_say` — and the Google realtime plugin never
+sets that capability. A Gemini Live profile with `output.mode: model_voice` has
+`tts=None` by construction (`pipeline_factory._build_realtime_session` only builds
+one for `custom_tts`), so the approval question was being written to a synthesiser
+that does not exist.
+
+Worse, `_announce` caught the exception and logged it at **debug**, so the
+symptom was "she shows a card and says nothing" with no clue anywhere. That is now
+a `logger.warning` naming the remedy, plus a `lumine.notice` telling the user the
+card is the only channel — because the *answer* path does not need a synthesiser,
+so a user who is told "say yes or no out loud" can act where a user shown a silent
+card has no idea an answer is expected.
+
+The remedy is not optional: `validation.py` already refuses
+`custom_tts` for a native-audio realtime model with *"Use a pipeline profile, or
+keep the model's own voice."* So on Gemini Live, voice approvals mean the pipeline
+profile (Groq + Cartesia), and that is a real trade — better token economics
+against the realtime model's turn-taking.
+
+**One WhatsApp path, one page, one decision.** Two of the four bugs in the first
+run were the same mistake wearing different hats. `whatsapp.py` and
+`whatsapp_web.py` are one path split across two files, and the Web half of the
+first was pointed at the **browse** tab while the second used the dedicated
+WhatsApp tab — so searching found a contact and then selecting it did nothing.
+Separately, `search_contact` walked `PATH_PREFERENCE` and chose a path *for
+itself* while `choose_backend` chose another, so a name could be resolved against
+Desktop's chat list and the message sent through a Web tab that had never heard
+of it. Both are now structural rather than remembered: `search_name` is a member
+of `Backend`, `_resolve_contact` takes the backend it will use, and a test asserts
+the modules never import the browse page — **on the syntax tree, not the text**,
+so the comment explaining the bug does not fail the test that prevents it.
+
+There was a third copy of the same mistake, in `open_chat` itself: two
+implementations, one per module, and only the Web one had the search-box fallback
+the virtualised chat list makes necessary. So the send tool resolved a contact and
+then could not open it — `find` returned `chat: "Me2"` and 400 ms later
+`open_chat("Me2")` reported *"nothing matched"*. They also **disagreed about what
+to do when the chat header cannot be read**: the send-path copy proceeded (the
+press landed, nothing is sent until the user approves a draft on their own screen)
+and the Web copy refused (the title never matched in the window). Same page, two
+answers. `whatsapp.open_chat` now delegates to `whatsapp_web.open_chat`, and the
+*refuse-on-mismatch / proceed-on-unreadable* rule lives in the one implementation —
+asserted as an absence on the wrapper, because a second copy that happens to agree
+today is the state the bug was found in.
+
+### The header read is a *comparison*, so it has to be able to match
+
+`open_chat` refuses a title that does not match the chat it resolved. That refusal
+is deliberate and load-bearing: a mismatch means the conversation under the cursor
+is not the one that was resolved, so a message typed there goes to somebody who
+never agreed to receive it.
+
+Which means a reader that can never produce a matching title turns the check into
+one that always refuses — and that is exactly what happened. `_JS_ACTIVE_CHAT` read
+`header.textContent`, and the live header is:
+
+```text
+div[data-testid='conversation-info-header']
+  ├─ div                                            → 'Me2'   <- the name
+  └─ div[data-testid='chat-subtitle'] > span[title] → 'click here for contact info'
+```
+
+So `active_chat()` returned `'Me2click here for contact info'` for a chat named
+`Me2`. Measured sequence: `search_contact('Me')` resolved `Me2`, the chat opened,
+`open_chat('Me2')` returned `False`, and the send refused with *"I couldn't read
+your chat list -- nothing matched"* — for a chat that was open, and that the
+previous step had just found.
+
+The reader now takes the first child that is not the subtitle. It **names the
+exclusion** rather than stripping the hint's text, because that string is
+localised: `replace('click here for contact info', '')` fixes an English UI and
+leaves every other user with the same permanent refusal. The general shape of the
+bug is the one this whole file keeps finding — a selector that reads more than it
+meant to, silently — and the general shape of the fix is the same: measure the DOM,
+do not reason about it.
+
 ## The token budget
 
 The provider tiers Lumine runs on are metered in tokens per **minute**, not in
@@ -1122,6 +1357,7 @@ before the conversation even started.
 | A news lookup, and every turn after it | 1,200 chars of prose | 3 headlines |
 | A web search | 1,600 chars including snippets | titles and links |
 | A conversation | grew until the provider refused it | trimmed at 40 items |
+| A WhatsApp history read, and every turn after it | — | ~420 chars, and clipped per message |
 
 ### The persona is split, not rewritten
 

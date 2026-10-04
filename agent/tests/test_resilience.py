@@ -233,7 +233,40 @@ class ToolResultTests(unittest.TestCase):
         # A model told a list is complete will answer as though it is.
         text = tool_results.as_payload({"x": "y" * 5000})
         self.assertLessEqual(len(text), tool_results.MAX_RESULT_CHARS)
-        self.assertIn(tool_results.TRUNCATION_NOTE.strip(), text)
+        parsed = json.loads(text)
+        self.assertTrue(parsed.get("truncated"), "a cut payload must say so")
+
+    def test_an_oversized_result_is_still_valid_json(self):
+        """The bug this replaced: the *rendered* string was cut at the budget.
+
+        The result was `{"results":[{"name":"a"},{"name":"b"` plus `" (truncated)"`
+        -- not an object, so the model could not read the two results that were in
+        it, and no caller could detect it. The cut is now taken off the list.
+        """
+        big = {"results": [{"name": f"track number {n}"} for n in range(200)]}
+        text = tool_results.as_payload(big)
+        self.assertLessEqual(len(text), tool_results.MAX_RESULT_CHARS)
+        parsed = json.loads(text)  # raises if the structure was broken
+        self.assertTrue(parsed["truncated"])
+        self.assertGreater(parsed["omitted"], 0)
+        self.assertEqual(len(parsed["results"]), 200 - parsed["omitted"])
+
+    def test_a_cut_result_does_not_mutate_the_callers_data(self):
+        # A tool hands `as_payload` its own result and then keeps using it.
+        big = {"results": [{"name": f"track {n}"} for n in range(100)]}
+        tool_results.as_payload(big)
+        self.assertEqual(len(big["results"]), 100)
+
+    def test_a_cut_happens_on_the_largest_list_not_a_small_one(self):
+        # Cutting one item from a two-element list while a hundred survive would be
+        # the wrong thing dropped, and nothing would say so.
+        payload = {
+            "tags": ["a", "b"],
+            "results": [{"name": "n" * 60} for _ in range(40)],
+        }
+        parsed = json.loads(tool_results.as_payload(payload))
+        self.assertEqual(parsed["tags"], ["a", "b"])
+        self.assertLess(len(parsed["results"]), 40)
 
     def test_a_short_payload_is_untouched(self):
         self.assertEqual(tool_results.as_payload({"a": 1}), '{"a":1}')

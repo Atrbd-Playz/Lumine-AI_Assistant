@@ -13,6 +13,11 @@ from . import tool_results
 from .tools_compat import RunContext, ToolError, function_tool
 from .tools_text import clip
 
+try:
+    from ..runtime.permission_gate import require_approval
+except ImportError:  # running as a top-level script with agent/ on sys.path
+    from runtime.permission_gate import require_approval
+
 SEARCH_URL = "https://news.google.com/rss/search"
 TOP_STORIES_URL = "https://news.google.com/rss"
 LOCALE = {"hl": "en-US", "gl": "US", "ceid": "US:en"}
@@ -94,6 +99,19 @@ async def get_news(context: RunContext, topic: str = "") -> str:
             empty for today's top stories.
     """
     subject = clip(topic, 120).strip()
+
+    # A read, so the default policy passes it straight through -- the gate is
+    # consulted anyway because a settings entry for `get_news` (ask, or off)
+    # has to bite somewhere, and "somewhere" is the tool itself, not a prompt.
+    await require_approval(
+        context,
+        tool="get_news",
+        action="read",
+        action_class="read",
+        summary=(f"Look up news about {subject}" if subject else "Look up today's top stories"),
+        target=subject,
+    )
+
     params = dict(LOCALE)
     url = TOP_STORIES_URL
     if subject:

@@ -376,5 +376,112 @@ class CredentialStatusTests(unittest.TestCase):
             self.assertIsInstance(value, bool)
 
 
+class ToolSwitchSettingsTests(unittest.TestCase):
+    """The per-tool on/off row, checked rather than silently ignored.
+
+    A switch with a value nobody understands is a permission the user thinks
+    they set and did not, so it is reported. A *tool id* typo is not checked
+    here: `settings/validation.py` deliberately does not import the registry
+    (the registry reaches the permission gate, which reaches this package), so
+    `tool_catalog.py --check` is the authority on which ids exist.
+    """
+
+    def document(self) -> dict:
+        return {
+            "version": 1,
+            "activeProfileId": "p1",
+            "providers": {},
+            "profiles": [pipeline_profile()],
+            "agent": {},
+        }
+
+    def codes(self, document) -> list[str]:
+        return codes(validate_document(document, ALL_PRESENT))
+
+    def test_on_and_off_are_silent(self):
+        document = self.document()
+        document["tools"] = {"browse": "off", "open_app": "on"}
+        self.assertEqual(self.codes(document), [])
+
+    def test_an_unknown_value_is_reported(self):
+        document = self.document()
+        document["tools"] = {"browse": "maybe"}
+        self.assertIn("tools.unknown_value", self.codes(document))
+
+    def test_a_non_object_section_is_an_error(self):
+        document = self.document()
+        document["tools"] = ["browse"]
+        self.assertIn("tools.invalid", self.codes(document))
+
+    def test_an_unnamed_switch_is_reported(self):
+        document = self.document()
+        document["tools"] = {"   ": "off"}
+        self.assertIn("tools.unknown_tool", self.codes(document))
+
+    def test_a_switch_typo_does_not_reject_the_voice_profile(self):
+        # Same rule as permissions, messaging and routing: orthogonal to whether
+        # the profile runs, and a blocking error here would throw away the
+        # provider settings over one mistyped key.
+        document = self.document()
+        document["tools"] = {"browse": "maybe", "not_a_tool": "off"}
+        self.assertEqual(errors(validate_document(document, ALL_PRESENT)), [])
+
+
+class DesktopRoutingSettingsTests(unittest.TestCase):
+    """The routing preferences, checked rather than silently ignored.
+
+    "My default browser" is a setting a person can mistype, and a typo there
+    otherwise fails quietly into asking -- or, worse, into a different browser
+    than the one they chose.
+    """
+
+    def document(self) -> dict:
+        return {
+            "version": 1,
+            "activeProfileId": "p1",
+            "providers": {},
+            "profiles": [pipeline_profile()],
+            "agent": {},
+        }
+
+    def codes(self, document) -> list[str]:
+        return codes(validate_document(document, ALL_PRESENT))
+
+    def test_a_valid_browser_default_is_silent(self):
+        document = self.document()
+        document["desktop"] = {"browsers": {"default": "chrome"}}
+        self.assertEqual(self.codes(document), [])
+
+    def test_a_blank_browser_default_is_reported(self):
+        document = self.document()
+        document["desktop"] = {"browsers": {"default": "   "}}
+        self.assertIn("desktop.browser_name_empty", self.codes(document))
+
+    def test_a_non_boolean_flag_is_reported(self):
+        document = self.document()
+        document["desktop"] = {"browsers": {"preferOwnBrowser": "yes"}}
+        self.assertIn("desktop.browser_flag_invalid", self.codes(document))
+
+    def test_a_non_object_section_is_an_error(self):
+        document = self.document()
+        document["desktop"] = {"browsers": "chrome"}
+        self.assertIn("desktop.browsers_invalid", self.codes(document))
+
+    def test_two_names_for_one_value_are_reported_rather_than_guessed(self):
+        # `default` and `desktopBrowser` are synonyms. Two keys for one value is a
+        # trap unless the precedence is stated, so it is a warning that names it.
+        document = self.document()
+        document["desktop"] = {"browsers": {"default": "chrome", "desktopBrowser": "edge"}}
+        self.assertIn("desktop.browser_duplicate", self.codes(document))
+
+    def test_a_routing_typo_does_not_reject_the_voice_profile(self):
+        # Same rule as permissions: orthogonal to whether the profile runs, and a
+        # blocking error here would throw away the provider settings over a
+        # preference nobody can even see.
+        document = self.document()
+        document["desktop"] = {"browsers": {"preferOwnBrowser": "maybe"}}
+        self.assertEqual(errors(validate_document(document, ALL_PRESENT)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -60,6 +60,17 @@ OUTPUT_MODES = ("model_voice", "custom_tts")
 
 CONFIG_VERSION = 1
 
+#: Values a ``permissions.tools`` entry may take. Declared here as well as in
+#: ``runtime/permission_gate`` because importing it would be circular --
+#: ``settings.config_store`` imports this module, and the gate imports the
+#: store -- so this tuple is pinned to the gate's by
+#: ``test_permission_gate.py`` rather than imported from it.
+PERMISSION_LEVELS = ("default", "auto", "ask", "off")
+
+#: The clamp the gate applies to ``permissions.timeout``, mirrored for the
+#: same reason and pinned by the same test.
+PERMISSION_TIMEOUT_RANGE = (5.0, 120.0)
+
 
 @dataclass(frozen=True)
 class Diagnostic:
@@ -639,6 +650,391 @@ def validate_profile(
     return out
 
 
+def _check_permissions(document: Mapping[str, Any], out: list[Diagnostic]) -> None:
+    """The approval section: what may act without asking.
+
+    Warnings rather than errors on purpose. The permissions block is orthogonal
+    to whether the voice profile can run, and turning it into an error would
+    mean one typo'd tool level deactivates the *entire* saved configuration
+    back to the environment -- losing the provider settings over a permission
+    note. The runtime does not ignore a bad value either: an unknown level is
+    treated as ``ask``, so the failure direction is one extra question, never
+    an action nobody meant to allow.
+    """
+    section = document.get("permissions")
+    if section is None:
+        return
+    if not isinstance(section, Mapping):
+        out.append(
+            _diag("error", "permissions.invalid", "permissions", "The permissions section must be an object.")
+        )
+        return
+
+    tools = section.get("tools")
+    if tools is not None:
+        if not isinstance(tools, Mapping):
+            out.append(
+                _diag(
+                    "error",
+                    "permissions.tools_invalid",
+                    "permissions.tools",
+                    "permissions.tools must be an object of tool ids to levels.",
+                )
+            )
+        else:
+            for ident, level in sorted(tools.items(), key=lambda item: str(item[0])):
+                name = _as_text(ident).strip()
+                if not name:
+                    out.append(
+                        _diag("warn", "permissions.tool_unnamed", "permissions.tools", "A permission entry has no tool id.")
+                    )
+                elif _as_text(level).strip().lower() not in PERMISSION_LEVELS:
+                    out.append(
+                        _diag(
+                            "warn",
+                            "permissions.unknown_level",
+                            f"permissions.tools.{name}",
+                            f"{level!r} is not a known permission level.",
+                            "Use default, ask, or off. Anything else is treated as ask.",
+                        )
+                    )
+
+    timeout = section.get("timeout")
+    if timeout is not None:
+        within = (
+            isinstance(timeout, (int, float))
+            and not isinstance(timeout, bool)
+            and PERMISSION_TIMEOUT_RANGE[0] <= float(timeout) <= PERMISSION_TIMEOUT_RANGE[1]
+        )
+        if not within:
+            out.append(
+                _diag(
+                    "warn",
+                    "permissions.timeout_out_of_range",
+                    "permissions.timeout",
+                    f"A permission timeout of {timeout!r} seconds is out of range.",
+                    f"Use a value between {PERMISSION_TIMEOUT_RANGE[0]:.0f} and {PERMISSION_TIMEOUT_RANGE[1]:.0f} seconds.",
+                )
+            )
+
+
+#: Mirrors ``tools.messaging.whatsapp.MODES``. Declared here rather than
+#: imported because this module is the schema and the tool is the runtime,
+#: and ``test_whatsapp.py`` pins the two together -- the same way the
+#: permission levels above are written down twice on purpose.
+WHATSAPP_MODES = ("off", "deeplink", "automation")
+
+#: Mirrors ``runtime.history_consent.MODES``, for the same reason and pinned the
+#: same way. ``ask`` is the only default: a capability this private should not be
+#: what happens when nobody configured anything.
+WHATSAPP_HISTORY_MODES = ("off", "ask", "auto")
+
+
+def _check_messaging(document: Mapping[str, Any], out: list[Diagnostic]) -> None:
+    """The messaging section: whether WhatsApp may read and send, and how.
+
+    A warning rather than an error, for the same reason as permissions: the
+    messaging block is orthogonal to whether the voice profile runs, and a
+    typo here must not fall the whole document back to the environment.
+    The runtime is not lenient, though -- an unknown mode is treated as
+    ``off``, so the failure direction is a tool that stays quiet, never one
+    that sends.
+    """
+    section = document.get("messaging")
+    if section is None:
+        return
+    if not isinstance(section, Mapping):
+        out.append(
+            _diag("error", "messaging.invalid", "messaging", "The messaging section must be an object.")
+        )
+        return
+    whatsapp = section.get("whatsapp")
+    if whatsapp is None:
+        return
+    if not isinstance(whatsapp, Mapping):
+        out.append(
+            _diag(
+                "error",
+                "messaging.whatsapp_invalid",
+                "messaging.whatsapp",
+                "messaging.whatsapp must be an object.",
+            )
+        )
+        return
+    mode = whatsapp.get("mode")
+    if mode is not None and _as_text(mode).strip().lower() not in WHATSAPP_MODES:
+        out.append(
+            _diag(
+                "warn",
+                "messaging.whatsapp_unknown_mode",
+                "messaging.whatsapp.mode",
+                f"{mode!r} is not a known WhatsApp mode.",
+                "Use off, deeplink, or automation. Anything else is treated as off.",
+            )
+        )
+
+    history = whatsapp.get("history")
+    if history is not None and _as_text(history).strip().lower() not in WHATSAPP_HISTORY_MODES:
+        out.append(
+            _diag(
+                "warn",
+                "messaging.whatsapp_unknown_history",
+                "messaging.whatsapp.history",
+                f"{history!r} is not a known message-history setting.",
+                "Use off, ask, or auto. Anything else is treated as ask.",
+            )
+        )
+
+
+#: Values a per-tool switch may take. ``on`` and ``off`` only: a third value would
+#: need a meaning, and "maybe" is not a state an authorisation can be in.
+TOOL_SWITCH_VALUES = ("on", "off")
+
+
+def _check_tools(document: Mapping[str, Any], out: list[Diagnostic]) -> None:
+    """The ``tools`` section: the per-tool on/off switches.
+
+    A warning, not an error, for the same reason as permissions and messaging: a
+    mistyped tool id must not throw the whole document -- including the voice
+    profile -- back to the environment, because the result of that is Lumine
+    using settings the user did not choose.
+
+    The *failure direction* is the part worth stating. An unknown value on a
+    switch is read as ``on`` by the runtime: this key exists to reduce what
+    Lumine can do, so the only way to fail safe here is to not honour an
+    instruction that was not understood. Which makes the *opposite* true of the
+    tools that must fail closed -- ``send_whatsapp`` has a mode switch for that,
+    and it treats an unreadable value as ``off``.
+
+    **Tool ids are not checked here.** This module does not import the registry,
+    and should not: the registry reaches the permission gate, which reaches this
+    package, so a module-level import from settings into tools is a cycle whose
+    resolution depends on who was imported first. ``tool_catalog.py --check`` is
+    the authority on which ids exist, and it checks them.
+    """
+    section = document.get("tools")
+    if section is None:
+        return
+    if not isinstance(section, Mapping):
+        out.append(
+            _diag("error", "tools.invalid", "tools", "The tools section must be an object.")
+        )
+        return
+    for ident, value in section.items():
+        key = _as_text(ident).strip()
+        where = f"tools.{key}"
+        if not key:
+            out.append(
+                _diag("warn", "tools.unknown_tool", "tools", "A tool switch has no name.")
+            )
+            continue
+        if _as_text(value).strip().lower() not in TOOL_SWITCH_VALUES:
+            out.append(
+                _diag(
+                    "warn",
+                    "tools.unknown_value",
+                    where,
+                    f"{value!r} is not a known value for a tool switch.",
+                    "Use on or off. Anything else is read as on.",
+                )
+            )
+
+
+#: The keys the routing layer reads out of ``desktop.browsers``. Declared here so the
+#: document can be checked against the set that is actually consulted -- a typo in
+#: a routing preference otherwise fails silently, which for "my default browser"
+#: means Lumine quietly picking a different one.
+ROUTING_BROWSER_NAME_KEYS = ("default", "desktopBrowser")
+ROUTING_BROWSER_FLAG_KEYS = ("ownBrowser", "preferOwnBrowser", "isolate")
+ROUTING_BROWSER_KEYS = ROUTING_BROWSER_NAME_KEYS + ROUTING_BROWSER_FLAG_KEYS
+
+#: The keys read out of ``desktop.input``. ``desktop.input`` is the switch for
+#: ``desktop_control``, which is the only tool that can press an arbitrary key
+#: and click an arbitrary pixel -- and which can therefore click the Tools page
+#: that switches it off, which is why it refuses to drive its own window.
+#:
+#: Declared here so the document can be checked against the set actually
+#: consulted. A typo in this key would otherwise fail silently, and the safe
+#: reading of a switch nobody can turn on is *off* -- so a misspelling is not a
+#: cosmetic warning, it is a capability that quietly never appears.
+DESKTOP_INPUT_KEYS = ("on", "off")
+
+
+def _check_desktop(document: Mapping[str, Any], out: list[Diagnostic]) -> None:
+    """The desktop section: which browser a request means when nobody says.
+
+    A warning, not an error, for the same reason as permissions and messaging: a
+    bad routing preference must not throw away the voice profile. The failure
+    direction is decided here rather than at the call site: an unreadable default
+    falls back to *asking*, never to picking something.
+    """
+    section = document.get("desktop")
+    if section is None:
+        return
+    if not isinstance(section, Mapping):
+        out.append(
+            _diag("error", "desktop.invalid", "desktop", "The desktop section must be an object.")
+        )
+        return
+    browsers = section.get("browsers")
+    if browsers is None:
+        _check_desktop_input(section, out)
+        return
+    if not isinstance(browsers, Mapping):
+        out.append(
+            _diag(
+                "error",
+                "desktop.browsers_invalid",
+                "desktop.browsers",
+                "desktop.browsers must be an object.",
+            )
+        )
+        return
+
+    for key in ROUTING_BROWSER_KEYS:
+        if key not in browsers:
+            continue
+        value = browsers[key]
+        if key in ROUTING_BROWSER_FLAG_KEYS:
+            if not isinstance(value, bool):
+                out.append(
+                    _diag(
+                        "warn",
+                        "desktop.browser_flag_invalid",
+                        f"desktop.browsers.{key}",
+                        f"{key} must be true or false.",
+                        "Anything else is read as false.",
+                    )
+                )
+            continue
+        if not _as_text(value).strip():
+            out.append(
+                _diag(
+                    "warn",
+                    "desktop.browser_name_empty",
+                    f"desktop.browsers.{key}",
+                    f"{key} cannot be blank.",
+                    "A request that names no browser will ask instead of choosing one.",
+                )
+            )
+
+    # `desktopBrowser` is a synonym of `default` and exists because the settings
+    # screen labels it that way. Two keys for one value is a trap unless the
+    # precedence is stated, so it is stated here and pinned by a test.
+    if browsers.get("default") and browsers.get("desktopBrowser"):
+        out.append(
+            _diag(
+                "warn",
+                "desktop.browser_duplicate",
+                "desktop.browsers",
+                "default and desktopBrowser are both set.",
+                "They mean the same thing; desktopBrowser wins.",
+            )
+        )
+    _check_desktop_input(section, out)
+
+
+def _check_desktop_input(section: Mapping[str, Any], out: list[Diagnostic]) -> None:
+    """``desktop.input``: whether Lumine may drive the mouse and keyboard.
+
+    An error rather than a warning, which every other key in this file is not.
+    The difference is the safe reading: ``off`` is the default and an
+    unrecognised value is read as ``off``, so a misspelling does not leave the
+    capability on -- it removes it, silently, from a document that looks
+    correct. A user who wrote ``"enabled"`` and then found no mouse control
+    would have no way to tell that from the feature not working, and that is
+    exactly the failure mode worth an error.
+    """
+    value = section.get("input")
+    if value is None:
+        return
+    if isinstance(value, bool):
+        # A boolean is a plausible thing to reach for and is unambiguous, so it
+        # is accepted rather than rejected -- but only as the two strings it
+        # means, so the reader above still sees one vocabulary.
+        return
+    if not isinstance(value, str) or value.strip().lower() not in DESKTOP_INPUT_KEYS:
+        out.append(
+            _diag(
+                "error",
+                "desktop.input_invalid",
+                "desktop.input",
+                "desktop.input must be 'on' or 'off'.",
+                "Anything else is read as off, so the mouse and keyboard stay "
+                "switched off.",
+            )
+        )
+
+
+#: `media.enabled` takes the same two values as `desktop.input`, and is read by
+#: the same rule. Reusing the name rather than declaring a second vocabulary is
+#: the point: a settings screen that has one switch type has one thing to draw.
+MEDIA_ENABLED_KEYS = ("on", "off")
+
+
+def _check_media(document: Mapping[str, Any], out: list[Diagnostic]) -> None:
+    """``media``: which folder Lumine may play from, and whether she may at all.
+
+    Three keys and one error. The shape problems are errors because the failure
+    direction is the dangerous one: a ``library`` that is not a string, or an
+    ``enabled`` that is misspelled, leaves a document that *looks* configured
+    while the tool reads nothing -- and a music library that is switched on with
+    no folder is exactly that.
+
+    ``recursive`` is a warning rather than an error because both readings are
+    real settings a person might mean, and a boolean that came out as text is
+    readable as intent. Everything else here fails closed.
+    """
+    section = document.get("media")
+    if section is None:
+        return
+    if not isinstance(section, Mapping):
+        out.append(
+            _diag("error", "media.invalid", "media", "The media section must be an object.")
+        )
+        return
+
+    enabled = section.get("enabled")
+    if enabled is not None:
+        if isinstance(enabled, bool):
+            pass
+        elif not isinstance(enabled, str) or enabled.strip().lower() not in MEDIA_ENABLED_KEYS:
+            out.append(
+                _diag(
+                    "error",
+                    "media.enabled_invalid",
+                    "media.enabled",
+                    "media.enabled must be 'on' or 'off'.",
+                    "Anything else is read as off, so the music library stays "
+                    "switched off.",
+                )
+            )
+
+    library = section.get("library")
+    if library is not None and not isinstance(library, str):
+        out.append(
+            _diag(
+                "error",
+                "media.library_invalid",
+                "media.library",
+                "media.library must be the path to one folder.",
+                "Lumine reads no path that is not a string.",
+            )
+        )
+
+    recursive = section.get("recursive")
+    if recursive is not None and not isinstance(recursive, bool):
+        out.append(
+            _diag(
+                "warn",
+                "media.recursive_invalid",
+                "media.recursive",
+                "media.recursive should be true or false.",
+                "Anything else is read as true, so subfolders are searched.",
+            )
+        )
+
+
 def validate_document(
     document: Any,
     credentials: Mapping[str, bool] | None = None,
@@ -659,6 +1055,14 @@ def validate_document(
                 f"This build understands version {CONFIG_VERSION}.",
             )
         )
+
+    # Before the profiles check below returns early, so a document with no
+    # profiles still reports its permission typos rather than hiding them.
+    _check_permissions(document, out)
+    _check_messaging(document, out)
+    _check_tools(document, out)
+    _check_desktop(document, out)
+    _check_media(document, out)
 
     profiles = document.get("profiles")
     if not isinstance(profiles, list) or not profiles:
