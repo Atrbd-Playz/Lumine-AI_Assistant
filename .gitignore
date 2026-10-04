@@ -304,3 +304,20 @@ tmp_browser_fixture/
 *.tsbuildinfo
 .vite/
 coverage/
+
+# Runtime state the worker writes next to its source, not source itself.
+#
+# `permission_gate` appends one JSONL record per approval decision, with
+# SHA-256 digests, so the file is a *log of a session that already happened*.
+# Committing it would put one developer's approval history into every clone,
+# it would grow without bound, and two workers appending to the same checkout
+# makes it permanently dirty. Read it, never track it.
+agent/lumine_audit.jsonl
+
+# Scratch files some tests write into the current working directory. The
+# browser-sharing tests use `tempfile.NamedTemporaryFile` for CDP endpoint
+# files; on a run interrupted between create and delete they survive as
+# `tmpXXXXXXXX.txt` at the repository root. A tracked `tmp*.txt` is always
+# an accident, and the names are random enough that `.gitignore` is the only
+# thing standing between an interrupted run and a junk blob in history.
+/tmp*.txt
