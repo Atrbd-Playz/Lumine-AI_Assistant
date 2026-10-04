@@ -6,6 +6,8 @@ import { Icon } from "./Icon";
 import { Presence } from "./Presence";
 import { CallBar } from "./CallBar";
 import { SelfView } from "./SelfView";
+import { BrowserPreview } from "./BrowserPreview";
+import { DesktopPreview } from "./DesktopPreview";
 import { ConversationPanel, type PanelKind } from "./ConversationPanel";
 import { ConversationToggle, NotesToggle } from "./ConversationToggle";
 import { NotesPanel } from "./NotesPanel";
@@ -40,6 +42,39 @@ type MainSpaceProps = {
   isVideoPublished: boolean;
   /** Turn a source on or off. Publishes when the model is able to read it. */
   onMediaToggle: (source: "camera" | "screen") => void;
+  /**
+   * The last screenshot Lumine's browser sent, or null.
+   *
+   * A picture, so it is a prop of its own rather than something derived from the
+   * conversation: it must not land in the transcript, which accumulates and would
+   * then hold a base64 JPEG for the life of the session. Drawn above the
+   * self-view and stacked with it rather than replacing it — a user sharing their
+   * screen *and* having Lumine browse are two facts, not one.
+   */
+  browserPreview: {
+    image: string;
+    url: string;
+    title: string;
+    capturedAt: number;
+    ageMs?: number;
+  } | null;
+  /**
+   * The window `desktop_control` is working in, when it is in use.
+   *
+   * Carried alongside `browserPreview` rather than replacing it: a user can
+   * plausibly have Lumine driving a desktop app *and* browsing at once, and
+   * collapsing two different capabilities into one "what is she looking at"
+   * question would lose whichever one was not rendered.
+   */
+  desktopState: {
+    generation: number;
+    window: string;
+    process: string;
+    addressable: boolean;
+    dpiAligned: boolean;
+    elements: number;
+    ageMs?: number;
+  } | null;
   /** Epoch ms the current call began, for the timer. */
   startedAt: number | null;
   emotion: LumineEmotionIntent | null;
@@ -105,6 +140,8 @@ type MainSpaceProps = {
   activeNoteId: string | null;
   onSelectNote: (id: string) => void;
   onCreateNote: () => void;
+  /** Settings -> Permissions, which is where the music folder is granted. */
+  onOpenPermissions: () => void;
   onEditNote: (id: string, body: string) => void;
   onDeleteNote: (id: string) => void;
   /** Where the aside's "open the timer" button goes. */
@@ -126,6 +163,8 @@ export function MainSpace({
   media,
   isVideoPublished,
   onMediaToggle,
+  browserPreview,
+  desktopState,
   startedAt,
   emotion,
   showEmotionDebug,
@@ -151,6 +190,7 @@ export function MainSpace({
   activeNoteId,
   onSelectNote,
   onCreateNote,
+  onOpenPermissions,
   onEditNote,
   onDeleteNote,
   onFocusPage,
@@ -253,6 +293,17 @@ export function MainSpace({
         <StageClock />
         {callLength}
 
+        {/*
+          No `w-64 h-64` here, deliberately. This box exists to center the
+          avatar in the stage's middle row and for nothing else — and a fixed
+          size on it broke exactly that: the box's single auto track grows to
+          the presence's clamp (up to 388px), an overflowing track pins to the
+          container's top edge, and the avatar sat low by (clamp − 256)/2 with
+          its outer ring spilling into the greeting. Let the box size to its
+          content and the only alignment left is the box in its row, which
+          centers symmetrically. The fixed 256 existed to give the old inner
+          preview a corner off the face; the preview now anchors to the stage.
+        */}
         <div className="stage-presence relative z-[1] grid place-items-center self-center min-h-0">
           <Presence
             state={state}
@@ -262,8 +313,62 @@ export function MainSpace({
             showEmotionDebug={showEmotionDebug}
             subscribeEnergy={subscribeEnergy}
           />
-          {preview && <SelfView stream={preview.stream} source={preview.source} isPublished={isVideoPublished} />}
         </div>
+
+        {/*
+          The screen-share status strip, the preview, and why both are stage
+          children rather than children of the avatar box.
+
+          The strip is the answer to a question the preview alone could not
+          ask: a picture in the corner says what *you* are looking at, not
+          what Lumine is receiving — and "is she seeing my screen right now"
+          is the one fact a share is anxious about. It is `role="status"`
+          rather than a control: starting and stopping is the CallBar's job,
+          and two stop buttons is one confirmation too many.
+
+          The preview used to be pinned inside `.stage-presence` — the avatar's
+          own box — which anchored a fixed 176px card to a container whose size
+          the avatar clamp decides, so the card sat *on* her face at every size
+          and outgrew the box at the small end. Both are now direct children of
+          the stage, so both anchor to the stage's own edges: the strip under
+          the header row, the preview into the top-right corner on the same
+          `--stage-gutter` the clock and date are measured by. The preview comes
+          after the strip in tree order because `.share-strip ~ .self-view` is
+          what drops it below the strip when one is present.
+
+          Absolute rather than a grid row: a strip that grew the stage by a line
+          would move the avatar and the greeting every time a share started —
+          the same mistake as the `<p>` that used to grow the call strip.
+        */}
+        {preview?.source === "screen" && (
+          <div className="share-strip" role="status">
+            <span className="share-strip-pip" aria-hidden="true" />
+            <span className="share-strip-label">Screen sharing</span>
+            <span className={`share-strip-state${isVideoPublished ? " is-shared" : ""}`}>
+              {isVideoPublished ? "Lumine can see this screen" : "Only you can see this"}
+            </span>
+          </div>
+        )}
+        {/*
+          The browser preview and the self-view, in that order.
+
+          Two different views of two different things — a page Lumine's own
+          browser is driving, and the user's camera — so the preview goes first
+          and the CSS drops the self-view below it when both are up. Order matters
+          for the `:has()` sibling selector and for the reading: the top card is
+          the one she is working in.
+        */}
+        <BrowserPreview preview={browserPreview} />
+        {/*
+          The desktop window, above the browser preview.
+
+          Ordering is a reading, not a layout detail: the desktop tool is the
+          one that moves the user's pointer, so when both are up it is the one
+          they most need to see first. `desktop-control:has` already selects the
+          first card for the `:has()` rules that keep it sized correctly.
+        */}
+        <DesktopPreview state={desktopState} />
+        {preview && <SelfView stream={preview.stream} source={preview.source} isPublished={isVideoPublished} />}
 
         {/*
           The greeting, and only the greeting.
@@ -272,6 +377,14 @@ export function MainSpace({
           carries — "I'm listening. / Speak naturally — I'll keep the context." —
           and the screen had four other places doing the same job. One line with a
           claim in it beats two lines where the second is the first explained.
+
+          No padding utility here, deliberately. The clearance above the corner
+          instruments is a viewport clamp owned by index.css, and a Tailwind
+          utility outranks it — utilities sit in a later cascade layer than the
+          components layer that file is written in. `pb-[8vh]` sat here and did
+          exactly that: 48px at 800x600 against a clock whose top edge reaches
+          56px, so the greeting ran into the clock while the stylesheet's own
+          measured 66px rule went unwritten.
         */}
         <div className="stage-copy" key={state}>
           <h2>{copy.title}</h2>
@@ -295,6 +408,7 @@ export function MainSpace({
           onCreateNote();
           onPanelChange("notes");
         }}
+        onOpenPermissions={onOpenPermissions}
       />
 
       {/*

@@ -5,34 +5,47 @@ import os
 import re
 import time
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
 try:
     from .settings.config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
-    from .runtime.context_trim import max_context_items, trim_context
+    from .runtime.context_trim import history_budget, max_context_items, trim_context
     from .runtime.emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
     from .runtime.emotion_voice import TurnVoiceControls
     from .runtime.failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
-    from .runtime.latency import LatencyTracker
+    from .runtime.history_consent import release as release_history_consent
+    from .runtime.latency import LatencyTracker, register_tracker, unregister_tracker
+    from .runtime.voice_line import SILENT, speak_line, spoken_via_label
+    from .runtime.permission_gate import acquire_gate, release_gate
+    from .runtime.progress import register_publisher, unregister_publisher
+    from .runtime.visual_state import VisualState
     from .pipeline.pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
     from .settings.pipeline_config import pipeline_name
     from .runtime.runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
     from .settings.session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
+    from .tools.browser.session import release as release_browser
     from .tools.http_client import acquire as acquire_http_client, release as release_http_client
     from .tools.tools_policy import compose_instructions
     from .tools.tools_registry import get_tools, tool_ids
 except ImportError:
     from settings.config_store import (SOURCE_UI, active_profile, config_search_summary, effective_document, resolve_profile)
-    from runtime.context_trim import max_context_items, trim_context
+    from runtime.context_trim import history_budget, max_context_items, trim_context
     from runtime.emotion_contract import build_emotion_event, extract_emotion_sequence, infer_emotion_from_text
     from runtime.emotion_voice import TurnVoiceControls
     from runtime.failure_gate import APOLOGY, FailureGate, describe, handle_llm_error
-    from runtime.latency import LatencyTracker
+    from runtime.history_consent import release as release_history_consent
+    from runtime.latency import LatencyTracker, register_tracker, unregister_tracker
+    from runtime.voice_line import SILENT, speak_line, spoken_via_label
+    from runtime.permission_gate import acquire_gate, release_gate
+    from runtime.progress import register_publisher, unregister_publisher
+    from runtime.visual_state import VisualState
     from pipeline.pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
     from settings.pipeline_config import pipeline_name
     from runtime.runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
     from settings.session_preferences import interruption_mode_from_metadata, job_preferences_from_metadata
+    from tools.browser.session import release as release_browser
     from tools.http_client import acquire as acquire_http_client, release as release_http_client
     from tools.tools_policy import compose_instructions
     from tools.tools_registry import get_tools, tool_ids
@@ -154,6 +167,33 @@ async def publish_emotion_event(room: rtc.Room, event: dict[str, object]) -> Non
         logger.exception("[Emotion] packet publish failed")
 
 
+#: Sentinel for a `getattr` default that must never match a real track source.
+#: Using `None` here would make an unknown source look like "no source", and an
+#: audio track subscribing would then be read as "the screen share stopped".
+_NO_MATCH = object()
+
+
+def video_source_name(publication: Any) -> str | None:
+    """``camera``, ``screen``, or ``None`` for anything that is not a video track.
+
+    Read from the publication rather than the track because the publication is
+    what the room reports on both subscribe and unsubscribe, and because the
+    LiveKit stub used when the package is absent exposes no ``TrackSource`` at
+    all -- a missing SDK must degrade to "we cannot tell", never to a guess.
+    """
+    track_source = getattr(rtc, "TrackSource", None)
+    if track_source is None:
+        return None
+    source = getattr(publication, "source", None)
+    if source is None:
+        return None
+    if source == getattr(track_source, "SOURCE_SCREENSHARE", _NO_MATCH):
+        return "screen"
+    if source == getattr(track_source, "SOURCE_CAMERA", _NO_MATCH):
+        return "camera"
+    return None
+
+
 def build_instructions(profile: str) -> str:
     instructions = compose_instructions(PERSONA_CORE)
     if profile == "gemini_live":
@@ -173,16 +213,112 @@ def speak_now(session, text: str, publisher) -> None:
     through the LLM: the LLM is what just failed, and asking it to explain its
     own failure is how a turn turns into silence.
 
-    Failures here are swallowed. A session that cannot speak the apology is still
-    a working session, and raising would replace a quiet failure with a crash.
+    The speech itself is delegated to :func:`speak_line`, which owns the
+    escalation. This function used to call ``say()`` directly and swallow the
+    failure, which is *why the apology was inaudible* on the default profile:
+    a realtime model has no TTS stage, so ``say()`` raises, and the only symptom
+    was a debug line. Silence after a failure is indistinguishable from a broken
+    microphone, which is the only reason this function exists -- so a line that
+    reaches no channel at all is now published to the app rather than logged and
+    forgotten, which is the difference between a user who is told and a user who
+    is left wondering whether the microphone died.
+    """
+    line = str(text or "").strip()
+    if not line or session is None:
+        return
+
+    async def announce() -> None:
+        channel = await speak_line(session, line, allow_interruptions=True)
+        if channel == SILENT:
+            logger.warning(
+                "[LLM] no audio channel for the failure notice; the app was told instead"
+            )
+            try:
+                publisher.emit_and_publish(
+                    "lumine.notice",
+                    {
+                        "type": "info",
+                        "title": "Something went wrong",
+                        "message": (
+                            "I hit a problem and could not say so out loud. "
+                            f"{line}"
+                        ),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - never let a courtesy notice break a session
+                logger.debug("[LLM] the failure notice did not send", exc_info=True)
+        else:
+            logger.info("[LLM] failure notice spoken via %s", spoken_via_label(channel))
+
+    try:
+        asyncio.get_running_loop().create_task(announce())
+    except RuntimeError:
+        # No running loop: a test or a script. Speak it here rather than dropping
+        # the line on the floor.
+        try:
+            asyncio.run(announce())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[LLM] could not speak the failure notice: %s", exc)
+
+
+def _missing_credential_labels(diagnostics: object) -> list[str]:
+    """Which providers a rejection says are missing a key.
+
+    Narrow on purpose. A *credential* rejection is the one a person can fix, and
+    it is the one that must not be reduced to "the configuration was rejected" --
+    that sentence sends somebody to look for a typo in a JSON file when the actual
+    problem is an empty slot on the Providers page. Anything else is returned
+    empty, so a malformed profile is not mislabelled as a missing key.
+    """
+    labels: list[str] = []
+    for diagnostic in diagnostics or ():
+        code = str(getattr(diagnostic, "code", "") or "")
+        message = str(getattr(diagnostic, "message", "") or "")
+        if code != "credential.missing":
+            continue
+        # "Groq has no credential available." -> "Groq", without re-deriving the
+        # provider table: the message was written to be read.
+        label = message.split(" has no credential", 1)[0].strip()
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _rejection_reason(exc: BaseException) -> str:
+    """One sentence a person can act on, from whatever the builder raised.
+
+    The provider exceptions are the useful case and they are not uniform: some
+    carry a ``diagnostics`` list written for a settings screen, some are a bare
+    ``ValueError`` from a plugin's constructor. Both are reduced to the first
+    diagnostic that names a provider, and anything else falls back to the
+    exception's own text -- which is better than a generic sentence, because the
+    alternative is the traceback this exists to replace.
+    """
+    diagnostics = getattr(exc, "diagnostics", None) or ()
+    for diagnostic in diagnostics:
+        if str(getattr(diagnostic, "code", "")) == "credential.missing":
+            return str(getattr(diagnostic, "message", "")) or "a credential is missing."
+    for diagnostic in diagnostics:
+        message = str(getattr(diagnostic, "message", "") or "").strip()
+        if message:
+            return message
+    text = str(exc).strip()
+    return text or f"{type(exc).__name__} while building the voice profile."
+
+
+def _publish_setup_notice(publisher: Any, title: str, message: str) -> None:
+    """Tell the app a profile was not applied, and what is missing.
+
+    Published on the data channel as well as stdout, for the same reason every
+    other notice is: a notice that only exists when the worker happened to be
+    started from a console is a notice that silently does not arrive in the app
+    that has to act on it. Never raises -- this runs on the failure path, and the
+    failure path is the wrong place to add a second failure.
     """
     try:
-        from livekit.agents import speech_handle
-
-        handle = speech_handle.SpeechHandle(text=text, source="lumine_error", allow_interruptions=True)
-        session.say(handle, chunk_size=120)
-    except Exception as exc:  # noqa: BLE001 - never let a courtesy speech break a session
-        logger.debug("[LLM] could not speak the failure notice: %s", exc)
+        publisher.emit_and_publish("lumine.notice", {"type": "warn", "title": title, "message": message})
+    except Exception:  # noqa: BLE001 - a notice must never break session setup
+        logger.debug("[Config] the setup notice did not send", exc_info=True)
 
 
 class Lumine(Agent):
@@ -191,7 +327,6 @@ class Lumine(Agent):
             instructions=build_instructions(profile),
             tools=tools if tools is not None else get_tools(),
         )
-
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Stream the reply out while teaching the voice how it is being said.
 
@@ -255,17 +390,46 @@ async def build_session_components(publisher, room_name: str, interruption_mode:
             try:
                 components, build_diagnostics = await build_resolved(resolved, validate=True)
             except ConfigurationRejected as exc:
+                # Falling back is right -- a working voice beats no voice -- but
+                # falling back *silently between stacks* is how "the pipeline voice
+                # has a problem" became unanswerable. A user picks Pipeline, a
+                # missing key rejects it, and they are quietly given Realtime (or
+                # nothing) with no way to learn why. The rejection is the only
+                # evidence anyone has, so it is published in full, named on the
+                # event, and raised as a notice the app can toast.
+                missing = _missing_credential_labels(exc.diagnostics)
                 publisher.emit(
                     "config_rejected",
                     room=room_name,
                     profile=resolved.profile_id,
+                    kind=resolved.kind,
                     config_path=config_path_label,
                     diagnostics=[d.to_dict() for d in exc.diagnostics],
+                    # Named on the event rather than left inside `diagnostics`,
+                    # because that is the field the activity panel renders and the
+                    # one a person reads first.
+                    reason=(
+                        f"{', '.join(missing)} has no key, so this profile cannot be built"
+                        if missing
+                        else "the saved profile could not be built"
+                    ),
+                    fell_back=True,
+                    fell_back_to=pipeline_name(),
                 )
-                logger.warning(
-                    "[Config] saved profile %r was rejected; using the environment instead",
+                logger.error(
+                    "[Config] saved profile %r rejected (%s); falling back to the "
+                    "environment pipeline %r",
                     resolved.profile_id,
+                    "; ".join(d.message for d in exc.diagnostics) or "no reason given",
+                    pipeline_name(),
                 )
+                if missing:
+                    _publish_setup_notice(
+                        publisher,
+                        f"Profile '{resolved.name}' needs a {', '.join(missing)} key",
+                        "She is using the fallback voice instead. Add the key in "
+                        "Settings to get the voice you chose.",
+                    )
             else:
                 publisher.emit(
                     "config_applied",
@@ -291,7 +455,37 @@ async def build_session_components(publisher, room_name: str, interruption_mode:
         if diagnostic.severity == "error":
             logger.warning("[Config] ignoring saved configuration: %s", diagnostic.message)
 
-    components = await build_pipeline(pipeline_name(), interruption_mode=interruption_mode)
+    # The fallback is the last thing standing between a rejected profile and a
+    # session, so it is guarded rather than left to raise. Unguarded, a second
+    # rejection -- which is what happens when the reason the first was rejected is
+    # a missing credential, because the fallback needs its own -- ended the
+    # entrypoint with a traceback written into a pipe. The observable result was
+    # the worst one available: the worker was alive, the app showed its events, and
+    # there was no session, no greeting and no audio, with nothing anywhere saying
+    # which key was absent.
+    try:
+        components = await build_pipeline(pipeline_name(), interruption_mode=interruption_mode)
+    except Exception as exc:  # noqa: BLE001 - reported, then re-raised
+        reason = _rejection_reason(exc)
+        publisher.emit(
+            "config_rejected",
+            room=room_name,
+            reason=reason,
+            kind="realtime" if pipeline_name() == "gemini_live" else "pipeline",
+            config_path=config_path_label,
+            diagnostics=getattr(exc, "diagnostics", []) and [
+                d.to_dict() for d in exc.diagnostics
+            ]
+            or [],
+            fell_back=False,
+        )
+        _publish_setup_notice(
+            publisher,
+            "No voice profile could be started",
+            f"{reason} Add the key in Settings, then start the call again.",
+        )
+        logger.error("[Config] the fallback profile could not be built either: %s", reason)
+        raise
     publisher.emit(
         "config_applied",
         room=room_name,
@@ -348,10 +542,160 @@ async def entrypoint(ctx: JobContext):
     )
 
     session = AgentSession(**components.session_kwargs)
-    tool_events = ToolEventBridge(publisher)
+    tool_events = ToolEventBridge(publisher, latency=latency)
     # Counts consecutive LLM failures and opens a circuit on a run of them, so a
     # rate-limited session stops trying instead of spending what is left.
     gate = FailureGate()
+
+    # Approvals for actions that are not pre-allowed. Session-scoped: the gate
+    # is keyed by this session, its pending asks die with it, and a packet or
+    # transcript that arrives after that resolves nothing -- so an approval
+    # cannot be replayed into a later conversation.
+    permissions = acquire_gate(session, room=ctx.room, publisher=publisher, label=ctx.room.name)
+
+    # The timing recorder is session-scoped for the same reason the gate is: a
+    # tool annotates its own work from a `RunContext`, and the only thing that
+    # context carries is the session. Registered before `session.start` so the
+    # greeting cannot run without it.
+    register_tracker(session, latency)
+
+    # Lets a tool narrate its own steps while it works. Same reasoning as the
+    # tracker above and the gate above it: a tool is handed a RunContext and
+    # nothing else, so the session is the only handle it has, and a session-keyed
+    # registry is the only shape that works. Without this the user watches a tool
+    # run for several seconds with nothing between "started" and "finished" --
+    # which for a staged WhatsApp send is the entire experience.
+    register_publisher(session, publisher)
+
+    # How much of the provider's per-minute allowance the conversation may use,
+    # worked out once per session from what the fixed prompt actually costs. This
+    # is the difference between a long conversation and a rejected one: a
+    # per-minute limit is charged prompt-plus-completion on *every* request, so a
+    # fixed prompt that is already near the ceiling leaves nothing for the
+    # exchange, and the session goes quiet with no error anywhere.
+    #
+    # Published as well as applied, because a number that silently decides whether
+    # Lumine can remember anything is not a number anybody can act on.
+    budget = history_budget(
+        getattr(components, "llm_provider", ""),
+        output_cap=components.response_token_limit or 0,
+        persona=PERSONA_CORE,
+    )
+    history_tokens = int(budget["budget"])
+    publisher.emit("context_budget", **budget)
+    if budget["fixed"] >= budget["tpm"] > 0:
+        # The condition worth shouting about: the fixed prompt alone does not fit
+        # in a minute, so trimming the conversation cannot save it. Fewer enabled
+        # tools is the lever -- each one is a schema on every request.
+        logger.warning(
+            "[Context] the fixed prompt is %d tokens against a %d TPM allowance; "
+            "no conversation fits and only one request per minute will",
+            budget["fixed"],
+            budget["tpm"],
+        )
+
+    # What Lumine can currently see, and how old it is. The sampler decides
+    # *which* frames reach the model; this records what that decision means, so
+    # the UI can say "last frame 2s ago" instead of implying a live view.
+    visual = VisualState(publisher.emit)
+    sampler = components.session_kwargs.get("video_sampler")
+    attach = getattr(sampler, "attach", None)
+    if callable(attach):
+        attach(visual)
+
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(participant, publication, _track):
+        if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_AGENT:
+            return
+        source = video_source_name(publication)
+        if source is not None:
+            visual.note_source(source)
+
+    def on_video_track_gone(participant, publication, *_args):
+        # Called for both `track_unsubscribed` (we stopped receiving) and
+        # `track_unpublished` (the app stopped sending). Either means the view
+        # is no longer live, and the model must not keep implying otherwise.
+        if video_source_name(publication) is not None:
+            visual.note_source(None)
+
+    ctx.room.on("track_unsubscribed", on_video_track_gone)
+    ctx.room.on("track_unpublished", on_video_track_gone)
+
+    @session.on("user_input_transcribed")
+    def on_user_input_transcribed(event):
+        # A final transcript is the first moment a request exists: the user has
+        # stopped speaking and STT has committed to words. Everything measured
+        # from here is time the user is waiting for.
+        if not getattr(event, "is_final", False):
+            return
+        latency.begin_turn()
+        # Anchor the turn on a current frame. Without this the answer can be
+        # built on a still that is a whole silent interval old, which is how a
+        # response ends up describing the window you closed two seconds ago.
+        request_fresh = getattr(sampler, "request_fresh", None)
+        if callable(request_fresh):
+            request_fresh()
+
+    @session.on("metrics_collected")
+    def on_metrics_collected(event):
+        """Provider-reported timings, kept apart from our own.
+
+        These numbers come off the wire rather than off our clock, so they are
+        published unrounded as provider work and never re-measured locally --
+        doing that would report our event-loop latency as the model's. No label
+        or content travels with them: stage, phase, and a duration.
+        """
+        metrics = getattr(event, "metrics", None)
+        if metrics is None:
+            return
+        kind = str(getattr(metrics, "type", "") or "")
+        cancelled = bool(getattr(metrics, "cancelled", False))
+
+        def seconds(name: str) -> float | None:
+            value = getattr(metrics, name, None)
+            if isinstance(value, (int, float)) and value > 0:
+                return float(value)
+            return None
+
+        if kind in ("llm_metrics", "realtime_model_metrics"):
+            if not cancelled:
+                ttft = seconds("ttft")
+                if ttft is not None:
+                    latency.emit_duration("llm_first_token", ttft * 1000, phase="model")
+            duration = seconds("duration")
+            if duration is not None:
+                latency.emit_duration("llm_request", duration * 1000, phase="model", cancelled=cancelled)
+            acquire = seconds("acquire_time")
+            if acquire is not None:
+                latency.emit_duration("llm_connect", acquire * 1000, phase="network")
+        elif kind == "stt_metrics":
+            duration = seconds("duration")
+            if duration is not None:
+                latency.emit_duration("stt_request", duration * 1000, phase="stt", cancelled=cancelled)
+            acquire = seconds("acquire_time")
+            if acquire is not None:
+                latency.emit_duration("stt_connect", acquire * 1000, phase="network")
+        elif kind == "tts_metrics":
+            if not cancelled:
+                ttfb = seconds("ttfb")
+                if ttfb is not None:
+                    latency.emit_duration("tts_first_audio", ttfb * 1000, phase="tts")
+            duration = seconds("duration")
+            if duration is not None:
+                latency.emit_duration("tts_request", duration * 1000, phase="tts", cancelled=cancelled)
+
+    @ctx.room.on("data_received")
+    def on_permission_response(payload, participant, _kind, topic):
+        # The trust boundary for UI answers lives in the gate: this handler
+        # only adds the topic filter and the sender, and the gate checks the
+        # sender kind, the payload shape, and whether the id was minted here.
+        if topic != "lumine.permission" or participant is None:
+            return
+        permissions.handle_channel_message(
+            payload,
+            sender_kind=getattr(participant, "kind", None),
+            sender_identity=str(getattr(participant, "identity", "")),
+        )
 
     @session.on("conversation_item_added")
     def on_conversation_item_added(event):
@@ -359,13 +703,30 @@ async def entrypoint(ctx: JobContext):
         # Trim as the conversation grows rather than when something breaks. A
         # context-length error is the provider's 400, and by then the turn has
         # already failed silently from the user's side.
-        outcome = trim_context(session)
+        outcome = trim_context(session, token_budget=history_tokens)
         if outcome.trimmed:
             publisher.emit(
                 "context_trimmed",
                 items_before=outcome.items_before,
                 items_after=outcome.items_after,
                 limit=max_context_items(),
+                tokens_before=outcome.tokens_before,
+                tokens_after=outcome.tokens_after,
+                budget=outcome.budget,
+            )
+        elif outcome.over_budget:
+            # Trimmed as far as it will go and still over: the *fixed* prompt is
+            # the problem, not the conversation. Worth saying, because the panel
+            # would otherwise show a conversation that is not growing and a
+            # session that is not answering.
+            publisher.emit(
+                "context_over_budget",
+                tokens=outcome.tokens_after,
+                budget=outcome.budget,
+                message=(
+                    "Her instructions alone use more than this voice provider allows "
+                    "per minute, so no reply fits. Turn off tools she does not need."
+                ),
             )
         content = getattr(item, "content", [])
         text = " ".join(
@@ -383,6 +744,10 @@ async def entrypoint(ctx: JobContext):
 
         role = getattr(item, "role", "")
         if role == "assistant":
+            # The words are final, so the turn the user was waiting on is over.
+            # Recorded before anything else here, because a latency figure that
+            # calls a spoken answer an interruption is worse than no figure.
+            latency.note_answer()
             emotion_events = []
             for part in re.split(r"\b(?:then|and|but|while|so|as|because)\b|[;,.!?]+", text):
                 if not part.strip():
@@ -437,6 +802,10 @@ async def entrypoint(ctx: JobContext):
         state = getattr(event, "new_state", None)
         if state:
             latency.mark("agent_state", state=state)
+            if state == "idle":
+                # The answer has been spoken. This is the number the user feels:
+                # from "the words were final" to "she has finished replying".
+                latency.end_turn()
 
     @session.on("user_state_changed")
     def on_user_state_changed(event):
@@ -454,6 +823,9 @@ async def entrypoint(ctx: JobContext):
 
     @session.on("close")
     def on_session_close(event):
+        # Refuses anything still waiting on an answer: a session that is gone
+        # cannot act on an approval that arrives after it.
+        permissions.close(str(getattr(event, "reason", "session closed")))
         publisher.emit("session_close", reason=str(getattr(event, "reason", "unknown")))
 
     @session.on("speech_created")
@@ -527,10 +899,27 @@ async def entrypoint(ctx: JobContext):
 
     async def close_session(reason: str = "room ended"):
         publisher.emit("session_ending", room=ctx.room.name, reason=reason)
+        # Flush what a turn in flight would never close itself, and say the view
+        # went dark while the publisher can still carry it.
+        latency.end_turn()
+        visual.note_source(None)
         try:
             await session.aclose()
         finally:
-            # The last session to finish closes the shared HTTP client.
+            # Drops the gate with everything it was still waiting on, then
+            # releases the browser and the shared HTTP client. All three are
+            # last-one-out: the browser's *profile* (logins the user typed
+            # themselves) survives on disk, but its pages do not survive a
+            # conversation -- a fresh session must not open on the last
+            # session's screen.
+            release_gate(session)
+            unregister_tracker(session)
+            unregister_publisher(session)
+            # A history grant is a promise about *this* conversation. It must not
+            # survive into the next one, where the same words would authorise a
+            # different chat.
+            release_history_consent(session)
+            await release_browser()
             await release_http_client()
         publisher.emit("session_ended", room=ctx.room.name, reason=reason)
         await publisher.aclose()
@@ -545,6 +934,10 @@ async def entrypoint(ctx: JobContext):
             if remote.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT
         ]
         if participant.kind != rtc.ParticipantKind.PARTICIPANT_KIND_AGENT and not remaining_users:
+            # The person who could answer an approval card has left. Refuse
+            # whatever is pending now rather than waiting out its deadline
+            # against a participant that is no longer there.
+            permissions.close("user left room")
             ctx.shutdown(reason="user left room")
 
     await session.start(
@@ -571,6 +964,8 @@ async def entrypoint(ctx: JobContext):
         interruption_mode=components.interruption_mode,
         response_token_limit=components.response_token_limit,
     )
+    # A baseline record, so the UI never has to infer "no video" from silence.
+    publisher.emit("visual", reason="idle", **visual.snapshot())
 
     # Hold the shared HTTP client for the lifetime of this job, so every tool
     # call reuses one SSL context and one connection pool.
@@ -584,6 +979,33 @@ Greet the user briefly and ask how you can help.
 """
     )
     latency.mark("greeting_requested_done")
+
+    # There is deliberately **no WhatsApp pre-warm here any more.**
+    #
+    # It was a real latency win -- starting Chromium and loading WhatsApp Web is
+    # several seconds, paid during the greeting instead of during the user's first
+    # request -- and it was removed because it was *racing the tool it was
+    # supposed to be helping*, in three ways that only show up in a live session:
+    #
+    #   - **It is fire-and-forget on a shared singleton.** `prewarm_whatsapp` and
+    #     the messaging tools both drive one `_Browser`. The task is never awaited,
+    #     so a request arriving while the warm-up is still navigating finds a tab
+    #     that exists and is not yet usable -- and the symptom is a send that
+    #     "searches for the contact but can't click the result", retried until it
+    #     happens to win the race. Several attempts is what losing a race looks
+    #     like.
+    #   - **It opened tabs nobody asked for.** One per session, created before the
+    #     user had said anything, which is how several copies of WhatsApp came to
+    #     be open at once and the search ran in one while the press landed in
+    #     another.
+    #   - **The cost was paid by machines that never send a message.**
+    #
+    # `whatsapp_page()` already waits for the page properly -- `state()` polls for
+    # up to 90 seconds and reports `loading` as its own answer rather than
+    # claiming the account is signed out. So the first request is slower by a few
+    # seconds and is *correct*, which is the trade this product should be making:
+    # a visible pause beats a message sent into a chat that may not be the one.
+    logger.info("[WhatsApp] no pre-warm; the first request waits for the page")
 
 
 options = WorkerOptions(

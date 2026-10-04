@@ -63,6 +63,21 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
     from browser.session import whatsapp_page
     import whatsapp_desktop as desktop
 
+# The voice, for `announce_sent`. At **module scope**, deliberately: a
+# function-level relative import breaks the script path the worker actually runs
+# under, which is why `test_import_shapes` refuses them outright. That test caught
+# exactly this function the first time it was written, which is the guard working.
+try:
+    from ...runtime.progress import _session_of
+    from ...runtime.voice_line import SAID, SILENT, speak_line
+except ImportError:  # running as a top-level module with agent/ on sys.path
+    from runtime.progress import _session_of  # type: ignore[no-redef]
+    from runtime.voice_line import (  # type: ignore[no-redef]
+        SAID,
+        SILENT,
+        speak_line,
+    )
+
 logger = logging.getLogger("lumine")
 
 #: Digits only, and ASCII only: ``str.isdigit`` would accept Arabic-Indic digits
@@ -1783,31 +1798,31 @@ async def _search_box_holds(page: Any, wanted: str) -> bool:
 #: that question is the send.
 #:
 #: The channel is reported rather than assumed. `voice_line.speak_line` answers
-#: `SAID` when a synthesiser carried the line, `GENERATED` when the realtime model
-#: spoke for itself, and `SILENT` when the profile can do neither -- which is the
-#: case on a native-audio profile such as `gemini-3.8-live`, where `say()` raises
-#: and the model's own sentence is the only voice there is. Saying so in the result
-#: is what stops the model talking over a confirmation the product already gave.
+#: `SAID` when a synthesiser carried the line and `SILENT` when the profile owns no
+#: synthesiser -- which is the case on a native-audio profile such as
+#: `gemini-3.8-live`, where `say()` raises.
+#:
+#: `allow_model=False`, and that argument *is* the fix for "she says it twice".
+#: `speak_line` will otherwise escalate to the realtime model with
+#: `generate_reply`, and that is not the confirmation here -- it is a sentence in
+#: front of it. This call happens inside the tool, one statement before the tool
+#: returns, and the return is what makes the model speak: LiveKit regenerates for
+#: any non-empty result, and a realtime model with server-side turn detection
+#: replies even when a reply was not asked for. So the injected sentence and the
+#: model's own reply are two statements about one send, and the user hears "the
+#: message has been sent to X" twice. Refusing the fallback leaves one speaker
+#: either way -- the TTS speaks it verbatim, or the result tells the model to say
+#: it once, in its own words.
 async def announce_sent(context: Any, who: str) -> str:
     """Speak the send confirmation once. Never raises; answers the channel used."""
-    try:
-        from ...runtime.progress import _session_of as session_of
-        from ...runtime.voice_line import SILENT, speak_line
-    except ImportError:  # running as a top-level script with agent/ on sys.path
-        try:
-            from runtime.progress import _session_of as session_of
-            from runtime.voice_line import SILENT, speak_line
-        except ImportError:
-            return "silent"
-    session = session_of(context)
+    session = _session_of(context)
     if session is None:
-        return "silent"
-    line = f"The message has been sent to {who}."
+        return SILENT
+    # line = f"The message has been sent to {who}."
     try:
-        # `add_to_chat_ctx` is not a `say()` argument -- this is a synthetic
-        # conversation item so the model does not read its own confirmation back
-        # as content to discuss, which is the other half of saying it once.
-        channel = await speak_line(session, line, allow_interruptions=True)
+        channel = await speak_line(
+            session, line, allow_interruptions=True, allow_model=False
+        )
     except Exception:  # noqa: BLE001 - a confirmation that cannot be spoken is not a failure
         logger.info("[whatsapp] could not speak the send confirmation", exc_info=True)
         return SILENT

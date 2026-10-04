@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAgentRuntime, type AgentRuntimeEvent } from "../../lib/agentRuntime";
 
 /**
@@ -80,13 +80,81 @@ export type ActivityFeed = {
 /**
  * How many entries are kept.
  *
- * Bounded, because this is a live view of the last few minutes rather than an
- * audit log. A long session with a tool-heavy turn emits thousands of records,
- * and an unbounded array in React state is a leak that only shows up after the
- * window has been open long enough for the user to have stopped noticing. 200
- * covers a full session of ordinary use and costs nothing to hold.
+ * Bounded, because this is a live view rather than an audit log — an unbounded
+ * array in React state is a leak that only shows up once the window has been open
+ * long enough for the user to have stopped noticing.
+ *
+ * It was 200, and that was the reported bug: *"the activity logs are capped to
+ * few logs."* 200 sounds generous until you count what a turn produces. From one
+ * real session's `LUMINE_EVENT` stream, a **single** user turn emits ten `latency`
+ * records (`agent_state`, `llm_first_token`, `llm_request`, `tool_exec`,
+ * `turn_end_to_end`…), a `session_usage`, a `conversation` pair and four `emotion`
+ * records. 200 entries is therefore about **twenty turns** — so the Activity page
+ * silently lost everything from earlier in the same session, and there was no
+ * indication it had.
+ *
+ * 2,000 is about two hundred turns, which is the whole of a working day on one
+ * machine, and it still costs nothing to hold: an entry is a handful of short
+ * strings, so the ceiling here is measured in a few megabytes of worst case.
  */
-const MAX_ENTRIES = 200;
+const MAX_ENTRIES = 2000;
+
+/**
+ * Where the entries survive a reload.
+ *
+ * **This is the other half of "capped to few logs".** The feed lived in React
+ * state only, so closing the app discarded it — and since the worker registers
+ * fresh on every launch, reopening the app produced an Activity page with a
+ * handful of rows from the last few seconds and no way to ask what had happened
+ * before that. A log that vanishes on quit is not a log.
+ *
+ * `localStorage` rather than a Tauri command on purpose: it is synchronous, so
+ * restored rows are on screen in the *first* paint of the Activity page rather
+ * than a frame later, and there is no IPC round trip on a page that is meant to
+ * be the record of what just happened.
+ *
+ * Every access is guarded. `localStorage` throws in a private window and when the
+ * quota is exhausted, and a telemetry view must not be the thing that takes the
+ * app down — the same rule `runtime_events.write_event_line` follows on the other
+ * side of the pipe.
+ */
+const STORAGE_KEY = "lumine.activity.v1";
+
+/** Read the saved rows, or `[]` for anything unreadable. Never throws. */
+function loadPersisted(): ActivityEntry[] {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // Filtered rather than trusted: a hand-edited or half-written store should
+    // cost the rows it got wrong, not the whole history.
+    return parsed.filter(isActivityEntry).slice(-MAX_ENTRIES);
+  } catch {
+    return [];
+  }
+}
+
+/** Write the rows, best-effort. A full quota is not this page's problem. */
+function persistPersisted(entries: readonly ActivityEntry[]): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(entries.slice(-MAX_ENTRIES)));
+  } catch {
+    /* Private window, or quota. The in-memory feed is still correct. */
+  }
+}
+
+/** Whether a stored value has the shape an entry needs. */
+function isActivityEntry(value: unknown): value is ActivityEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const entry = value as Partial<ActivityEntry>;
+  return (
+    typeof entry.id === "string" &&
+    typeof entry.at === "number" &&
+    typeof entry.kind === "string" &&
+    typeof entry.title === "string"
+  );
+}
 
 /** Monotonic, so two records in the same millisecond do not collide on key. */
 let sequence = 0;
@@ -400,24 +468,55 @@ export function classifyActivity(event: AgentRuntimeEvent): ActivityEntry | null
  * but it is O(n) per event, and events arrive in bursts. So the hook appends and
  * reverses for the view instead. Same cost per read, no per-event reallocation.
  *
+ * ## It starts from the last session's rows, not from nothing
+ *
+ * The initial state is read from `localStorage` in the useState *initialiser*,
+ * which is what makes restored rows appear in the first paint rather than a
+ * render later. This is the difference between a log you can consult about
+ * yesterday and one that begins when the window opens.
+ *
  * ## The event handler is stable, so this re-renders nothing it does not have to
  *
  * `useAgentRuntime` already keeps its callbacks in refs, so passing an inline
  * `onRuntime` here does not re-subscribe. But it *does* re-render this hook on
  * every parent render, and the setState is what matters: `ingest` is a
  * `useCallback` with no dependencies, so the subscription is mounted once.
+ *
+ * ## Writing is debounced, because events arrive in bursts
+ *
+ * A turn emits ten-plus records within a couple of seconds, and
+ * `JSON.stringify` + a synchronous write per record is work on the main thread
+ * for something the reader will not look at for minutes. So the write is trailing
+ * and at most once a second, plus one final write when the window goes away.
  */
 export function useActivityFeed(): ActivityFeed {
-  const [entries, setEntries] = useState<readonly ActivityEntry[]>([]);
+  const [entries, setEntries] = useState<readonly ActivityEntry[]>(loadPersisted);
+  // `number | null` rather than `ReturnType<typeof setTimeout>`: the DOM and
+  // Node types disagree about what a timer handle is, and this ref is only ever
+  // compared with `null` and handed back to `clearTimeout`.
+  const pending = useRef<number | null>(null);
 
-  const ingest = useCallback((event: AgentRuntimeEvent) => {
-    const entry = classifyActivity(event);
-    if (!entry) return;
-    setEntries((current) => {
-      const next = [...current, entry];
-      return next.length > MAX_ENTRIES ? next.slice(next.length - MAX_ENTRIES) : next;
-    });
+  const schedule = useCallback((current: readonly ActivityEntry[]) => {
+    if (pending.current !== null) window.clearTimeout(pending.current);
+    pending.current = window.setTimeout(() => {
+      pending.current = null;
+      persistPersisted(current);
+    }, 1000);
   }, []);
+
+  const ingest = useCallback(
+    (event: AgentRuntimeEvent) => {
+      const entry = classifyActivity(event);
+      if (!entry) return;
+      setEntries((current) => {
+        const next = [...current, entry];
+        const bounded = next.length > MAX_ENTRIES ? next.slice(next.length - MAX_ENTRIES) : next;
+        schedule(bounded);
+        return bounded;
+      });
+    },
+    [schedule],
+  );
 
   // Mounted in `Home.tsx` and not in the Activity page, so navigating to Tools
   // and back does not lose the record of what happened. `useAgentRuntime` holds
@@ -425,6 +524,39 @@ export function useActivityFeed(): ActivityFeed {
   // once and torn down with the app rather than with the current route.
   useAgentRuntime({ onRuntime: ingest });
 
-  const clear = useCallback(() => setEntries([]), []);
+  /**
+   * The last write, flushed on the way out.
+   *
+   * A debounced write that never fires is a log that loses its final minute on
+   * every quit — which is exactly the part somebody closed the app to read.
+   */
+  useEffect(() => {
+    const flush = () => {
+      if (pending.current === null) return;
+      window.clearTimeout(pending.current);
+      pending.current = null;
+      setEntries((current) => {
+        persistPersisted(current);
+        return current;
+      });
+    };
+    window.addEventListener("pagehide", flush);
+    return () => {
+      flush();
+      window.removeEventListener("pagehide", flush);
+    };
+  }, []);
+
+  /** Clears the screen **and** the saved copy. A "Clear" that leaves the rows on
+   * disk would bring them straight back on the next launch. */
+  const clear = useCallback(() => {
+    if (pending.current !== null) {
+      window.clearTimeout(pending.current);
+      pending.current = null;
+    }
+    setEntries([]);
+    persistPersisted([]);
+  }, []);
+
   return { entries, clear };
 }

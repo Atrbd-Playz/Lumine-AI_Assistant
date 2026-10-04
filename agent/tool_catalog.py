@@ -38,23 +38,26 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Mapping
 
 try:
+    from .settings.config_store import effective_document
     from .tools.tools_registry import (
         ALL_TOOLS,
         TOOL_CARDS,
         tool_cards,
         tool_category_list,
     )
-    from .tools.tools_permission import tool_id
+    from .tools.tools_permission import TOOL_ACTION_CLASS, TOOLS_SECTION, tool_id
 except ImportError:  # running as `python agent/tool_catalog.py`
+    from settings.config_store import effective_document
     from tools.tools_registry import (
         ALL_TOOLS,
         TOOL_CARDS,
         tool_cards,
         tool_category_list,
     )
-    from tools.tools_permission import tool_id
+    from tools.tools_permission import TOOL_ACTION_CLASS, TOOLS_SECTION, tool_id
 
 
 def catalog_issues() -> list[str]:
@@ -80,11 +83,21 @@ def catalog_issues() -> list[str]:
     for ident, card in sorted(TOOL_CARDS.items()):
         if not str(card.get("label", "")).strip():
             issues.append(f"{ident}: card has no label")
-        if card.get("effect") not in ("answers", "opens"):
+        if card.get("effect") not in ("answers", "opens", "acts", "sends"):
             # A card that does not say whether a tool acts on the machine leaves
             # the reader to guess from its name, which is the decision they are
-            # being asked to make by leaving it switched on.
-            issues.append(f"{ident}: card effect must be 'answers' or 'opens'")
+            # being asked to make by leaving it switched on. "acts" reaches a
+            # web page, "sends" leaves the conversation entirely -- both are
+            # distinctions a reader needs before saying yes.
+            issues.append(f"{ident}: card effect must be one of 'answers', 'opens', 'acts', 'sends'")
+        if ident not in TOOL_ACTION_CLASS:
+            # The floor a tool asks from comes from this map, and a tool missing
+            # from it falls through to the *strictest* class -- so nothing unsafe
+            # happens. What does happen is a card that says "Asks you first"
+            # about a lookup, and a policy page that cannot be trusted to
+            # describe itself. The class is declared next to the tool on purpose;
+            # this makes forgetting it a failing check instead of a wrong label.
+            issues.append(f"{ident}: no action class declared")
         if card.get("category") not in declared_categories:
             # A category the frontend has no strip for. The page derives its tabs
             # from the published list rather than hardcoding names, so an
@@ -98,7 +111,35 @@ def catalog_issues() -> list[str]:
                 issues.append(f"{ident}: a parameter has no name")
             if not str(parameter.get("help", "")).strip():
                 issues.append(f"{ident}: parameter {parameter.get('name')} has no help")
+
+    # Switches written into the saved document for tools that do not exist.
+    # Checked here rather than in `settings/validation.py` because this is the
+    # only place that knows the tool list without importing the registry into
+    # settings -- which would be a cycle, since the registry reaches the
+    # permission gate and that reaches settings.
+    for stale in sorted(_switch_ids() - registered):
+        issues.append(
+            f"{TOOLS_SECTION}.{stale}: the saved document has a switch for a tool "
+            "that is not registered, so it does nothing"
+        )
     return issues
+
+
+def _switch_ids() -> set[str]:
+    """Tool ids the saved document carries a switch for.
+
+    Defensive on purpose: this function exists so ``--check`` reports a
+    stale switch rather than refusing to start because of one, and an unreadable
+    or half-written config file is exactly when somebody needs that report.
+    """
+    try:
+        document, _source, _diagnostics = effective_document()
+    except Exception:  # noqa: BLE001 - an unreadable file is not a crash here
+        return set()
+    section = document.get(TOOLS_SECTION) if isinstance(document, Mapping) else None
+    if not isinstance(section, Mapping):
+        return set()
+    return {str(key).strip().lower() for key in section if str(key).strip()}
 
 
 def main(argv: list[str] | None = None) -> int:

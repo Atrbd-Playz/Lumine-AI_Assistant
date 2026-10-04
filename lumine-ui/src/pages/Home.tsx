@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { DEFAULT_APPEARANCE, NAV_ITEMS, isWorkspaceNav, type NavId } from "./home/constants";
-import { AppearanceDialog } from "./home/components/AppearanceDialog";
 import { MainSpace } from "./home/components/MainSpace";
 import { readStoredPanel, writeStoredPanel, type PanelKind } from "./home/components/ConversationPanel";
 import { Sidebar } from "./home/components/Sidebar";
-import { WorkspaceView } from "./home/components/WorkspaceView";
-import { FocusPage } from "./FocusPage";
+import { PermissionCard } from "./home/components/PermissionCard";
 import { useNotes } from "./home/notes/useNotes";
 import { getReadableForeground, getReadableTextColor, fontStack } from "./home/utils";
 import { usePreferences } from "./home/hooks/usePreferences";
@@ -21,21 +19,108 @@ import { CommandPalette } from "../components/command/CommandPalette";
 import { useCommandHotkeys, describeBinding } from "../components/command/useCommandHotkeys";
 import { buildCommands, type Command } from "../components/command/commands";
 import { useActivityFeed } from "../features/activity/activityFeed";
-import { ActivityTimeline } from "./home/components/ActivityTimeline";
 import { useLumineVoice } from "../features/voice/useLumineVoice";
+import type { VoiceBrowserPreview, VoicePermissionRequest, VoiceScreenState } from "../features/voice/voice-manager";
 import { useLocalMedia } from "../features/voice/useLocalMedia";
 import { DEFAULT_INTERRUPTION_MODE } from "../features/voice/interruption";
-import { SettingsDialog } from "./settings/SettingsDialog";
-import { ProvidersPage } from "./settings/ai/ProvidersPage";
-import { VoicePage } from "./settings/ai/VoicePage";
-import { ModelsPage } from "./settings/ai/ModelsPage";
-import { DiagnosticsPage } from "./settings/system/DiagnosticsPage";
-import { AboutPage } from "./settings/system/AboutPage";
 import { CONFIG_VERSION } from "../features/settings/aiConfigTypes";
 import { useAiConfig } from "../features/settings/useAiConfig";
 import { useSetupStatus } from "../features/settings/useSetupStatus";
 import { SetupGate } from "./onboarding/SetupGate";
+
+/**
+ * Only the two heavy pages are still loaded on first use.
+ *
+ * ## Why these two and not the rest
+ *
+ * Everything used to be split behind `Suspense`, and the reason was the initial
+ * bundle: `Home.tsx` is a single ternary chain rather than a router, so every
+ * destination was in the first chunk — including the settings screens, the
+ * appearance editor, the avatar lab and the Tools catalog — on a launch whose
+ * first screen is the avatar and a call button.
+ *
+ * That reasoning was right for a *heavy* module and wrong as a blanket. Splitting
+ * a 4 KB page costs a request, a parse of an extra chunk and a suspense boundary
+ * for no measurable saving, and it buys a blank frame while it loads — which is
+ * worse than the thing it optimises. The reported symptom was tabs that visibly
+ * stalled on the way in.
+ *
+ * So the rule is now **weight, not count**, and only two modules clear it:
+ *
+ * - `WorkspaceView` is the Tools grid, and `get_tool_catalog` costs about six
+ *   seconds of `python agent/tool_catalog.py` importing `livekit-agents`.
+ * - `ActivityTimeline` is the largest single view in the app and holds an event
+ *   buffer that is worth nothing until something has emitted.
+ *
+ * Everything else — Focus, the avatar lab, the settings overlay and all five
+ * settings pages — is a static import again. `PAGE_FALLBACKS` keeps its entries
+ * so a name cannot silently drift, but only these two boundaries render anything.
+ *
+ * ## Nothing is read before it is asked for
+ *
+ * There is no prefetch here, and there is deliberately no prewarm in an effect
+ * either. The Tools page's six seconds are a real core for their whole duration:
+ * paying it during launch means the launch is slower for everybody to open a page
+ * most of them never open. So `ToolsPage` reads on its own mount, and the desktop
+ * layer's cache means the *second* visit is free — which is the trade worth
+ * having, and it is only available because that command is now `async` and off the
+ * main thread.
+ */
+const WorkspaceView = lazy(() => import("./home/components/WorkspaceView").then((m) => ({ default: m.WorkspaceView })));
+const ActivityTimeline = lazy(() => import("./home/components/ActivityTimeline").then((m) => ({ default: m.ActivityTimeline })));
+
+/**
+ * Everything else, imported statically again.
+ *
+ * Named rather than inlined at each use site so the import list above the `Suspense`
+ * block still reads as a list of pages, and so a new page has an obvious place to
+ * go. The rule is weight, not count — see the note above.
+ */
+import { FocusPage } from "./FocusPage";
 import AvatarLabPage from "./AvatarLabPage";
+import { SettingsDialog } from "./settings/SettingsDialog";
+import { AppearanceDialog } from "./home/components/AppearanceDialog";
+import { ProvidersPage } from "./settings/ai/ProvidersPage";
+import { PermissionsPage } from "./settings/system/PermissionsPage";
+import { VoicePage } from "./settings/ai/VoicePage";
+import { ModelsPage } from "./settings/ai/ModelsPage";
+import { DiagnosticsPage } from "./settings/system/DiagnosticsPage";
+import { AboutPage } from "./settings/system/AboutPage";
+
+/**
+ * What is on screen while a deferred page is being fetched.
+ *
+ * The page's own chrome rather than a spinner, because a destination that has never
+ * been opened has no state to restore and therefore nothing to be wrong about: the
+ * title and the sentence under it are already known, and showing them means the
+ * destination arrives looking like itself instead of arriving.
+ */
+function PageFallback({ title, detail }: { title: string; detail: string }) {
+  return (
+    <main className="workspace-view" aria-busy="true" aria-label={title}>
+      <header className="workspace-header">
+        <div>
+          <p className="eyebrow">Lumine workspace</p>
+          <h1>{title}</h1>
+          <p>{detail}</p>
+        </div>
+      </header>
+      <div className="tools-loading">
+        <span className="tools-loading-mark" aria-hidden="true" />
+        <p>Opening {title.toLowerCase()}…</p>
+      </div>
+    </main>
+  );
+}
+
+/** The page a destination shows while its module is still arriving. */
+const PAGE_FALLBACKS: Record<Exclude<NavId, "home">, { title: string; detail: string }> = {
+  focus: { title: "Focus", detail: "One thing at a time, for as long as you mean it." },
+  avatar: { title: "Avatar Lab", detail: "Emotion, activity and animation, tried out one at a time." },
+  tools: { title: "Tools", detail: "What Lumine can reach on her own." },
+  memory: { title: "Memory", detail: "What carries over between calls." },
+  activity: { title: "Activity", detail: "What the worker actually reported, as it reported it." },
+};
 
 /**
  * The path a destination is served at, and the destination a path names.
@@ -176,6 +261,77 @@ export default function Home() {
   };
 
   /**
+   * An approval the worker is blocked on, held until answered or expired.
+   *
+   * A list rather than a single value because the model can arm two requests
+   * in one step, and dropping the earlier one would leave its card unanswered
+   * while the button for it is nowhere on screen -- the worker would then
+   * refuse on its deadline, correctly and needlessly. Deduplicated by id: the
+   * channel is reliable-once, so a repeat would have to be a re-arm, and a
+   * re-arm is a new id anyway.
+   */
+  /**
+   * The last screenshot of the page Lumine is driving.
+   *
+   * One picture at a time, replaced by the next. A history of them would be
+   * megabytes of base64 in React state for a panel that shows one image, and the
+   * newest is the only one anybody reads — the previous frame is what the page
+   * used to look like.
+   *
+   * Cleared when the call ends, so a preview from a finished session does not
+   * greet the next one with a page nobody is looking at any more. The browser is
+   * released with the session, so keeping it would be keeping a photograph of a
+   * window that no longer exists.
+   */
+  const [browserPreview, setBrowserPreview] = useState<VoiceBrowserPreview | null>(null);
+  const handleBrowserPreview = useCallback((preview: VoiceBrowserPreview) => {
+    setBrowserPreview(preview);
+  }, []);
+
+  /**
+   * The window `desktop_control` is working in.
+   *
+   * Held separately from `browserPreview` and cleared separately, because they
+   * are two different capabilities: a browser preview is a photograph of a page,
+   * and this is a statement that the agent currently has the user's mouse and
+   * keyboard. Folding them together would make the second one look like the
+   * first — which is exactly the confusion worth avoiding, because only one of
+   * them moves the pointer.
+   */
+  const [desktopState, setDesktopState] = useState<VoiceScreenState | null>(null);
+  const handleScreenState = useCallback((state: VoiceScreenState) => {
+    setDesktopState(state);
+  }, []);
+
+  const [permissions, setPermissions] = useState<VoicePermissionRequest[]>([]);
+  const handlePermission = useCallback((request: VoicePermissionRequest) => {
+    setPermissions((current) =>
+      current.some((entry) => entry.id === request.id) ? current : [...current, request],
+    );
+  }, []);
+
+  /**
+   * Sweep cards whose deadline has passed.
+   *
+   * The worker refuses on its own clock whether or not this runs -- this only
+   * stops the UI offering an answer the gate would now record as expired. The
+   * card shows the seconds itself; this is the two clocks agreeing, not the
+   * display.
+   */
+  useEffect(() => {
+    if (permissions.length === 0) return;
+    const timer = window.setInterval(() => {
+      const now = Date.now() / 1000;
+      setPermissions((current) =>
+        current.some((entry) => entry.expiresAt <= now)
+          ? current.filter((entry) => entry.expiresAt > now)
+          : current,
+      );
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [permissions.length]);
+
+  /**
    * A failure, as a cause and a next step rather than a provider string.
    *
    * Every failure in the app -- a rejected key, a dropped room, a dead worker --
@@ -199,7 +355,61 @@ export default function Home() {
     });
   }, [notify]);
 
-  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onToolEvent: handleToolEvent, onToolResult: handleToolResult, onNotice: handleNotice, interruptionMode, onError: (message) => reportFailure(message) });
+  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onToolEvent: handleToolEvent, onToolResult: handleToolResult, onNotice: handleNotice, onPermission: handlePermission, onBrowserPreview: handleBrowserPreview, onScreenState: handleScreenState, interruptionMode, onError: (message) => reportFailure(message) });
+
+  /**
+   * Answer one pending approval, keeping the card only if the answer failed.
+   *
+   * Removed on *delivery*, not on confirmation: whether the id still counted
+   * is the worker's verdict (it may have just expired), and that verdict
+   * arrives as the tool's result through the toast path that already exists.
+   * Holding the card until then would show a question the worker has already
+   * stopped asking.
+   *
+   * A `false` keeps the card on purpose. The packet never left, the deadline
+   * still has time on it, and the user pressing the same button twice is the
+   * correct next action -- swallowing it would leave them with a button that
+   * appears to do nothing.
+   */
+  const answerPermission = useCallback(
+    async (id: string, decision: "approve" | "deny") => {
+      const delivered = await session.respondPermission(id, decision);
+      if (delivered) {
+        setPermissions((current) => current.filter((entry) => entry.id !== id));
+      }
+      return delivered;
+    },
+    [session.respondPermission],
+  );
+
+  // A finished call's cards answer nothing -- the worker released its gate
+  // with the room -- so the UI stops showing them rather than letting someone
+  // press Allow into a session that is gone. The refusal itself already
+  // happened on the worker side; this is the card agreeing.
+  useEffect(() => {
+    if (!session.isActive && permissions.length > 0) {
+      setPermissions([]);
+    }
+  }, [session.isActive, permissions.length]);
+
+  // Same reasoning for the preview: the browser is released with the session, so
+  // the picture is of a window that no longer exists. Kept apart from the
+  // permissions sweep because they clear for different reasons and one effect
+  // doing both would hide which.
+  useEffect(() => {
+    if (!session.isActive && browserPreview) {
+      setBrowserPreview(null);
+    }
+  }, [session.isActive, browserPreview]);
+
+  // And the desktop state, released with the same session. Separate on purpose:
+  // an effect doing both would make "the call ended" and "the picture expired"
+  // indistinguishable when one of them misfires.
+  useEffect(() => {
+    if (!session.isActive && desktopState) {
+      setDesktopState(null);
+    }
+  }, [session.isActive, desktopState]);
 
   /**
    * The voice worker, followed rather than asked.
@@ -369,7 +579,7 @@ export default function Home() {
     });
 
   // Portals render outside this subtree, so the palette has to reach <html> too.
-  useDocumentTheme(mode, variables);
+  useDocumentTheme(mode, variables, navCollapsed);
 
   // The camera and the screen, released the moment the call ends. Owned here
   // because the capture and the publication have different owners: this hook
@@ -791,6 +1001,7 @@ export default function Home() {
       collapsed={navCollapsed}
       onCollapsedChange={collapseNav}
     />
+    <Suspense fallback={page === "home" ? <div className="lumine-page-loading" aria-busy="true" /> : <PageFallback {...PAGE_FALLBACKS[page]} />}>
     {page === "home" ? <MainSpace
       state={sessionState}
       cursorGaze={cursorGaze}
@@ -811,6 +1022,8 @@ export default function Home() {
       media={media}
       isVideoPublished={isPublished}
       onMediaToggle={(source) => { void toggleSource(source); }}
+      browserPreview={browserPreview}
+      desktopState={desktopState}
       startedAt={session.startedAt}
       emotion={session.emotion}
       showEmotionDebug={import.meta.env.VITE_LUMINE_DEBUG_EMOTION === "true"}
@@ -836,13 +1049,24 @@ export default function Home() {
       activeNoteId={activeNoteId}
       onSelectNote={setActiveNoteId}
       onCreateNote={() => setActiveNoteId(notes.create())}
+        /* The Music widget's "Choose folder" button. It goes to Permissions
+           rather than to a Music tab because granting a folder is a permission,
+           and a permission belongs with the other capability switches. */
+        onOpenPermissions={() => { setSettingsSection("permissions"); setSettingsOpen(true); }}
       onEditNote={notes.save}
       onDeleteNote={(id) => {
         notes.remove(id);
         setActiveNoteId((current) => (current === id ? null : current));
       }}
       onFocusPage={() => handleNavigation("focus")}
-    /> : page === "focus" ? <FocusPage notes={notes} /> : page === "avatar" ? <AvatarLabPage /> : page === "activity" ? <ActivityTimeline entries={activity.entries} onClear={activity.clear} expanded /> : <WorkspaceView kind={page} onSettings={() => { setSettingsSection("voice"); setSettingsOpen(true); }} />}
+    /> : page === "focus" ? <FocusPage notes={notes} /> : page === "avatar" ? <AvatarLabPage /> : page === "activity" ? <ActivityTimeline entries={activity.entries} onClear={activity.clear} /> : <WorkspaceView kind={page} onSettings={() => { setSettingsSection("voice"); setSettingsOpen(true); }} />}
+    </Suspense>
+
+    {/* The approval question, wherever the user happens to be. A permission
+        can only arrive mid-call, and it is time-boxed, so it is not gated on
+        being on the home page -- hiding it because a nav click happened first
+        would be how a refusal gets manufactured by the UI instead of the user. */}
+    <PermissionCard requests={permissions} onAnswer={answerPermission} />
 
     <CommandPalette
       open={paletteOpen}
@@ -851,11 +1075,30 @@ export default function Home() {
       onBlocked={reportBlocked}
     />
 
-    {settingsOpen && <SettingsDialog initialSection={settingsSection} onClose={() => setSettingsOpen(false)}>
+    {/*
+        A second boundary, inside the dialog rather than around it.
+
+        The shell is the part that has to be there the instant Settings is chosen
+        — the scrim, the focus trap, the rail, the Escape handling — so it is not
+        deferred. The *screen* inside it is: Appearance, Providers, Voice, Models,
+        Diagnostics and About are six modules a launch never touches, and each one
+        arriving a frame later behind a plain pending line is invisible where the
+        alternative is a blank panel with no frame in it.
+      */}
+    {settingsOpen && (
+      <SettingsDialog initialSection={settingsSection} onClose={() => setSettingsOpen(false)}>
       {(route) => {
         const section = route.section;
         if (section === "appearance") {
           return <AppearanceDialog mode={mode} setMode={setMode} cursorGaze={cursorGaze} setCursorGaze={setCursorGaze} appearance={appearance} setAppearance={setAppearance} presets={presets} savePreset={savePreset} importPresets={importPresets} deletePreset={deletePreset} onResetPalette={resetAppearance} onReset={resetAllAppearance} onClose={() => setSettingsOpen(false)} />;
+        }
+        // Ahead of the catalog gate below, with Appearance and About: choosing a
+        // music folder has nothing to do with which models Lumine speaks through,
+        // so a machine whose provider catalog failed to load must still be able
+        // to use this screen. Behind it, the page would report "the catalog is
+        // unavailable" — which is true and not what anybody came here to read.
+        if (section === "permissions") {
+          return <PermissionsPage />;
         }
         if (aiConfig.state === "loading") {
           return <div className="settings-page"><p className="validation is-pending">Loading the AI configuration…</p></div>;
@@ -935,7 +1178,8 @@ export default function Home() {
           />
         );
       }}
-    </SettingsDialog>}
+      </SettingsDialog>
+    )}
   </div>;
 }
 

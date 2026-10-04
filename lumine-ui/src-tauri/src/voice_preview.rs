@@ -134,12 +134,15 @@ pub async fn preview_voice(fragment: Value, text: Option<String>) -> Result<Voic
 /// `agent/.env` remains the source, which is a supported configuration rather
 /// than a failure.
 fn credential_env(provider: &str) -> Vec<(String, String)> {
-    let Ok(catalog) = python_env::run_agent_script("provider_catalog.py", &[]) else {
-        return Vec::new();
-    };
-    let Ok(catalog) = serde_json::from_str::<Value>(&catalog) else {
-        return Vec::new();
-    };
+    // The shared cache, so auditioning a voice does not re-run the interpreter
+    // just to learn which variables one provider declares. The catalog is static
+    // for the life of the process and `clear_tool_catalog` is the way to re-read
+    // it. An unreadable catalog yields an empty set, which is the same outcome as
+    // a provider that declares no keys: nothing injected, `agent/.env` stays the
+    // source, and the preview either works or says why.
+    let catalog = crate::cached(crate::CATALOG_PROVIDER)
+        .or_else(|| crate::read_provider_catalog().ok())
+        .unwrap_or(Value::Null);
     let Some(names) = key_env_by_provider(&catalog).get(provider).cloned() else {
         return Vec::new();
     };

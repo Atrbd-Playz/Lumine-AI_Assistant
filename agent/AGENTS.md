@@ -56,17 +56,59 @@ agent/
 │   └── pipeline_factory.py   capability-driven stage builders
 ├── runtime/                  behaviour that only matters during a live session
 │   ├── runtime_events.py     LUMINE_EVENT records and the tool-lifecycle bridge
+│   ├── progress.py           a tool narrating its own steps while it works
+│   ├── history_consent.py    the one question about reading somebody's messages
 │   ├── failure_gate.py       consecutive-failure circuit and the spoken apology
 │   ├── llm_errors.py         status + message -> a named, sayable failure
 │   ├── context_trim.py       chat context trimmed to an item budget
 │   ├── latency.py            turn latency recorder
 │   ├── emotion_contract.py   canonical emotion vocabulary and extraction
-│   └── emotion_voice.py      the same signal as a per-turn TTS control
+│   ├── emotion_voice.py      the same signal as a per-turn TTS control
+│   ├── verification.py       requested/dispatched/accepted/observed/failed/…/uncertain
+│   ├── router.py             which environment a request belongs in (pure)
+│   ├── task_model.py         Task/Step, dependencies, retry policy, cancellation
+│   └── task_engine.py        deterministic progression, checkpoints, concurrency
 ├── tools/                    model-facing tools (registry is the source of truth)
+│   ├── task_runner.py        run_task + cancel_task: route, plan, execute, report
+│   ├── app_resolver.py       a spoken name -> one target, then verify the launch
+│   ├── desktop/              the mouse and keyboard, for every other application
+│   │   ├── control.py        desktop_control: the tool, and the refusals in front of it
+│   │   ├── ops.py            the operation table: class, tier, verify, retry hold
+│   │   ├── capture.py        what is on screen, and the generation token for it
+│   │   ├── input.py          SendInput: move, click, drag, scroll, type, hotkey
+│   │   └── uia.py            the UI Automation harness -- shared with WhatsApp
+│   └── messaging/            the WhatsApp surface
+│       ├── whatsapp.py       the send tool, and the resolve/draft/ask/send order
+│       ├── whatsapp_ops.py   the operation table: class, paths, verify, retry hold
+│       ├── whatsapp_web.py   WhatsApp Web, in a tab of its own -- reads and verbs
+│       ├── whatsapp_desktop.py  UI Automation -- UNREACHABLE, kept as the record
+│       ├── whatsapp_read.py  chats, unread, messages, find, contact
+│       ├── whatsapp_chats.py archive, pin, mute, read, star, delete, block
+│       ├── whatsapp_account.py presence, linked devices, about, unlink, call
+│       ├── whatsapp_refs.py  ChatRef/MessageRef, and the freshness guarding them
+│       ├── whatsapp_files.py the allowlist a model-supplied attachment path must pass
+│       └── whatsapp_flow.py  contact search and chat selection -- see its docstring
+│   └── media/                 the music library: one folder, and what plays from it
+│       ├── control.py         play_media: find, play, next, previous, stop, folders
+│       ├── library.py         the allowlist a model-supplied path must pass
+│       ├── match.py           what was *said* versus what the file is *called*
+│       ├── scanner.py         what exists, in natural order, folders as playlists
+│       ├── player.py          the Player seam; SystemPlayer is os.startfile
+│       ├── queue.py           one ordered .m3u8 for a folder, so a queue is not nine launches
+│       └── state.py           the last track, so "the next one" means something
 ├── prompts/                  persona_core.md (always sent) and persona.md (recall)
 ├── tests/                    the suite; discovers test_*.py from the repo root
 ├── validate_config.py        CLI -- describe and validate a configuration
 ├── provider_catalog.py       CLI -- redacted provider catalog
+├── media_probe.py            CLI -- what is in a music folder, for the Settings screen
+├── media_search.py           CLI -- rank a library against a typed query, for the search box
+├── media_check.py            check -- every music verb, against a real folder, opening nothing
+├── media_rank.py             report -- how each filename is read, and what each request would do
+├── media_queue.py            queue -- the folder's tracks as ONE ordered playlist, for the widget
+├── whatsapp_probe.py         CLI -- which WhatsApp selectors are live right now
+├── whatsapp_message_probe.py CLI -- the send button and the bubbles, in a live chat
+├── desktop_probe.py          CLI -- what the current window exposes, and how
+├── desktop_smoke.py          CLI -- end-to-end checks, staged so nothing moves until asked
 ├── tool_catalog.py           CLI -- tool registry for the Tools page
 ├── voice_preview.py          CLI -- speak one phrase with a candidate TTS
 ├── local_models.py           CLI -- ask a local server which models it has
@@ -421,6 +463,346 @@ Platform-specific considerations that should be isolated later include:
       frames a model cannot read
 - [x] The persona knows Lumine can see, and `recall_persona` can reach the guidance
       for the questions that actually arrive
+- [x] WhatsApp reads, not just sends — chats, unread, a chat's messages, message search,
+      and a contact's about text. It is the first tool that shows the user what *other
+      people wrote*, so it carries its own consent: `messaging.whatsapp.history` is
+      `off`/`ask`/`auto`, defaults to `ask`, asks **before** the chat is opened, and the
+      grant is released with the session. History results use a tighter budget than
+      `tool_results.MAX_RESULT_CHARS` because they are third-party text paid for on every
+      later turn
+- [x] WhatsApp chat management and account verbs — archive, pin, mute, mark read,
+      star, delete-for-everyone, block, presence, linked devices, unlink, calls
+- [x] Every WhatsApp operation declares how it proves it happened, in one table that
+      the permission floor, the Tools-page badge and the path chooser all read
+- [x] A send types the message and reads it back out of the composer **before** asking,
+      so the confirmation is about something on the user's own screen; a declined card
+      clears the draft so one "no" does not break the next send
+- [x] Long operations narrate their steps instead of going quiet, and the WhatsApp tab
+      is pre-warmed during the greeting — **in the background, with no window on the
+      screen.** `prewarm_whatsapp` passes `focus=False`, so nothing is brought forward
+      and a browser it has to start comes up minimized over CDP. `--start-minimized`
+      is inert here (measured: a headed launch with it came up `normal` every time),
+      and creating a tab re-raises the window (measured), so the WhatsApp tab hides it
+      again after it is created. `_reveal` is the only thing that un-hides it, on
+      `open_page`, `switch_tab` and the send flow. A browser we *joined* is never
+      hidden. The latency win is kept; the popup is gone.
+- [x] A warm-up never hides a window the user already had open. `_hid_window`
+      answers "may I hide this?" and is set only when *this process* launched the
+      browser and put it away; `_reveal` clears it. The first version asked the
+      wrong question and hid whatever it found — measured with a video playing in
+      it, `whatsapp_page(focus=False)` on an already-visible browser left the
+      window MINIMIZED, which is worse than the popup it was written to remove
+- [x] A tab request actually reaches the browser. `WINDOW_VERBS` contains
+      `switch`, so "switch to the other tab" was routed to `manage_window` on the
+      desktop, which has no notion of a tab; `TAB_WORDS` returns a `tab` family
+      first, and `Route.action` carries the verb so the model is told `tab` rather
+      than left to guess `open` — the destructive one. Messaging still outranks it
+- [x] Every read says which tab it read (`session.tab_context()` on `observe`,
+      `read`, `state`, `open`), capped at `MAX_REPORTED_TABS`. Asking costs a turn
+      she does not have; and `open` says when it replaced a page, naming `tab new`
+      as the way not to
+- [x] Both browser tools offer the same tab control — `web_control` gained `tab`,
+      and its page-tab verb is `pagetabs` with `tabs` kept as an alias. One word
+      meant two things; the collision is removed rather than moved
+- [x] Tabs understand **how people say it**, and that was the layer that was broken.
+      `actions.parse_tab_request` finds the operation and the target anywhere in a
+      sentence. Measured against real phrasings, the first version — which wanted an
+      exact word — refused "delete the 1st tab", "delete the first tab", "close the
+      first tab", "tab 2", "close tab 2", "switch to tab 3", "what tabs", "how many
+      tabs", "next tab", "close this tab" and "remove tab 2". Three were silently
+      wrong rather than refused: "open a new tab" became a new tab *addressed to the
+      string* "a new tab", and navigated to `https://a new tab`. A refusal there is
+      not a dead end — the model retries, and the retry is where a second approval
+      card comes from
+- [x] **The one refusal is a close that named a tab it cannot resolve** ("1.5",
+      "one"): reading those as "the tab in use" destroys a page nobody mentioned,
+      which is the reported failure itself. `last` is its own marker, not `-1`,
+      because *the last tab* is a specific tab and *the previous one* is a direction;
+      `+1`/`-1` resolve against the registry
+- [x] **Switching a tab does not ask.** `TAB_ACTION_CLASS` makes `list`, `switch` and
+      `new` reads and only `close`/`close_others` acts, on the same test `browse`
+      uses everywhere: does the act change anything *off* the screen? Switching
+      changes which of the pages the agent already opened is in front, exactly as
+      `scroll` and `back` do. The table lives in `actions.py` and both browser tools
+      import it, so they cannot price one request differently
+- [x] **Both browser tools ask with the same verb**, which is what stops two cards
+      for one request. `permission_gate` collapses pending cards by (tool, verb,
+      summary) and cannot collapse two that name themselves differently;
+      `web_control` used to say `switchtab` where `browse` said `tab`
+- [x] `close_others` is its own operation, and tab numbers identify a tab rather than
+      counting the list — `close 1` leaves 2 and 3, so a stale number cannot come to
+      mean a different page
+- [x] `_window_args()` disables `CalculateNativeWinOcclusion`. Chromium asks the
+      window server whether a window is fully covered and answers yes for one
+      behind the Lumine app; occluded windows get throttling the timer flags do
+      not cover. Playwright already passes the timer, occluded-window and
+      renderer backgrounding switches — read out of the driver's own switch list —
+      but nothing about native occlusion
+- [x] The browser has **tabs**, and each keeps the references it was read with.
+      `_Browser._tabs` holds every page the model may look at; the old rule adopted a
+      new page and closed the previous one, so a popup was a *replacement* and "open
+      this in a new tab" was impossible. One verb, `browse tab`, takes its operation in
+      `text` — nothing to list, `new`, a number, `close` — parsed purely by
+      `actions.parse_tab_request`, the same shape `scroll` uses. The load-bearing part
+      is `_Tab.generation`: a shared counter would invalidate the first tab's
+      references the moment a second tab opened, and switching deliberately mints
+      nothing so "read tab 1, switch away, come back, act" works. `MAX_WORK_TABS` is
+      6, refused rather than silently reshaped. `web_control`'s `tabs` verb is a
+      different thing — a form's own tab strip — and the two are not interchangeable
+- [x] Creating a browser tab no longer destroys the user's page. `context.new_page()`
+      raises Playwright's `page` event *before* it returns, so `_on_page` saw the
+      WhatsApp tab as an unregistered popup, adopted it as the working page, and closed
+      the page the user had open; `_reserve` reclassifies it after the page object
+      exists, which cannot miss. Closing the last tab opens a blank one on the live
+      context rather than reaching `_start`, which would launch a second Chromium and
+      report the profile as locked
+- [x] Attachments are limited to an allowlisted folder by resolved path, with a
+      whitelist of extensions and no URL downloads
+- [~] The WhatsApp **Desktop** adapter still only searches and sends. Every other verb
+      is Web-only, because a UIA accessibility tree offers geometry where the operations
+      need identity. `whatsapp_probe.py` reports which Web selectors are live, so a
+      WhatsApp layout change is a specific line rather than a silent no-op
+- [x] The Web selectors are verified **against a live account**, and the live DOM was not
+      what any of them assumed. Measured with `whatsapp_probe.py` (closed composer) and
+      `whatsapp_message_probe.py` (open one), because the send button and the bubbles do
+      not exist until text is typed:
+  - Message rows carry **hashed class names** (`x1liijdw xu342n7 …`) and no `data-id`,
+      so `div.message-in` / `div.message-out` match *nothing* and no additional spelling
+      can fix it. Six scripts used them and every symptom was silent — reads returned
+      nothing, and `delivery_seen` never confirmed a send, which is the whole of "she
+      cannot send even after I said yes": the send worked and the confirmation was blind.
+  - The bubble is `[data-testid="msg-container"]` (200px); `[role="row"]` is a **full-width
+      container** (920px of a 932px pane). Direction is bubble centre against **pane**
+      centre, not the viewport — the pane starts at x=491 of a 1422px window, so a
+      viewport midpoint makes a sent message indistinguishable from a received one.
+  - `_JS_ROWS_FN` is the single definition, shared by all seven message scripts, and it
+      trusts the test id alone. A structural fallback once matched the encryption banner
+      (no `msg-container`) and an empty chat reported one *delivered* message; the
+      fallback is gone rather than tuned, because an empty read is a refusal and a wrong
+      read is not
+  - A **click inside the page is not a click** — `element.click()` is untrusted and
+      WhatsApp's list ignores it. Rows and menu triggers are marked and clicked through
+      Playwright. This was the real cause of "she can search but cannot select", and the
+      probe showed it as `opened: False` after a click that reported success
+  - The sign-in check **waits for evidence** and reports `loading` separately from
+      `logged_out`, because one immediate read called a signed-in account signed out and
+      every selector missing. A cold start needs ~90s
+  - The probe **releases the browser in a `finally`**; leaking it made the tool
+      single-use and buried its report under an `EPIPE` stack trace
+- [x] Mouse and keyboard control for every application without its own tool.
+      `desktop_control` observes a window through UI Automation and clicks, types,
+      moves the mouse and presses keys by the name on a control. Ships **off**
+      (`desktop.input`), and the **Tools page card is the switch** — `desktop.input`
+      is the explicit override underneath it, not a second switch the user has to
+      know about. It refuses only its **own** window, because an agent that can click
+      anything can click the Tools page and switch itself off mid-turn
+- [x] **Five verbs, and that is the point.** `observe`, `move`, `click`, `type`,
+      `press`. It was nine; `double_click` / `right_click` / `drag` / `scroll` were
+      four ways to ask for one of two intentions, and every extra verb is a coin flip
+      the model can lose on a voice turn's budget of attention. The report was that she
+      "cannot click anything", which was never this tool's fault and is exactly what
+      an ambiguous surface feels like from outside. `input.py` keeps the mechanics — a
+      right button, a drag, a wheel notch — tested and cheap; they are simply not verbs
+- [x] **Turning it on silences the browser tools.**
+      `tools_permission.SUPPRESSED_BY_DESKTOP_INPUT` = `("browse", "web_control")`.
+      `desktop_control` can drive a browser by coordinate, so three tools that can click
+      the same page is how the model ends up in the weakest of them. An **exclusion**,
+      not a preference, and one-directional: turn it off and both come straight back.
+      Each card's reason names the switch responsible
+- [x] **The Tools page card is the switch, and it was dead twice over.** It wrote
+      `tools.desktop_control` while the tool read `desktop.input`, *and*
+      `lib.rs::save_config` cleared `CATALOG_CONFIG` but not `CATALOG_TOOL` — every
+      card's `enabled` is computed by the worker from that same document, so the write
+      succeeded and the next read returned the catalog from **before** it. A switch
+      that reverts on its own is indistinguishable from a broken feature. Precedence:
+      `desktop.input` → card → environment → off
+- [x] **The foreground lock is worked around, not complained about.** Windows refuses
+      to hand the foreground to a background process while the user is interacting,
+      and enforces that against the *calling thread*, so a bare `SetForegroundWindow`
+      silently does nothing on exactly the turns a user is watching — which is how
+      "she can't type" happens from a terminal. `uia.bring_to_front` uses
+      `AttachThreadInput`: the documented way past it, and what
+      `windows_control._focus` already did. `ensure_foreground` (strict, for typing)
+      uses it; a click keeps its own position, so it may ignore the result
+- [x] **"The screen" is not the foreground window.** It was, and that was the whole
+      of "she can't click anything": while you are *talking* to Lumine the foreground
+      window **is Lumine**, so every request read her own chrome — and an always-on-top
+      Rainmeter clock widget takes the foreground without the user doing anything,
+      exposes **zero** controls, and produced *"I can only see a blank page"* with
+      Notepad right behind it. `capture.candidate_windows()` filters for usefulness
+      rather than z-order and `best_window()` takes the first candidate that actually
+      exposes a control, bounded by `CANDIDATE_TRIES`
+- [x] **An integrated window is a hint, not a refusal.** Refusing every browser and
+      WhatsApp window made the "fallback" a wall: anything the dedicated tools could
+      not phrase for became unreachable. `ops.INTEGRATED_WINDOWS` now *steers* — the
+      router still prefers `web_control` / `send_whatsapp`, and the approval card
+      carries a note ("web_control would be steadier here") so a user deliberately
+      asking for the desktop sees the alternative at the moment they decide. Only
+      destructive-by-name and `press` ask
+- [x] **`uia.is_our_own` covers the desktop shell, not just the worker.** They are
+      different processes, so a pid-only comparison against `os.getpid()` never matched
+      the app's own window — the guard existed and did nothing. `_own_process_ids()`
+      walks the parent chain while the process is named `lumine`/`lumine-ui` and stops
+      at anything else, so a worker run from a terminal does not adopt the terminal
+- [x] **Freshness is a second reading, not a token.** `capture.confirm_target` re-walks the
+      tree and re-finds the target *by role and name* before any irreversible act. A
+      generation comparison cannot do this: the tool supplies the number itself, so
+      `check_generation` inside a single call is `x == x` and always passes — it earns its
+      place only in `run_task`, whose steps genuinely span a gap, and its docstring says
+      so. `move` skips the re-read via `control.UNVERIFIED_VERBS`, decided in one place
+      because a rule kept at a call site is a rule the next caller forgets
+- [x] `run_task` drives it. `desktop_observe` and `desktop_act` are step verbs, and the act
+      `depends_on` the observe because it needs the generation the observe produced.
+      `router.py` sends an interaction naming no target to the desktop instead of asking
+      "which website?", which was the wrong question for "click the save button".
+      `desktop_act` is declared `sensitive` in `STEP_ACTION_CLASS` because its class is
+      computed from the element, and a plan must not be able to call a Delete an ordinary act
+- [x] A window can be **named**, which is what makes a second monitor reachable:
+      `capture.find_window` / `resolve_window`, and a `window` parameter on the tool. Every
+      observation publishes the whole virtual desktop, because every coordinate in it lives
+      in that space and a monitor left of the primary one starts at a *negative* x. Typing
+      into a named window takes the foreground strictly (`uia.ensure_foreground`) and
+      **after** the gate — it may steal focus, and a question asked mid-steal is a question
+      about something that may not happen
+- [x] A smoke test, staged so the ordering *is* the safety argument. `desktop_smoke.py` is
+      read-only by default and its `refuse` stage runs **before** anything that moves the
+      mouse: a regression that sends a WhatsApp message unasked matters more than any
+      successful click. It asserts *no input was injected* by the refusal checks. It found
+      the vacuous generation check, which no unit test did — they all fed it a number from
+      `_LAST`
+- [x] The app has a panel for it. `lumine.screen` carries metadata rather than a picture,
+      because the tool reads the accessibility tree and has names instead of pixels;
+      `DesktopPreview.tsx` lists what she can click and shows `screen #N`, the generation
+      she is reasoning about and the one the approval card asks the user to agree to
+- [x] **A music library, on by default, and the folder is the whole boundary.**
+      `play_media` is six verbs over one folder the user picks in Settings (Music):
+      `find`, `play`, `next`, `previous`, `stop`, `folders`. Five decisions carry it
+      and each was a bug first
+  - **`play` is in `INTERACT_VERBS`, so it routed to `desktop_control`.** "Play Love
+    Is Gone" reached the mouse: Lumine trying to click a player window, with more
+    authority than the request needed and no folder involved. `router.py` gained a
+    `media` environment at step 4b — *behind* every named target (a site is a page, a
+    program is a program) and *ahead* of the generic verb fallback, with
+    `_SCREEN_NOUN` and `_ordinal_phrase` as explicit exclusions so "play the third
+    video" and "play that clip" still mean a page
+  - **The fuzzy matcher is imported from `messaging/whatsapp_flow.py`, not written
+    again.** Speech recognition does not spell: "obosthan vocal song" has to reach
+    `Obosthan (অবস্থান) - Train Poka Album - HIGHWAY`, and that tolerance was already
+    tuned against real output for a contact called `Jubayed`. What *is* different for
+    files — filename noise (`vocal`, `song`), brackets, trailing numbers, folder-as-
+    playlist — lives in `match.py`; the spelling tolerance does not
+  - **Ambiguity is only ambiguity *within a tier*.** `find` returns the best tier and
+    drops the rest. A track whose name matches exactly and a track that matched only
+    because its *folder* was named are not two equal answers — without this, a
+    library with a folder called `Boro` answered "play boro theko" by asking a
+    question nobody needed to be asked
+  - **Folders are checked *after* name matches, and are never matched by fuzzing
+    4,000 filenames.** "Play my vocal songs" arrives as `query="vocal"`, which has no
+    significant words at all, so the name tiers skip it and the folder tiers (which
+    deliberately keep the noise words, because a folder is *named* `vocal`) catch it
+  - **`comparable_name` compares `rsplit(".")[-1]` — which is `"mp3"` — against an
+    allowlist holding `".mp3"`, so it never stripped.** The extension stayed in the
+    name and a query containing "mp3" matched every file in the library. Caught by
+    the first unit test written for it
+  - **`scan(root=…)` never resolved the caller's root.** The child resolved and the
+    root did not, so `root in child.parents` was False for any path under a short
+    `8.3` name — measured on a Windows temp directory. Every file in a good library
+    was reported outside it and the scan returned nothing, silently, reading exactly
+    like an empty folder. Both sides are resolved now, in one place
+  - **`_play_many` validated against `library_root()` rather than the root it
+    scanned.** Two roots means validating a scan against a library it did not come
+    from. `root` is threaded through, and `_play_one` is shared by `play` and
+    `next`/`previous` so the gate call, the boundary check and the failure sentence
+    exist once
+  - **A folder becomes one ordered queue, not nine simultaneous launches.** A
+    reported incident: *"when I said to play the vocal songs, it played all the 9
+    songs at once, no queue or anything, I couldn't able to hear anything."*
+    `os.startfile` takes **one** file and the OS owns it from there, so the only
+    way to play nine was to start nine. `tools/media/queue.py` writes a single
+    `.m3u8` from already-validated paths and opens **that**, which every media
+    player already queues — and from that moment skip, pause and stop are the
+    *player's* controls over its own list. Five decisions carry it, each a bug first
+    - **`.m3u8` not `.m3u`**, because the latter is read as the local codepage and
+    turns this library's Bengali titles into mojibake in the player's own playlist;
+    - **a hash of the body for the filename**, so the same request twice writes one
+    file, and `prune` keeps the newest few — the first version counted only the
+    *other* files and kept `KEEP + 1`, a slow leak in the temp directory;
+    - **written outside the library**, since a `.m3u` dropped in the music folder
+      would be picked up by the next scan and offered as a track, and it is still
+      absent from `ALLOWED_SUFFIXES`, so `resolve_track` refuses to *play* one — a
+      playlist is a file of paths, and honouring one hands playback a directory
+      nothing checked;
+    - **a title's newlines stripped, not escaped**, because there is no escape in
+      this format and one would stand up a second `#EXTINF`;
+    - **one track opened directly**, never through a playlist, or `queued: false`
+      would be a flag that means nothing.
+    `play_many` also now *raises* rather than returning `[]` on a failed hand-over:
+    it swallowed per-file errors and reported how many started, which is only
+    meaningful while there are N launches, and there is now one hand-over and one
+    answer.
+  - **`agent/media_queue.py` is the widget's second caller of the same builder.**
+    The Music widget runs in the app process and the worker's tools are not
+    callable from there, so the button is a separate script — and two
+    implementations of "make a queue" would be the same class of bug as a search
+    box that ranked differently from the matcher. It sits at the `agent/` root
+    because Rust runs it by filename.
+  - **`os.startfile` gives the file away, so she cannot stop, pause or skip** — and
+    the tool says so rather than claiming otherwise. What she *can* do is play the
+    next *file*, which is a real answer to "play the next track" and is why `state.py`
+    exists; it records the **last** file handed over, so `next` after a folder does
+    not replay one the user has already been given
+  - **Moving, renaming and deleting are not built, not merely gated.** A half-built
+    delete is a delete that can be got wrong, and you cannot undo a file Lumine moved
+    because she read a filename slightly wrong. `find` and `play` are the whole of
+    what makes this useful
+- [x] **She searches like a search engine, and it is measured against a real
+      library.** Nine files on the developer's machine, every one of them a vocal:
+      `Akhon Ami এখন আমি Vocal song`, `Husn (Without Music Vocals Only) _ Anuv Jain`,
+      `Maand _ Bayaan _ Without Music _ Vocals Only`, Bengali script, `_` and ` - ` as
+      separators. The requested case — *"play the Akhon Ami vocal song"* — now plays
+      that file, and five design decisions are why
+  - **A version is a tag, not a word in the title.** `tags_of` pulls `vocal`,
+    `no-music`, `acapella`, `instrumental` out of the filename and `title_of`
+    *removes* them, so "Husn (Without Music Vocals Only) _ Anuv Jain" is the title
+    "Husn Anuv Jain" with the tag `vocal`. A query word is then matched against
+    **title + tags + folder** (`_searchable`), which is the whole difference: the
+    word "vocal" was deliberately removed from the title, so a title-only matcher
+    reported it *missing* on a file that is a vocal — and against nine such files
+    that is nine equal 67% matches and a question nobody needed to be asked
+  - **`vocal` stopped being a noise word.** It was, because every file carries it
+    and a word on every file carries no information. That made "play all my vocal
+    songs" resolve to *no query words at all* and return nothing — the library looked
+    empty to the one request that describes it best. Noise words now stay noise and
+    version words are answered on the tag axis
+  - **Coverage is a number, not a boolean, and it is read strictly.** `MIN_COVERAGE`
+    is a floor used with `>`: *more than half* the words, so 2 of 3 qualifies and 1
+    of 2 does not. "play boro throat" matching "Boro Theko" on one word is the case
+    this refuses, and it is the case that plays the wrong song
+  - **The act-or-ask comparison is on one number.** `Hit.confidence` folds tier and
+    coverage together (`TIER_TRUST`), because subtracting two *coverages* compares
+    a title match against a tag match as if they were the same evidence — and the
+    tag won every time, which is why the exact request in the brief came back as
+    "which of these nine?" `AUTO_MARGIN` (0.25) is the margin above which she acts
+  - **Substring matching on a folder name matched a single letter.** The library is
+    called "Lumine Media Folder", so `"a" in "lumine media folder"` is true and
+    "play a" matched all nine files — then `best_folder` matched a folder called
+    `vocal` the same way and offered to play it. Both are word-based now, in `score`
+    and in `best_folder`. A committed version of this also replaced `sys.stdout`
+    with a new `TextIOWrapper` at *import* time, which closed the process's real
+    stdout when the old one was collected and broke the print of every later test
+  - **`media_search.tighten` is the search box's rule and not hers.** She gets every
+    match; a list gets the closest three quarters of the best score. Measured: the
+    brief's sentence goes from 9 rows to 1, "play bayan" keeps both (two songs by
+    one artist is a real choice), and "vocal" keeps all 9 (a tag query was never
+    narrow). `shown` and `total` are both reported so the screen can say "2 of 9"
+- [x] **`tool_results.as_payload` returns parseable JSON now.** It used to cut the
+      *rendered* string at the budget and append `" (truncated)"`, under a comment
+      claiming it was "rather than returning a broken object" — and returning exactly
+      that. A 900-character result came back as `{"results":[{"name":"a"},{"name":"b"`
+      plus a note, so the model could not read the two results inside it and no
+      caller could detect it. The budget is now applied to the **structure**: the
+      largest list is halved until the object fits, `truncated`/`omitted` are
+      recorded inside it, and the caller's dict is never mutated
 - [~] dotenv-based configuration still works as a fallback, but is no longer the
       primary path
 - [~] logging exists, but not production-grade

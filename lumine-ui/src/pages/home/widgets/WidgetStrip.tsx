@@ -32,10 +32,13 @@ export function WidgetStrip({
   notes,
   onOpenNotes,
   onWriteNote,
+  onOpenPermissions,
 }: {
   notes: NotesApi;
   onOpenNotes: () => void;
   onWriteNote: () => void;
+  /** Opens Settings on the Permissions section, where the music folder is chosen. */
+  onOpenPermissions: () => void;
 }) {
   const latest = notes.ordered[0];
   const preview = latest ? latest.body.split(/\n/).filter((line) => line.trim()).slice(0, 3) : [];
@@ -86,7 +89,7 @@ export function WidgetStrip({
           </footer>
         </section>
 
-        <MusicWidget />
+        <MusicWidget onOpenPermissions={onOpenPermissions} />
       </div>
     </section>
   );

@@ -45,6 +45,7 @@ from agent.runtime.permission_gate import MSG_NO_GATE
 from agent.settings.validation import CONFIG_VERSION, WHATSAPP_MODES, validate_document
 from agent.tools.messaging import whatsapp
 from agent.tools.messaging import whatsapp_web as web
+from agent.runtime.voice_line import GENERATED, SAID, SILENT
 from agent.tools.messaging.whatsapp_flow import ChatCandidate, ContactChoice
 from agent.tools.tools_compat import ToolError
 from agent.tools.tool_results import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
@@ -1479,6 +1480,64 @@ class OneConfirmationTests(_SendHarness):
         )
         self.assertIn("Sent to Alice", said_sent[0])
 
+    def test_the_confirmation_is_spoken_by_the_product_and_told_to_the_model(self):
+        """One speaker, not one fact.
+
+        Both spoken lines the user heard came from the *model*: one because a step
+        line said the message was going out, one because the return value said it
+        had gone. Asking a model to report on a turn containing two facts about one
+        event produces two sentences, and voice cannot be scrolled past.
+
+        So the confirmation is spoken from code, once delivery is observed, and the
+        result tells the model it has been said. The two halves matter separately:
+        without the announcement there is no confirmation on a profile that cannot
+        speak, and without the note the model adds a second one on a profile that
+        can.
+        """
+        spoken: list[str] = []
+        self.stack.enter_context(
+            mock.patch.object(
+                whatsapp.web,
+                "announce_sent",
+                new=mock.AsyncMock(side_effect=lambda _ctx, who: spoken.append(who) or SAID),
+            )
+        )
+        result = run_tool("Alice", "hello")
+        self.assertEqual(spoken, ["Alice"], "the confirmation was not spoken")
+        self.assertIn("already said this out loud", result)
+
+    def test_a_profile_that_cannot_speak_told_to_say_it_once(self):
+        # `gemini-3.8-live` and the other native-audio profiles raise on `say()`.
+        # The model's own sentence is then the only voice there is, so the result
+        # says so -- and says *once*, which is the whole defect.
+        self.stack.enter_context(
+            mock.patch.object(
+                whatsapp.web,
+                "announce_sent",
+                new=mock.AsyncMock(return_value=SILENT),
+            )
+        )
+        result = run_tool("Alice", "hello")
+        self.assertIn("Say this once", result)
+        self.assertNotIn("already said this out loud", result)
+
+    def test_the_step_list_ends_at_the_question_and_not_past_it(self):
+        # "See every step happen" is the requirement, and it is met: opening,
+        # resolving, opening the chat, drafting and asking are all still narrated.
+        # What is gone is the send's own line, because the answer to the question
+        # *is* the send and the product speaks it.
+        run_tool("Alice", "hello")
+        actions = [record["action"] for record in self.records]
+        self.assertEqual(actions[-1], "confirm")
+        # The count and the list agree, so the "step 5 of N" the UI renders cannot
+        # drift from the number of steps that actually fire.
+        self.assertEqual(whatsapp.SEND_STEPS, len(actions))
+        self.assertEqual(
+            [record.get("index") for record in self.records],
+            list(range(1, len(actions) + 1)),
+            "the steps are numbered 1..N with no gap",
+        )
+
     def test_an_unconfirmed_send_says_so_exactly_once_too(self):
         # The other direction. When the observation is not ours to trust the tool
         # raises, and there is no step *and* no result claiming it went -- the
@@ -1496,6 +1555,59 @@ class OneConfirmationTests(_SendHarness):
         )
 
 
+class AnnounceSentTests(unittest.TestCase):
+    """The send confirmation is never spoken by way of the model.
+
+    The reported defect, exactly: `announce_sent` runs inside the tool one
+    statement before the tool returns, and returning a result is what makes the
+    model speak -- LiveKit regenerates for any non-empty return, and a realtime
+    model with server-side turn detection replies whether or not a reply was
+    asked for. Escalating to the model there does not replace that reply; it
+    precedes it, so one send produces two sentences and the user hears "the
+    message has been sent" twice. `allow_model=False` is the guard, and the two
+    directions are pinned here: a profile with no synthesiser stays silent and
+    lets the model's single reply stand, and one with a synthesiser speaks it
+    verbatim -- neither reaches for a second speaker.
+    """
+
+    class _Session:
+        """A session whose only channel is the one the test asks to exist."""
+
+        def __init__(self, *, tts: bool = False) -> None:
+            self._tts = tts
+            self.said: list[tuple[str, dict]] = []
+            self.instructions: list[str] = []
+
+        def say(self, text: str, **kwargs) -> None:
+            if not self._tts:
+                raise RuntimeError("no TTS model or RealtimeSession")
+            self.said.append((text, kwargs))
+
+        def generate_reply(self, *, instructions: str = "", **_kwargs) -> None:
+            self.instructions.append(instructions)
+
+    def test_a_realtime_profile_is_left_to_speak_for_itself(self):
+        session = self._Session()
+        channel = asyncio.run(
+            web.announce_sent(SimpleNamespace(session=session), "Alice")
+        )
+        self.assertEqual(channel, SILENT)
+        self.assertEqual(
+            session.instructions,
+            [],
+            "the model was asked to speak a confirmation it was already going to give",
+        )
+
+    def test_a_tts_profile_speaks_it_verbatim_and_not_through_the_model(self):
+        session = self._Session(tts=True)
+        channel = asyncio.run(
+            web.announce_sent(SimpleNamespace(session=session), "Alice")
+        )
+        self.assertEqual(channel, SAID)
+        self.assertEqual(session.said[0][0], "The message has been sent to Alice.")
+        self.assertEqual(session.instructions, [])
+
+
 def _record_step(sink: list[dict]):
     """A `progress_step` stand-in that records what each step was told.
 
@@ -1504,8 +1616,13 @@ def _record_step(sink: list[dict]):
     """
 
     @contextlib.contextmanager
-    def _step(_context, _tool, action, message, **_kwargs):
-        record: dict = {"action": action, "message": message}
+    def _step(_context, _tool, action, message, **kwargs):
+        record: dict = {
+            "action": action,
+            "message": message,
+            "index": kwargs.get("index"),
+            "total": kwargs.get("total"),
+        }
         sink.append(record)
         yield record
 

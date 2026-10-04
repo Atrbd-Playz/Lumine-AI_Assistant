@@ -22,6 +22,7 @@ from typing import Any
 try:
     from ..settings.config_store import ResolvedProfile, ResolvedStage, env_profile, resolve_profile
     from ..runtime.emotion_voice import remember_baseline
+    from ..runtime.frame_sampler import FreshnessVideoSampler
     from ..settings.llm_config import connect_max_retry
     from ..settings.pipeline_config import pipeline_name
     from ..settings.providers import Capability, get_model
@@ -35,6 +36,7 @@ try:
 except ImportError:
     from settings.config_store import ResolvedProfile, ResolvedStage, env_profile, resolve_profile
     from runtime.emotion_voice import remember_baseline
+    from runtime.frame_sampler import FreshnessVideoSampler
     from settings.llm_config import connect_max_retry
     from settings.pipeline_config import pipeline_name
     from settings.providers import Capability, get_model
@@ -137,6 +139,12 @@ class PipelineComponents:
     vad: Any | None = None
     stt: Any | None = None
     tts: Any | None = None
+    #: Which provider is answering, and therefore what it charges. Carried so the
+    #: context budget can be worked out for *this* model rather than a guess: a
+    #: per-minute allowance is a property of the provider, and a local model has
+    #: none. Without it the conversation would be trimmed to a cloud tier's limit
+    #: on a machine that never had one.
+    llm_provider: str = ""
 
 
 def _gemini_realtime_input_config(interruption_mode: str, silence_ms: int) -> Any:
@@ -279,6 +287,51 @@ async def _build_vad(stage: ResolvedStage) -> Any:
     return await asyncio.to_thread(module.VAD.load, **options)
 
 
+#: Where Gemini Live starts compressing its own context, in tokens.
+#:
+#: The measured failure this answers: a session was observed re-sending **~44,000
+#: text tokens and ~110,000 audio tokens per turn** after ten minutes, with the
+#: fixed prompt only 6,500 of them. `runtime/context_trim.py` cannot prevent this.
+#: It counts *chat items*, and a realtime session's history is mostly audio, which
+#: arrives as `input_audio_tokens` and is not an item anything can drop. Trimming
+#: text items alone left the audio growing by ~1,500 tokens a turn for as long as
+#: the user kept talking.
+#:
+#: So the provider does the compression, because the provider is the only thing
+#: that can see the audio. Gemini Live's sliding window drops the oldest turns once
+#: the context passes this threshold, which is the mechanism designed for exactly
+#: this and costs nothing when a conversation is short.
+#:
+#: Sized against the window rather than picked: Gemini Live holds ~1M, and firing
+#: at 65% leaves room for a long tool call's result plus a reply before the next
+#: compression. A lower number would compress during ordinary conversation and
+#: throw away context the model is still using.
+CONTEXT_COMPRESSION_TRIGGER_TOKENS = 650_000
+
+
+def _context_window_compression() -> Any:
+    """Gemini's own context compression, or ``None`` when unavailable.
+
+    ``None`` rather than a raise, deliberately. This is a provider capability
+    arriving in a plugin, and an older plugin without the parameter should cost a
+    long session some efficiency -- not cost it the ability to talk. The
+    constructor is only asked for the keyword it actually takes, so a plugin that
+    predates the option does not fail on an unexpected argument either.
+    """
+    try:
+        from google.genai import types as genai_types
+    except ImportError:  # pragma: no cover - google-genai ships with the plugin
+        return None
+    try:
+        return genai_types.ContextWindowCompressionConfig(
+            trigger_tokens=CONTEXT_COMPRESSION_TRIGGER_TOKENS,
+            sliding_window=genai_types.SlidingWindow(),
+        )
+    except Exception:  # noqa: BLE001 - an absent capability must not break setup
+        logger.debug("[Pipeline] context window compression unavailable", exc_info=True)
+        return None
+
+
 async def _build_realtime(stage: ResolvedStage, interruption_mode: str) -> Any:
     """Build a speech-to-speech model.
 
@@ -322,6 +375,25 @@ async def _build_realtime(stage: ResolvedStage, interruption_mode: str) -> Any:
             timeout=stage.options.get("connect_timeout", 10.0),
         ),
     }
+
+    # Ask the provider to bound its own context. See
+    # `CONTEXT_COMPRESSION_TRIGGER_TOKENS` for why the item-count trimmer cannot do
+    # this job: a realtime session's history is audio, and audio is not a chat item.
+    compression = _context_window_compression()
+    if compression is not None:
+        try:
+            import inspect as _inspect
+
+            if "context_window_compression" in _inspect.signature(module.realtime.RealtimeModel).parameters:
+                options["context_window_compression"] = compression
+        except (TypeError, ValueError, AttributeError):
+            # An older plugin without the keyword. The session still works; it just
+            # grows. Logged rather than silent, because "the context is unbounded"
+            # is a thing somebody has to know.
+            logger.info(
+                "[Pipeline] this realtime plugin takes no context_window_compression; "
+                "a long session will keep re-sending its whole history"
+            )
 
     try:
         return module.realtime.RealtimeModel(**options)
@@ -378,9 +450,12 @@ async def _build_realtime_session(resolved: ResolvedProfile) -> PipelineComponen
         # that has to be *read*, because a frame rate nobody chose is a frame
         # rate nobody can reason about when the bill arrives. Gemini tokenizes
         # every frame by its dimensions, so this is money.
-        from livekit.agents.voice.agent_session import VoiceActivityVideoSampler
-
-        session_kwargs["video_sampler"] = VoiceActivityVideoSampler(
+        #
+        # The sampler is ours rather than `VoiceActivityVideoSampler`, which only
+        # asks whether enough time has passed. Frames reach it from an unbounded
+        # queue, so "enough time" can be measured against a picture captured
+        # before the event loop stalled -- see `runtime/frame_sampler.py`.
+        session_kwargs["video_sampler"] = FreshnessVideoSampler(
             speaking_fps=1.0,
             silent_fps=0.3,
         )
@@ -390,6 +465,7 @@ async def _build_realtime_session(resolved: ResolvedProfile) -> PipelineComponen
         model_name=resolved.realtime.model,
         interruption_mode=resolved.interruption_mode,
         llm=model,
+        llm_provider=resolved.realtime.provider,
         response_token_limit=options.get("max_output_tokens"),
         tts=tts,
         session_kwargs=session_kwargs,
@@ -404,13 +480,21 @@ async def _build_cascade_session(resolved: ResolvedProfile) -> PipelineComponent
     except ImportError as exc:
         raise RuntimeError("The STT-LLM-TTS pipeline requires livekit-agents>=1.8.2.") from exc
 
-    async def prewarm_openai_resources():
+    def prewarm_openai_resources():
+        # A plain function, deliberately. This used to be `async def`, handed to
+        # `asyncio.to_thread` -- which calls it in a worker thread and gets a
+        # *coroutine object* back. Nothing ever awaited it, so the body never ran
+        # and the pre-import it was written for never happened, while every single
+        # cascade session build printed
+        # `RuntimeWarning: coroutine 'prewarm_openai_resources' was never awaited`.
+        # The import is also not worth a thread: it is a module already imported by
+        # the Groq plugin this stage is about to construct.
         try:
             import openai.resources  # noqa: F401
         except ImportError:
             pass
 
-    await asyncio.to_thread(prewarm_openai_resources)
+    prewarm_openai_resources()
 
     missing = [
         stage.provider
@@ -434,6 +518,7 @@ async def _build_cascade_session(resolved: ResolvedProfile) -> PipelineComponent
         model_name=resolved.llm.model if resolved.llm else "unknown",
         interruption_mode=resolved.interruption_mode,
         llm=llm,
+        llm_provider=(resolved.llm.provider if resolved.llm else ""),
         response_token_limit=(resolved.llm.options.get("max_completion_tokens") if resolved.llm else None),
         vad=vad,
         stt=stt,
@@ -456,12 +541,14 @@ async def _build_cascade_session(resolved: ResolvedProfile) -> PipelineComponent
             "max_tool_steps": resolved.max_tool_steps,
             "min_endpointing_delay": resolved.min_endpointing_delay,
         },
-        # Said off, and said deliberately. LiveKit can inject a frame into a
-        # cascade conversation as an image message on each user turn, and that
-        # genuinely works -- but the LLM stage here is a chat model handed a
-        # history of strings, and it declares `("text",)` input modalities in
-        # the catalog. Turning the subscription on before that is true would let
-        # a profile validate, and then quietly do nothing with every frame.
+        # Said off, and said deliberately. On the installed 1.8.3 nothing can
+        # put a frame into a cascade conversation: `AgentActivity.push_video`
+        # forwards only to `_rt_session` (the realtime model), and when there is
+        # none the frame is dropped. There is no image-message path to turn on.
+        # Even if there were, the LLM stage here is handed a history of strings
+        # and declares `("text",)` in the catalog, so subscribing would promise
+        # frames the stage cannot use -- LiveKit ignores frames a model cannot
+        # read *without raising*, which is the failure that hides itself.
         room_options=_room_options(False),
     )
 

@@ -29,7 +29,6 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::credentials::{CredentialStore, OsCredentialStore};
-use crate::python_env;
 
 /// How to draw one field of a multi-part credential.
 #[derive(Debug, Clone, Serialize)]
@@ -229,19 +228,49 @@ fn missing_from_env(key_env: &[String]) -> Vec<String> {
 /// Fails soft in one direction only. If the catalog cannot be read, this
 /// returns an error rather than an optimistic `ready: true`, because an
 /// unanswerable question must not open the gate.
+///
+/// ## Why it shares the catalog cache
+///
+/// This used to run `provider_catalog.py` and `validate_config.py` itself, and
+/// the app calls it *and* `get_provider_catalog` *and* `get_config` at launch —
+/// so a cold start paid for four interpreter launches, two of them the same two
+/// scripts, all of them on the main thread. It now reads the same two slots the
+/// other commands fill, which is also the honest thing: one process has one
+/// answer to "what providers exist" and one to "what configuration is in force",
+/// and this is a *consumer* of both rather than a second source for them.
+///
+/// `async` for the same reason they are: the first read that misses the cache
+/// takes seconds, and a synchronous command would spend them on the window.
 #[tauri::command]
-pub fn get_setup_status() -> Result<SetupStatus, String> {
-    let catalog: Value = python_env::run_agent_script("provider_catalog.py", &[])
-        .and_then(|stdout| {
-            serde_json::from_str(&stdout)
-                .map_err(|err| format!("The provider catalog was not valid JSON: {err}"))
-        })?;
+pub async fn get_setup_status() -> Result<SetupStatus, String> {
+    let catalog = match crate::cached(crate::CATALOG_PROVIDER) {
+        Some(cached) => cached,
+        None => {
+            let resolved = crate::run_off_thread("Reading the provider catalog", crate::read_provider_catalog).await?;
+            crate::write_catalog_cache(crate::CATALOG_PROVIDER, resolved.clone())?;
+            resolved
+        }
+    };
 
-    let config_stdout = python_env::run_agent_script("validate_config.py", &["--describe"])
-        .map_err(|err| format!("Could not read the effective configuration: {err}"))?;
-    let config: Value = serde_json::from_str(&config_stdout)
-        .map_err(|err| format!("The effective configuration was not readable: {err}"))?;
+    let config = match crate::cached(crate::CATALOG_CONFIG) {
+        Some(cached) => cached,
+        None => {
+            let resolved = crate::run_off_thread(
+                "Reading the effective configuration",
+                crate::read_config,
+            )
+            .await?;
+            crate::write_catalog_cache(crate::CATALOG_CONFIG, resolved.clone())?;
+            resolved
+        }
+    };
 
+    Ok(reduce(&catalog, &config))
+}
+
+/// The part of this that is pure, so the reduction can be reasoned about — and
+/// tested — without a Tauri app, a worker, or an interpreter.
+fn reduce(catalog: &Value, config: &Value) -> SetupStatus {
     let document = config.get("document").cloned().unwrap_or(Value::Null);
     let source = config.get("source").and_then(Value::as_str).unwrap_or("env");
 
@@ -445,7 +474,7 @@ pub fn get_setup_status() -> Result<SetupStatus, String> {
     let missing: Vec<&RequiredCredential> = required.iter().filter(|item| !item.is_satisfied()).collect();
     let ready = missing.is_empty() && blocking.is_empty();
 
-    Ok(SetupStatus {
+    SetupStatus {
         required,
         ready,
         active_profile: document
@@ -454,7 +483,7 @@ pub fn get_setup_status() -> Result<SetupStatus, String> {
             .map(String::from),
         configured_in_app: source == "ui",
         blocking,
-    })
+    }
 }
 
 #[cfg(test)]

@@ -68,11 +68,11 @@ from urllib.parse import quote
 try:
     from ...runtime.permission_gate import require_approval
     from ...runtime.progress import step as progress_step
-    from ...runtime.voice_line import SAID, SILENT
+    from ...runtime.voice_line import SAID
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from runtime.permission_gate import require_approval
     from runtime.progress import step as progress_step
-    from runtime.voice_line import SAID, SILENT
+    from runtime.voice_line import SAID
 
 from . import whatsapp_ops as ops
 from . import whatsapp_refs as refs
@@ -1517,14 +1517,23 @@ async def send_whatsapp(
     # the product and not the model: both spoken lines the user heard came from
     # the model, one per fact, and asking it to report on a turn containing two
     # facts about one event produces two sentences.
+    #
+    # `announce_sent` deliberately refuses the model fallback, so `channel` is
+    # `SAID` or `SILENT` and never `GENERATED`. That is the whole reason the
+    # check below is a plain comparison: this tool's *return value* is itself a
+    # fact the model answers, so on a profile the product cannot speak for, an
+    # escalated announcement would be one sentence and the model's reply to this
+    # result another -- which is exactly the "she says it twice" the announcement
+    # was written to remove.
     channel = await web.announce_sent(context, who)
     ledger.mark(who, text or file_path, "sent")
-    if channel not in (SAID, "generated"):
-        # Nothing outside the model can speak on this profile -- a native-audio one
-        # raises on `say()`, which is what `gemini-3.8-live` does -- so its own
-        # sentence is the confirmation, and it is the only one. Said plainly rather
-        # than left to be inferred, because "say this once" is an instruction the
-        # model can follow and "you have already said it" would be a lie.
+    if channel != SAID:
+        # Nothing the product owns could speak on this profile -- a native-audio
+        # one raises on `say()`, which is what `gemini-3.8-live` does -- so the
+        # model's own reply to *this result* is the confirmation, and it is the
+        # only one. Said plainly rather than left to be inferred, because "say
+        # this once" is an instruction the model can follow and "you have already
+        # said it" would be a lie on a profile where nothing has said it yet.
         return f"Sent to {who} on WhatsApp. Say this once, in your own words."
     return (
         f"Sent to {who} on WhatsApp. You have already said this out loud, so do "

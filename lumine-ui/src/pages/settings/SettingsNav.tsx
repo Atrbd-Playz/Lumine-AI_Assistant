@@ -5,6 +5,7 @@ export type SettingsSection =
   | "voice"
   | "models"
   | "providers"
+  | "permissions"
   | "diagnostics"
   | "about";
 
@@ -96,6 +97,14 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     description: "Credentials for the services Lumine speaks through",
     icon: "check",
     group: "AI",
+    tabs: [],
+  },
+  {
+    id: "permissions",
+    label: "Permissions",
+    description: "What Lumine is allowed to reach",
+    icon: "check",
+    group: "System",
     tabs: [],
   },
   {

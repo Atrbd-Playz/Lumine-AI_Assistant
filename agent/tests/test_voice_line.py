@@ -117,6 +117,23 @@ class EscalationTests(unittest.TestCase):
         run(speak_line(session, "Read it to you?"))
         self.assertEqual(session.instructions, [])
 
+    def test_the_model_fallback_can_be_refused_by_the_caller(self):
+        # The send confirmation is spoken by a tool that is about to return a
+        # result, and the model answers that result on its own. Escalating there
+        # would put a second sentence about one event in front of the first, so
+        # that caller refuses the fallback and is told plainly that nothing
+        # carried the line -- which is `SILENT`, not a lie about having spoken.
+        session = RecordingSession(say_raises=RuntimeError("no TTS model"))
+        channel = run(
+            speak_line(
+                session,
+                "The message has been sent to Alice.",
+                allow_model=False,
+            )
+        )
+        self.assertEqual(channel, SILENT)
+        self.assertEqual(session.instructions, [], "the model was asked to speak anyway")
+
     def test_a_session_with_nothing_says_it_is_silent_rather_than_raising(self):
         self.assertEqual(run(speak_line(BareSession(), "Read it to you?")), SILENT)
 

@@ -148,6 +148,22 @@ class ToolPolicyTests(unittest.TestCase):
     def test_policy_limits_one_tool_per_reply(self):
         self.assertIn("at most one tool per reply", TOOL_USAGE_POLICY)
 
+    def test_the_policy_keeps_the_browser_verbs_small(self):
+        # Two things the model will get wrong without being told, both of which
+        # cost a turn each time it does.
+        self.assertIn("`search` action", TOOL_USAGE_POLICY)
+        # `accepted` is the status that means "typed it, the page has not
+        # confirmed" -- reporting it as a result list is how a search invents
+        # results the user never saw.
+        self.assertIn("`accepted`", TOOL_USAGE_POLICY)
+
+    def test_the_policy_explains_the_screenshot_cost(self):
+        # The whole point of `for_model` defaulting off. Without this the model
+        # screenshots on every page read and pays for the image on every later
+        # turn of the conversation.
+        self.assertIn("for_model", TOOL_USAGE_POLICY)
+        self.assertIn("describe only what is in the picture", TOOL_USAGE_POLICY)
+
     def test_policy_asks_for_short_spoken_replies(self):
         self.assertIn("one or two short sentences", TOOL_USAGE_POLICY)
 

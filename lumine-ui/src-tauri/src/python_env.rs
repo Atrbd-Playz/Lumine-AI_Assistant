@@ -8,8 +8,10 @@
 //! left as a follow-up: those commands are on the working voice path, and
 //! Phase 1 must not put them at risk.
 
+use std::io::Read;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Repository root, derived from this crate's location.
 ///
@@ -113,6 +115,32 @@ pub fn run_agent_script(script: &str, args: &[&str]) -> Result<String, String> {
     run_agent_script_with_env(script, args, &[])
 }
 
+/// How long a helper script may run before it is killed.
+///
+/// The helpers are all short, but "short" is a property of the machine and the
+/// library it is importing, not of the code. A cold `python agent/tool_catalog.py`
+/// pays for importing `livekit-agents` before it prints anything, which is about
+/// six seconds on an ordinary install and rather longer on a cold spinning disk
+/// or a first run with antivirus scanning every `.pyd`.
+///
+/// Without a deadline a helper that never exits is indistinguishable from one
+/// that is slow, and the difference matters: a slow helper eventually answers,
+/// while a hung one takes the window's "not responding" state with it and offers
+/// no way back except killing the app. So the wait is bounded, and the timeout is
+/// reported as a timeout rather than as a failure the user has to decode.
+///
+/// Well above the worst legitimate case, because the failure this guards against
+/// is a hang and the cost of being generous is only that a genuinely dead
+/// interpreter takes this long to be noticed.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// The poll interval while waiting on a child.
+///
+/// Short enough that a script finishing between two polls costs nothing visible,
+/// long enough that a six-second import is not 300 wakeups of a thread that is
+/// otherwise idle on a blocking pool.
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
 /// The same, with extra environment variables for the child only.
 ///
 /// Used by the credential test: the secret is placed in the child's environment
@@ -130,22 +158,74 @@ pub fn run_agent_script_with_env(
     command
         .arg(&path)
         .args(args)
-        .current_dir(project_root()?);
+        .current_dir(project_root()?)
+        // Closed rather than inherited. A helper that reads stdin it was never
+        // given blocks forever, and inheriting means it can read the desktop
+        // app's console instead of failing fast.
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     for (name, value) in env {
         command.env(name, value);
     }
 
-    let output = command
-        .output()
+    let mut child = command
+        .spawn()
         .map_err(|err| format!("Could not run {script}: {err}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr.lines().next_back().unwrap_or("no error output").trim();
+    // Drained on their own threads, because a pipe has a finite buffer: a helper
+    // that printed more than it filled and was then waited on with nobody
+    // reading would deadlock, and `wait_with_output` cannot express a deadline
+    // alongside that drain.
+    let stdout = child.stdout.take().map(drain);
+    let stderr = child.stderr.take().map(drain);
+
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    let _ = join(stdout);
+                    let _ = join(stderr);
+                    return Err(format!(
+                        "{script} did not finish within {} seconds. The Python interpreter may be \
+                         missing a dependency, or blocked on something it has no answer for.",
+                        HELPER_TIMEOUT.as_secs()
+                    ));
+                }
+                std::thread::sleep(POLL_INTERVAL);
+            }
+            Err(err) => return Err(format!("Could not run {script}: {err}")),
+        }
+    };
+
+    let stderr = join(stderr).unwrap_or_default();
+    if !status.success() {
+        let text = String::from_utf8_lossy(&stderr);
+        let detail = text.lines().last().unwrap_or("no error output").trim();
         return Err(format!("{script} failed: {detail}"));
     }
 
-    String::from_utf8(output.stdout).map_err(|_| format!("{script} produced invalid UTF-8."))
+    let stdout = join(stdout).unwrap_or_default();
+    String::from_utf8(stdout).map_err(|_| format!("{script} produced invalid UTF-8."))
+}
+
+/// Read a child's pipe to end on its own thread, returning the handle to join.
+fn drain<R: Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        // A read error here is reported by the status check instead: the bytes
+        // that did arrive are what the caller needs to explain the failure.
+        let _ = pipe.read_to_end(&mut buffer);
+        buffer
+    })
+}
+
+fn join(handle: Option<std::thread::JoinHandle<Vec<u8>>>) -> Option<Vec<u8>> {
+    handle.and_then(|handle| handle.join().ok())
 }
 
 #[cfg(test)]

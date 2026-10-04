@@ -6,8 +6,9 @@ from unittest.mock import patch
 
 import httpx
 
-from agent.tools import http_client, tools_registry
+from agent.tools import http_client, tools_permission, tools_registry
 from agent.tools.apps import candidates, validate_app_name
+from agent.tools.messaging import whatsapp
 from agent.tools.news import SEARCH_URL as NEWS_SEARCH_URL
 from agent.tools.news import format_headlines, get_news, parse_headlines
 from agent.tools.tool_results import MAX_RESULT_CHARS
@@ -216,35 +217,159 @@ class AppToolTests(unittest.TestCase):
 
 
 class PermissionTests(unittest.TestCase):
+    def setUp(self):
+        # Two switches read the *saved document* -- WhatsApp's mode and the
+        # per-tool on/off row -- and document-over-environment is the contract
+        # for both. A machine's real configuration must not decide which tools
+        # these tests expect to see, so both are stubbed to "no document", which
+        # leaves the environment as the base.
+        for module in (whatsapp, tools_permission):
+            patcher = patch.object(module, "effective_document", return_value=({}, "test", []))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_all_tools_are_enabled_by_default(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(
                 tools_registry.tool_ids(tools_registry.get_tools()),
-                ["get_weather", "get_news", "search_web", "recall_persona", "open_app"],
+                ["get_weather", "get_news", "search_web", "recall_persona", "find_app", "open_app", "manage_window", "browse", "run_task", "web_control", "cancel_task", "play_media", "whatsapp_read", "whatsapp_chats", "whatsapp_account", "send_whatsapp"],
             )
 
     def test_disabled_tools_env_hides_individual_tools(self):
         with patch.dict(os.environ, {"LUMINE_DISABLED_TOOLS": "get_news, search_web"}, clear=True):
             self.assertEqual(
                 tools_registry.tool_ids(tools_registry.get_tools()),
-                ["get_weather", "recall_persona", "open_app"],
+                ["get_weather", "recall_persona", "find_app", "open_app", "manage_window", "browse", "run_task", "web_control", "cancel_task", "play_media", "whatsapp_read", "whatsapp_chats", "whatsapp_account", "send_whatsapp"],
             )
 
-    def test_app_launch_toggle_hides_only_desktop_tools(self):
+    def test_app_launch_toggle_hides_only_the_launcher(self):
+        # The toggle is about *launching a program*. `find_app` opens nothing,
+        # `manage_window` only arranges what is already running, and
+        # `run_task` is handed the enabled tool list so it routes around
+        # launching rather than starting one anyway -- so all three stay
+        # available to someone who switched launches off.
         with patch.dict(os.environ, {"LUMINE_ENABLE_APP_LAUNCH": "false"}, clear=True):
             self.assertEqual(
                 tools_registry.tool_ids(tools_registry.get_tools()),
-                ["get_weather", "get_news", "search_web", "recall_persona"],
+                ["get_weather", "get_news", "search_web", "recall_persona", "find_app", "manage_window", "browse", "run_task", "web_control", "cancel_task", "play_media", "whatsapp_read", "whatsapp_chats", "whatsapp_account", "send_whatsapp"],
+            )
+
+    def test_browser_toggle_hides_the_browser_tools(self):
+        # The browser is its own switch because its setup is its own thing:
+        # someone who installed no browser engine still wants search, and
+        # someone who wants no browsing still wants the desktop tools. Both
+        # browser tools go with it -- leaving `web_control` on would hand the
+        # model a way to drive a browser through the back door.
+        with patch.dict(os.environ, {"LUMINE_ENABLE_BROWSER": "false"}, clear=True):
+            self.assertEqual(
+                tools_registry.tool_ids(tools_registry.get_tools()),
+                ["get_weather", "get_news", "search_web", "recall_persona", "find_app", "open_app", "manage_window", "run_task", "cancel_task", "play_media", "whatsapp_read", "whatsapp_chats", "whatsapp_account", "send_whatsapp"],
+            )
+
+    def test_whatsapp_off_hides_only_whats_app(self):
+        # Its own switch again, this time from the environment form. The three
+        # read-only WhatsApp tools go with it: they need the account they would
+        # be sending from, so leaving them on would offer a question the mode
+        # switch has already answered.
+        with patch.dict(os.environ, {"LUMINE_WHATSAPP_MODE": "off"}, clear=True):
+            self.assertEqual(
+                tools_registry.tool_ids(tools_registry.get_tools()),
+                ["get_weather", "get_news", "search_web", "recall_persona", "find_app", "open_app", "manage_window", "browse", "run_task", "web_control", "cancel_task", "play_media"],
+            )
+
+    def test_whatsapp_off_in_the_saved_document_beats_the_environment(self):
+        # Document over environment, per key -- the same precedence as the
+        # permission policy. Here the document says off while the
+        # environment optimistically says automation: off wins, because
+        # this is the one toggle whose off switch belongs to the settings
+        # screen rather than to a file somebody has to find.
+        with patch.object(
+            whatsapp,
+            "effective_document",
+            return_value=({"messaging": {"whatsapp": {"mode": "off"}}}, "test", []),
+        ), patch.dict(os.environ, {"LUMINE_WHATSAPP_MODE": "automation"}, clear=True):
+            self.assertEqual(
+                tools_registry.tool_ids(tools_registry.get_tools()),
+                ["get_weather", "get_news", "search_web", "recall_persona", "find_app", "open_app", "manage_window", "browse", "run_task", "web_control", "cancel_task", "play_media"],
             )
 
     def test_tool_id_reads_both_function_tools_and_plain_functions(self):
         self.assertEqual(tool_id(tools_registry.ALL_TOOLS[0]), "get_weather")
         self.assertEqual(tool_id(lambda: None), "<lambda>")
 
+    # -- the per-tool switch in the saved document ----------------------------
+
+    def _document(self, section):
+        """Run with `tools` set to `section` in the saved document."""
+        return patch.object(
+            tools_permission,
+            "effective_document",
+            return_value=({"tools": section}, "test", []),
+        )
+
+    def test_a_document_switch_turns_one_tool_off(self):
+        with self._document({"get_news": "off"}), patch.dict(os.environ, {}, clear=True):
+            kept = tools_registry.tool_ids(tools_registry.get_tools())
+            self.assertNotIn("get_news", kept)
+            self.assertIn("get_weather", kept)
+            self.assertEqual(len(kept), 15)
+
+    def test_the_document_beats_the_environment_variable(self):
+        # Per-key precedence, the same rule the WhatsApp mode uses. A switch
+        # flipped in Settings must win over a line left in `.env`, or the two
+        # quietly disagree and the one the user just touched is the one that
+        # does nothing.
+        with self._document({"send_whatsapp": "on"}), patch.dict(
+            os.environ, {"LUMINE_DISABLED_TOOLS": "send_whatsapp"}, clear=True
+        ):
+            # `on` is not a way to *force* a tool on: the environment is still
+            # consulted underneath, and a document that says nothing about a
+            # tool leaves that tool exactly as the environment had it.
+            self.assertNotIn("send_whatsapp", tools_registry.tool_ids(tools_registry.get_tools()))
+
+    def test_an_off_switch_wins_over_the_environment_saying_on(self):
+        with self._document({"browse": "off"}), patch.dict(
+            os.environ, {"LUMINE_ENABLE_BROWSER": "true"}, clear=True
+        ):
+            self.assertNotIn("browse", tools_registry.tool_ids(tools_registry.get_tools()))
+
+    def test_an_unrecognised_value_is_read_as_on(self):
+        # This key exists to *reduce* what Lumine can do, so the only safe
+        # reading of an instruction we did not understand is to ignore it. The
+        # opposite holds for `messaging.whatsapp.mode`, which fails closed.
+        with self._document({"get_news": "maybe"}), patch.dict(os.environ, {}, clear=True):
+            self.assertIn("get_news", tools_registry.tool_ids(tools_registry.get_tools()))
+
+    def test_a_switch_for_a_tool_that_does_not_exist_hides_nothing(self):
+        # Inventing a switch for a tool that is not registered would be a
+        # setting that appears to work. `tool_catalog.py --check` reports it.
+        with self._document({"not_a_tool": "off"}), patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(len(tools_registry.tool_ids(tools_registry.get_tools())), 16)
+
+    def test_the_reason_names_the_settings_row_not_a_variable(self):
+        # "You turned this off" and "an environment variable says so" call for
+        # different responses, and only one of them is fixable from this screen.
+        with self._document({"browse": "off"}), patch.dict(os.environ, {}, clear=True):
+            reason = tools_permission.disabled_reason("browse")
+            self.assertIn("Settings", reason)
+            self.assertIn("tools.browse", reason)
+
+    def test_every_card_publishes_the_key_the_page_writes(self):
+        # A switch that saves to the wrong place looks perfect and does nothing,
+        # which is the worst shape a settings control can have. So the key is
+        # published by the worker and asserted here against the section the
+        # runtime actually reads.
+        for card in tools_registry.tool_cards():
+            self.assertTrue(card["switchable"], card["id"])
+            self.assertEqual(card["configKey"], f"{tools_permission.TOOLS_SECTION}.{card['id']}")
+
     def test_filter_permissions_preserves_order(self):
         with patch.dict(os.environ, {"LUMINE_DISABLED_TOOLS": "open_app"}, clear=True):
             kept = filter_permissions(tools_registry.ALL_TOOLS)
-            self.assertEqual([tool_id(tool) for tool in kept], ["get_weather", "get_news", "search_web", "recall_persona"])
+            self.assertEqual(
+                [tool_id(tool) for tool in kept],
+                ["get_weather", "get_news", "search_web", "recall_persona", "find_app", "manage_window", "browse", "run_task", "web_control", "cancel_task", "play_media", "whatsapp_read", "whatsapp_chats", "whatsapp_account", "send_whatsapp"],
+            )
 
 
 class RegistrationTests(unittest.TestCase):
@@ -269,7 +394,31 @@ class RegistrationTests(unittest.TestCase):
             "search_web": ["query"],
             "get_news": ["topic"],
             "recall_persona": ["topic"],
+            "find_app": ["app_name"],
             "open_app": ["app_name"],
+            "manage_window": ["action", "window"],
+            # `desktop_control` drives the real desktop (clicks, keys, text at a
+            # point) and arrived alongside the WhatsApp split; it is listed here so
+            # the schema assertion covers it rather than raising a KeyError, which
+            # is what an unlisted tool produces.
+            "desktop_control": ["action", "target", "text", "window", "x", "y"],
+            "browse": ["action", "key", "ref", "text", "url"],
+            "run_task": ["goal", "request"],
+            "cancel_task": [],
+            "web_control": [
+                "action", "css", "for_model", "frame", "index", "key", "name",
+                "position", "role", "strategy", "text", "url",
+            ],
+            "whatsapp_read": ["action", "chat"],
+            # The music library. `index` is how an ambiguity the model reported gets
+            # resolved without asking again, `folder` is how "play my vocal songs"
+            # reaches a playlist instead of matching one filename out of four
+            # thousand, and `all_tracks` is the difference between "play a vocal
+            # song" and "play all of them".
+            "play_media": ["action", "all_tracks", "folder", "index", "query"],
+            "whatsapp_chats": ["action", "chat", "message"],
+            "whatsapp_account": ["action", "who"],
+            "send_whatsapp": ["attachment", "message", "recipient", "reply_to"],
         }
         for tool in tools_registry.ALL_TOOLS:
             with self.subTest(tool=tool_id(tool)):

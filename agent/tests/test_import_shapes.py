@@ -27,9 +27,45 @@ AGENT_MODULES = [
     # agent/ root -- entrypoint, the CLIs Tauri runs by filename, LiveKit helpers
     "provider_catalog",
     "validate_config",
+    "perf_report",
     "livekit_token",
     "livekit_dispatch",
     "livekit_room",
+    "whatsapp_probe",
+    # The second WhatsApp diagnostic. It is a *separate* CLI rather than a flag on
+    # `whatsapp_probe` because the two measure different states: that one reads a
+    # chat with an empty composer, where the send button does not exist yet, and
+    # this one types into a live one. Merging them means the report can only ever
+    # describe one of the two states -- which is how a closed chat was diagnosed
+    # as having stale selectors.
+    "whatsapp_message_probe",
+    # The send probe is a CLI rather than something to `exec` into a one-liner:
+    # written that way it broke on the first line that read `sys.argv`, which is a
+    # poor thing to hand somebody who is trying to verify a bug fix. It sends for
+    # real unless given `--read-only`.
+    "whatsapp_send_probe",
+    # The Music settings probe. It lives at the root because `python_env::
+    # run_agent_script` resolves by filename, and it walks with the same scanner
+    # the tool plays from so the count it reports cannot disagree with what Lumine
+    # would find.
+    "media_probe",
+    # The search behind the Music page's search box. A separate CLI rather than a
+    # flag on `media_probe.py` because it is a different question — "what is in
+    # here" versus "which of them did you mean" — and merging them would make one
+    # of the two answers conditional on the other's arguments.
+    "media_search",
+    # The Music end-to-end check. Like `media_probe.py` it lives at the root and
+    # is a script in its own right, so this guard is what proves
+    # `tools/media/control.py`'s two-level imports survive the flat shape.
+    "media_check",
+    # The ranking report. Pure reads and one print, so it runs as a script against
+    # a real library -- which is the only way to see whether a *ranking* is right.
+    "media_rank",
+    # The Music *widget*'s queue button. It is a root script because Rust runs it
+    # by filename, and it is the second caller of `tools/media/queue.py` -- the
+    # widget and the voice path must queue the same way, so the guard is what
+    # proves both shapes survive.
+    "media_queue",
     # settings/
     "settings.config_store",
     "settings.validation",
@@ -45,8 +81,65 @@ AGENT_MODULES = [
     "runtime.llm_errors",
     "runtime.context_trim",
     "runtime.latency",
+    "runtime.visual_state",
+    "runtime.frame_sampler",
+    "runtime.permission_gate",
+    "runtime.audit_log",
     "runtime.emotion_contract",
     "runtime.emotion_voice",
+    # runtime/ -- the orchestration layer. Listed explicitly rather than left to
+    # `tools.tools_registry` to pull in: these are the modules a future edit is
+    # most likely to break with a function-level import, and the guard below only
+    # sees files it is pointed at.
+    "runtime.verification",
+    "runtime.router",
+    "runtime.task_model",
+    "runtime.task_engine",
+    "runtime.progress",
+    "runtime.history_consent",
+    # tools/ -- imported through its package by the script-shaped worker
+    # (`from tools.tools_registry import get_tools`), so the package itself is
+    # the name to exercise; every tool module comes with it.
+    "tools.tools_registry",
+    # tools/messaging/ -- named individually because each of these is reachable
+    # as a script in its own right during debugging, and because the messaging
+    # surface is where the two import shapes have collided before: a sibling
+    # imported bare (`permission_gate`) works through the package and fails when
+    # `runtime/` itself is the package, which only this guard notices.
+    "tools.messaging.whatsapp",
+    "tools.messaging.whatsapp_ops",
+    "tools.messaging.whatsapp_refs",
+    "tools.messaging.whatsapp_files",
+    "tools.messaging.whatsapp_web",
+    "tools.messaging.whatsapp_read",
+    "tools.messaging.whatsapp_chats",
+    "tools.messaging.whatsapp_account",
+    # tools/desktop/ -- the same shape, and the same reason the messaging ones
+    # are named individually: `whatsapp_desktop` reaches a sibling in this
+    # package (`from ..desktop import uia`) and a top-level sibling in the
+    # script shape (`from desktop import uia`). Getting that pair wrong works
+    # through the package, fails when `tools/` itself is the package, and only
+    # this guard notices -- which is exactly how it would reach a release.
+    "tools.desktop.uia",
+    "tools.desktop.input",
+    "tools.desktop.capture",
+    "tools.desktop.ops",
+    "tools.desktop.control",
+    # tools/media/ -- named individually for the reason the desktop ones are. The
+    # tool module reaches *two* levels up (`...runtime`) as well as one
+    # (`..tools_compat`), and those two fail under different conditions: through
+    # the package both work, while in the script shape `tools/` is top-level so the
+    # three-dot form is already past the root and only the `runtime` spelling
+    # resolves. A single try block covering both would compile, import fine as
+    # `agent.tools.media.control`, and fail on the first `python
+    # agent/media_probe.py` -- which is the shape Tauri runs.
+    "tools.media",
+    "tools.media.library",
+    "tools.media.match",
+    "tools.media.scanner",
+    "tools.media.player",
+    "tools.media.state",
+    "tools.media.control",
 ]
 
 
@@ -94,7 +187,19 @@ class TopLevelImportTests(unittest.TestCase):
         # Scan the regrouped subpackages as well. The glob used to reach only the
         # flat `agent/` folder, so moving a module into one of these would have
         # quietly taken it out of range of the very guard written for it.
-        roots = [AGENT_DIR] + [AGENT_DIR / d for d in ("settings", "pipeline", "runtime")]
+        roots = [AGENT_DIR] + [
+            AGENT_DIR / d
+            for d in (
+                "settings",
+                "pipeline",
+                "runtime",
+                "tools",
+                "tools/browser",
+                "tools/messaging",
+                "tools/desktop",
+                "tools/media",
+            )
+        ]
         paths = [p for root in roots for p in sorted(root.glob("*.py"))]
         for path in paths:
             if path.name in {"__init__.py", "agent.py"}:

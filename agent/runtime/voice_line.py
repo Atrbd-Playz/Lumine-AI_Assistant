@@ -180,6 +180,7 @@ async def speak_line(
     text: str,
     *,
     allow_interruptions: bool = True,
+    allow_model: bool = True,
 ) -> str:
     """Say `text` out loud, escalating until one channel works.
 
@@ -189,6 +190,16 @@ async def speak_line(
 
     Never raises. A courtesy line that fails must not end a session, and the
     only honest thing to do about a failure is to try the next channel.
+
+    ``allow_model=False`` refuses the :data:`GENERATED` fallback and leaves only a
+    real synthesiser. It exists for the one caller that is *already* about to make
+    the model speak: a tool, at the moment it returns its result. The model answers
+    a tool result by itself -- LiveKit regenerates for any non-empty return, and a
+    realtime model with server-side turn detection replies whether or not a reply
+    was asked for -- so escalating here is not the confirmation, it is a **second**
+    sentence in front of the one the model was always going to give. The exception
+    is not swallowed either: the line really did not carry on this profile, so the
+    caller is told :data:`SILENT` and leaves the single statement to the model.
     """
     line = str(text or "").strip()
     if not line or session is None:
@@ -196,7 +207,7 @@ async def speak_line(
     try:
         if await _try_say(session, line, allow_interruptions=allow_interruptions):
             return SAID
-        if await _try_generate(session, line):
+        if allow_model and await _try_generate(session, line):
             return GENERATED
     except asyncio.CancelledError:  # pragma: no cover - shutdown
         raise

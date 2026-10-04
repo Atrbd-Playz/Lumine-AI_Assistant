@@ -4935,6 +4935,51 @@ input {
   min-width: 0;
 }
 
+/*
+ * The Permissions screen's one status line.
+ *
+ * Four tones because four different problems live here and they need four
+ * different fixes: nothing chosen, something chosen that cannot be read, a folder
+ * with nothing playable in it, and a folder that is fine but switched off. A
+ * single grey sentence for all four would send somebody to fix the wrong thing.
+ */
+.permission-state {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+
+.permission-state--ready {
+  color: var(--text-primary);
+}
+
+.permission-state--error {
+  color: var(--tone-bad, #c2410c);
+}
+
+.permission-state--empty {
+  color: var(--tone-warn, #b45309);
+}
+
+/*
+ * A quieter widget button.
+ *
+ * The music card has two actions and "Play all" is the one somebody wants; the
+ * folder chooser is a setting. Two identically-weighted buttons would make the
+ * setting look like the action.
+ */
+.widget-button--quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-faint);
+}
+
+.widget-button--quiet:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
 .music-empty-state {
   display: flex;
   flex-direction: column;

@@ -219,12 +219,15 @@ class RealtimeVideoInputTests(unittest.TestCase):
 
 class CascadeVideoInputTests(unittest.TestCase):
     def test_the_cascade_does_not_subscribe(self):
-        """Frame injection into a cascade works, and is still not this feature.
+        """A cascade cannot receive a frame at all, so it must not subscribe.
 
-        LiveKit will put the latest frame into the chat context as an image
-        message on each user turn. That genuinely works -- but the LLM stage here
-        is handed a history of strings and declares `("text",)`, so turning the
-        room subscription on would promise frames the stage cannot use.
+        Verified against the installed livekit-agents 1.8.3 rather than assumed:
+        `AgentActivity.push_video` forwards only to `_rt_session`, the realtime
+        session, and with a cascade there is no `_rt_session` -- so the frame is
+        dropped. There is no image-message path to switch on. And even if one
+        appeared, the LLM stage here is handed a history of strings and declares
+        `("text",)`, so the subscription would be a promise the stage cannot
+        keep: LiveKit ignores frames a model cannot read without raising.
         """
         components = build_cascade(pipeline_profile())
         self.assertFalse(subscribes_to_video(components))

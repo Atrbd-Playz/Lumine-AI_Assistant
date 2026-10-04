@@ -102,16 +102,30 @@ fn parse_verdict(value: &str) -> Verdict {
 /// The credential comes from the OS keyring when there is one, and otherwise from
 /// `agent/.env`, which is how a key that has never been entered in Settings can
 /// still be checked.
+///
+/// ## Why the work is handed straight to the blocking pool
+///
+/// This was already an `async fn`, which is only half the answer: an `async`
+/// command's *body* still runs on a runtime thread, and this one spawned a Python
+/// interpreter and then waited on a third-party HTTP request. On a blocked runtime
+/// thread the IPC loop stops, so a slow probe did not just make the button spin —
+/// it made every other command in the app wait behind it.
+///
+/// The provider catalog is read from the shared cache rather than re-run, so the
+/// only interpreter launch left is the probe itself, and that one is genuinely
+/// work.
 #[tauri::command]
 pub async fn test_provider_credential(provider: String) -> Result<ProbeOutcome, String> {
+    crate::run_off_thread("The credential probe", move || probe(provider)).await
+}
+
+fn probe(provider: String) -> Result<ProbeOutcome, String> {
     let provider = provider.trim().to_string();
     if provider.is_empty() {
         return Err("A provider id is required.".to_string());
     }
 
-    let catalog = python_env::run_agent_script("provider_catalog.py", &[])?;
-    let catalog: serde_json::Value =
-        serde_json::from_str(&catalog).map_err(|err| format!("The provider catalog was not valid JSON: {err}"))?;
+    let catalog = crate::cached(crate::CATALOG_PROVIDER).unwrap_or(crate::read_provider_catalog()?);
 
     let declared = catalog
         .get("providers")

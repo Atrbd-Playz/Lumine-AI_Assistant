@@ -18,8 +18,25 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `protocol-asset` is NOT a default Tauri feature, and it is what makes the Focus
+# page's in-app music player possible. Two things come with it:
+#
+#   - `app.asset_protocol_scope()`, the only runtime API that lets a command grant
+#     the webview read access to exactly one directory. The Focus page enables the
+#     asset protocol with an *empty* scope and widens it per-chosen-folder, so this
+#     feature is what makes "deny everything by default" expressible at all.
+#   - `http-range`, transitively. Without it the webview downloads a whole track
+#     before it will play, which makes seeking in a 60 MB FLAC indistinguishable
+#     from hanging. That is a Slice 3 concern, but the feature is the same one and
+#     adding it later would mean a second full rebuild of the dependency tree.
+tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
+# The native folder picker for the Music settings screen. Added because there is
+# no other way to get a real filesystem path out of a desktop file dialog: an
+# `<input webkitdirectory>` hands the webview relative paths, which the worker --
+# a different process -- cannot use. No capability is granted to the frontend;
+# `media.rs` calls it from Rust and exposes an ordinary command.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Credential storage for the AI Control Center. Default features select

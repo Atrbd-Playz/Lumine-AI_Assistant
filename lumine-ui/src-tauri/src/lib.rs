@@ -3,12 +3,24 @@ mod agent_manager;
 mod credential_injection;
 mod credential_probe;
 mod credentials;
+// The Focus Workspace's commands: document, statistics, and the music-root
+// security boundary. Split from `focus_store` because one is the file format and
+// the other is the IPC surface, and only the second one is allowed to widen the
+// asset protocol's scope.
+mod focus_commands;
+// The Focus Workspace document: versioned, validated, written atomically.
+mod focus_store;
+// Pre-aggregated focus statistics, shared by shape with `agent/focus_stats.py`.
+mod focus_stats;
+// The native folder picker for the music library, and what is inside it.
+mod media;
 mod python_env;
 mod settings_store;
 mod setup_status;
 // Renders a candidate voice so the settings screen can play it back.
 mod voice_preview;
 
+use std::collections::HashMap;
 use std::env;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -18,6 +30,36 @@ use credentials::CredentialStore;
 use serde_json::Value;
 use tauri::Manager;
 
+/// Run a blocking task on the async pool and return what it produced.
+///
+/// ## Why every helper-reading command goes through here
+///
+/// A Tauri command declared without `async` **runs on the main thread**. That is
+/// documented, and it is invisible until something slow runs inside one: a cold
+/// `python agent/tool_catalog.py` spends about six seconds importing
+/// `livekit-agents` before it prints a byte, so the Tools page froze the whole
+/// window for six seconds, every repaint stopped, and navigating away during it
+/// produced a Windows "not responding" dialog. A spinner cannot fix that, because
+/// the thread that would draw the spinner is the thread that is blocked.
+///
+/// So the blocking half goes to `spawn_blocking` and the command stays `async`.
+/// `wait_for_agent_worker` and `voice_preview` were already written this way; the
+/// catalog and configuration reads were simply missed, and they are the ones on
+/// the launch path.
+///
+/// A task that panicked arrives as `Err` here rather than as a hang, which is
+/// also what keeps one failing helper from taking the app with it.
+pub(crate) async fn run_off_thread<T, F>(action: &str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(task).await {
+        Ok(result) => result,
+        Err(err) => Err(format!("{action} did not finish: {err}")),
+    }
+}
+
 /// Run a one-shot helper from `agent/` and return its stdout.
 ///
 /// Every command that shells out to a Python helper goes through here, so there
@@ -26,7 +68,7 @@ use tauri::Manager;
 /// stderr: a script that fails because of a missing credential printed the
 /// reason to a pipe nobody read, and the UI showed "check the agent
 /// environment" for what was actually a missing `LIVEKIT_API_SECRET`.
-fn run_helper(script: &str, args: &[&str], action: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn run_helper(script: &str, args: &[&str], action: &str) -> Result<Vec<u8>, String> {
     let python = python_env::python_bin()?;
     let path = python_env::agent_dir()?.join(script);
 
@@ -195,8 +237,26 @@ fn config_file_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String
 
 /// The provider catalog, straight from the worker side so there is exactly one
 /// list of providers and models in the product.
+///
+/// ## Why this is `async` when it used not to be
+///
+/// A Tauri command without the `async` keyword runs **on the main thread**, and
+/// this one spawns a Python interpreter. Every read of the catalog therefore
+/// froze the entire window for as long as the interpreter took, and any attempt
+/// to navigate during that window produced a Windows "not responding" state. The
+/// same was true of the tool catalog and the effective configuration, which is
+/// why all three go through [`run_off_thread`] now.
 #[tauri::command]
-fn get_provider_catalog() -> Result<Value, String> {
+async fn get_provider_catalog() -> Result<Value, String> {
+    if let Some(hit) = cached(CATALOG_PROVIDER) {
+        return Ok(hit);
+    }
+    let resolved = run_off_thread("Reading the provider catalog", read_provider_catalog).await?;
+    write_catalog_cache(CATALOG_PROVIDER, resolved.clone())?;
+    Ok(resolved)
+}
+
+pub(crate) fn read_provider_catalog() -> Result<Value, String> {
     let stdout = python_env::run_agent_script("provider_catalog.py", &[])?;
     serde_json::from_str(&stdout).map_err(|err| format!("The provider catalog was not valid JSON: {err}"))
 }
@@ -232,21 +292,57 @@ fn get_provider_catalog() -> Result<Value, String> {
 /// again, on a page somebody is trying to read. `clear_tool_catalog` is the
 /// deliberate way to force a re-read, and it exists for the case where somebody
 /// adds a tool while the app is open and wants to see it without a restart.
-static TOOL_CATALOG: OnceLock<Mutex<Option<Result<Value, String>>>> = OnceLock::new();
 
-fn tool_catalog_cache() -> &'static Mutex<Option<Result<Value, String>>> {
-    TOOL_CATALOG.get_or_init(|| Mutex::new(None))
+/// The cache slot for the provider catalog.
+pub(crate) const CATALOG_PROVIDER: &str = "provider";
+/// The cache slot for the tool catalog.
+const CATALOG_TOOL: &str = "tool";
+/// The cache slot for the effective configuration.
+///
+/// A third slot rather than a special case, because the reasoning is the same —
+/// except for *what invalidates it*, and that is the whole difference. A catalog
+/// depends on files this process never writes; the effective configuration
+/// depends on the saved document, which `save_config` does write, so it is
+/// dropped there and nowhere else.
+pub(crate) const CATALOG_CONFIG: &str = "config";
+
+static CATALOG_CACHE: OnceLock<Mutex<HashMap<&'static str, Value>>> = OnceLock::new();
+
+fn catalog_cache() -> &'static Mutex<HashMap<&'static str, Value>> {
+    CATALOG_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Drop the cached tool catalog so the next read re-runs the helper.
+/// The cached value for a slot, or `None` if this slot was never filled.
+///
+/// Only successes are held. The tool catalog used to cache its failures as well,
+/// on the argument that a missing interpreter costs the same several seconds every
+/// time; that is true and it is the wrong trade now that the read no longer
+/// blocks the window — a cached failure is a page that never recovers on its own,
+/// and the honest version of one is a message the reader can retry from.
+pub(crate) fn cached(slot: &'static str) -> Option<Value> {
+    catalog_cache().lock().ok()?.get(slot).cloned()
+}
+
+/// Store a successful read. A poisoned lock means some other command panicked
+/// mid-write, which is worth reporting rather than silently ignoring.
+pub(crate) fn write_catalog_cache(slot: &'static str, value: Value) -> Result<(), String> {
+    let mut guard = catalog_cache()
+        .lock()
+        .map_err(|_| "The catalog cache was poisoned by a previous panic.".to_string())?;
+    guard.insert(slot, value);
+    Ok(())
+}
+
+/// Drop a cached read so the next call re-runs the helper.
 ///
 /// Not reachable from the UI today. It exists because "restart the app" is the
 /// only other way to see a tool added in this session, and a one-line command is
 /// cheaper than a bug report about a missing tool.
 #[tauri::command]
 fn clear_tool_catalog() {
-    if let Ok(mut slot) = tool_catalog_cache().lock() {
-        *slot = None;
+    if let Ok(mut slots) = catalog_cache().lock() {
+        slots.remove(CATALOG_TOOL);
+        slots.remove(CATALOG_PROVIDER);
     }
 }
 
@@ -259,16 +355,17 @@ fn clear_tool_catalog() {
 /// toggles, so a card cannot show a green tick for something `LUMINE_DISABLED_TOOLS`
 /// has switched off.
 #[tauri::command]
-fn get_tool_catalog() -> Result<Value, String> {
-    let mut slot = tool_catalog_cache()
-        .lock()
-        .map_err(|_| "The tool catalog cache was poisoned by a previous panic.".to_string())?;
-    if let Some(cached) = slot.as_ref() {
-        return cached.clone();
+async fn get_tool_catalog() -> Result<Value, String> {
+    if let Some(cached) = cached(CATALOG_TOOL) {
+        return Ok(cached);
     }
-    let resolved = read_tool_catalog();
-    *slot = Some(resolved.clone());
-    resolved
+    // The slot is checked and filled separately rather than held across the read.
+    // Two concurrent Tools pages would otherwise serialise on the mutex for the
+    // full six seconds, and the second one would still pay it — which is the
+    // whole bug this cache was introduced to remove, one level down.
+    let resolved = run_off_thread("Reading the tool catalog", read_tool_catalog).await?;
+    write_catalog_cache(CATALOG_TOOL, resolved.clone())?;
+    Ok(resolved)
 }
 
 fn read_tool_catalog() -> Result<Value, String> {
@@ -292,16 +389,26 @@ fn read_tool_catalog() -> Result<Value, String> {
 /// `base_url` is a *name*, not a credential: it is not secret, it does not belong
 /// in the keyring, and it is passed as an argument because it is not.
 #[tauri::command]
-fn discover_local_models(base_url: Option<String>) -> Result<Value, String> {
-    let mut args: Vec<&str> = Vec::new();
-    if let Some(url) = base_url.as_deref() {
-        if !url.trim().is_empty() {
-            args.push(url.trim());
-        }
-    }
-    let stdout = python_env::run_agent_script("local_models.py", &args)?;
-    serde_json::from_str(&stdout)
-        .map_err(|err| format!("The discovery result was not valid JSON: {err}"))
+async fn discover_local_models(base_url: Option<String>) -> Result<Value, String> {
+    // Owned up front rather than borrowed out of the argument: the closure has to
+    // be `'static` to go on the blocking pool, so it cannot hold a slice of a
+    // parameter that is dropped when the command returns.
+    let args: Vec<String> = base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string)
+        .into_iter()
+        .collect();
+    // Not cached: the whole point is to ask a server that is running *now*, and
+    // a cached answer is a stale list the user is about to pick a model from.
+    run_off_thread("Asking the local model server", move || {
+        let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+        let stdout = python_env::run_agent_script("local_models.py", &borrowed)?;
+        serde_json::from_str(&stdout)
+            .map_err(|err| format!("The discovery result was not valid JSON: {err}"))
+    })
+    .await
 }
 
 /// The effective configuration and where it came from.
@@ -310,8 +417,20 @@ fn discover_local_models(base_url: Option<String>) -> Result<Value, String> {
 /// is derived from `agent/.env` and read-only. The settings screen needs that
 /// distinction to know whether it is editing a real configuration or looking at
 /// a report of the current one.
+///
+/// Cached, and invalidated by `save_config` — the only thing in this process that
+/// writes the file this reads.
 #[tauri::command]
-fn get_config() -> Result<Value, String> {
+async fn get_config() -> Result<Value, String> {
+    if let Some(cached) = cached(CATALOG_CONFIG) {
+        return Ok(cached);
+    }
+    let resolved = run_off_thread("Reading the configuration", read_config).await?;
+    write_catalog_cache(CATALOG_CONFIG, resolved.clone())?;
+    Ok(resolved)
+}
+
+pub(crate) fn read_config() -> Result<Value, String> {
     let stdout = python_env::run_agent_script("validate_config.py", &["--describe"])?;
     serde_json::from_str(&stdout)
         .map_err(|err| format!("The configuration could not be read: {err}"))
@@ -322,13 +441,34 @@ fn get_config() -> Result<Value, String> {
 /// The read-back is not ceremony: `save` can succeed and still leave something
 /// `load` refuses (a truncated file, an unexpected encoding). Verifying here means
 /// the app never reports a successful save it cannot read on the next launch.
+///
+/// The cached effective configuration is dropped on the way out, including on
+/// failure. A save that was refused must not leave the app reporting the document
+/// it tried to write — the next reader would then get the old answer from the
+/// cache and the settings screen would appear to have reverted silently.
 #[tauri::command]
 fn save_config(app: tauri::AppHandle, document: Value) -> Result<(), String> {
     let path = config_file_path(&app)?;
-    settings_store::save(&path, &document).map_err(|err| err.to_string())?;
-    settings_store::load(&path)
-        .map_err(|err| format!("The configuration was written but could not be read back: {err}"))?;
-    Ok(())
+    let outcome = settings_store::save(&path, &document)
+        .map_err(|err| err.to_string())
+        .and_then(|()| {
+            settings_store::load(&path)
+                .map_err(|err| format!("The configuration was written but could not be read back: {err}"))
+        });
+    if let Ok(mut slots) = catalog_cache().lock() {
+        slots.remove(CATALOG_CONFIG);
+        // **The tool catalog too**, and this was a real bug: every card's
+        // `enabled` / `disabledReason` is computed by the worker from this same
+        // document, so a tool switch written by the Tools page invalidated the
+        // config cache and left the catalog alone. The write succeeded, and the
+        // next read handed back the catalog from *before* the write -- so
+        // flipping a switch appeared to revert on its own, and a page reload
+        // brought the stale answer back. A user toggling a capability and
+        // watching it switch itself off has no way to tell that from the
+        // feature being broken.
+        slots.remove(CATALOG_TOOL);
+    }
+    outcome.map(|_| ())
 }
 
 /// Store a credential, or one slot of a multi-value provider's credential.
@@ -382,8 +522,16 @@ fn get_credential_status(
 /// The rules live in the worker so the settings screen and the runtime cannot
 /// disagree. Takes the document as a JSON string because it arrives from the
 /// webview as an untyped value and may legitimately be malformed.
+///
+/// `async` for the same reason the catalog reads are: this runs on every edit
+/// keystroke in the settings screens, and as a synchronous command it blocked
+/// the main thread on an interpreter start *per keystroke*.
 #[tauri::command]
-fn validate_config(document: String) -> Result<Value, String> {
+async fn validate_config(document: String) -> Result<Value, String> {
+    run_off_thread("Validation", move || validate_config_blocking(document)).await
+}
+
+fn validate_config_blocking(document: String) -> Result<Value, String> {
     use std::io::Write;
 
     let mut child = Command::new(python_env::python_bin()?)
@@ -433,6 +581,10 @@ fn validate_config(document: String) -> Result<Value, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // The native folder picker. Registered from Rust rather than reached from
+        // the webview, so the Music screen asks for a folder through an ordinary
+        // command and no capability has to be granted to the frontend.
+        .plugin(tauri_plugin_dialog::init())
         .manage(Mutex::new(AgentManager::default()))
         .invoke_handler(tauri::generate_handler![
             start_agent,
@@ -456,7 +608,21 @@ pub fn run() {
             get_credential_status,
             setup_status::get_setup_status,
             credential_probe::test_provider_credential,
-            voice_preview::preview_voice
+            voice_preview::preview_voice,
+            media::pick_music_folder,
+            media::inspect_music_folder,
+            media::queue_music,
+            // The Focus Workspace. `load_focus` / `save_focus` are the only
+            // writers of `focus.json`; `focus_stats` is a derived read; and the
+            // three music commands are the boundary that lets the webview play
+            // audio from exactly one folder the person picked.
+            focus_commands::load_focus,
+            focus_commands::save_focus,
+            focus_commands::focus_stats,
+            focus_commands::allow_music_root,
+            focus_commands::revoke_music_root,
+            focus_commands::granted_music_root,
+            focus_commands::resolve_focus_track
         ])
         .setup(|app| {
             // The identifier moved from `com.art.lumine-ui` to `com.art.lumine`,

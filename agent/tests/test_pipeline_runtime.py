@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.settings.pipeline_config import gemini_settings, pipeline_name
+from agent.settings.validation import Diagnostic
 import agent.pipeline.pipeline_factory as pipeline_factory
 from agent.pipeline.pipeline_factory import build_pipeline
 from agent.runtime.runtime_events import ToolEventBridge
@@ -22,6 +23,130 @@ class RecordingPublisher:
         self.records.append(record)
         self.topics.append(topic)
         return record
+
+
+class RejectedProfileReportingTests(unittest.TestCase):
+    """A profile the user chose must never be swapped for another one silently.
+
+    The reported symptom was "the pipeline voice has some problem": a Pipeline
+    profile was selected and saved, the worker rejected it, and the rejection was
+    swallowed -- the session continued on the environment profile instead, which
+    was a *different stack* (realtime rather than the Groq/Cartesia cascade).
+    Nobody could tell, because the reason lived in `diagnostics` on an event the
+    app rendered without reading them, and because nothing said a substitution
+    had happened at all.
+
+    The fallback itself is right. A working voice beats no voice, and refusing to
+    start would turn a missing key into a mute button. What was wrong is that it
+    was *silent* -- so these pin the two things that make it answerable: the event
+    names the cause and the substitution, and the app is told in terms a person
+    can act on.
+    """
+
+    def _diagnostics(self, *labels: str):
+        from agent.settings.validation import Diagnostic
+
+        return [
+            Diagnostic(
+                severity="error",
+                code="credential.missing",
+                path=f"profiles.p.pipeline.{label.lower()}",
+                message=f"{label} has no credential available.",
+                hint="",
+            )
+            for label in labels
+        ]
+
+    def test_a_missing_key_is_named_rather_than_reduced_to_a_generic_reason(self):
+        from agent.agent import _missing_credential_labels
+
+        self.assertEqual(
+            _missing_credential_labels(self._diagnostics("Groq", "Cartesia")),
+            ["Groq", "Cartesia"],
+        )
+
+    def test_a_rejection_that_is_not_a_missing_key_is_not_mislabelled_as_one(self):
+        # Otherwise a typo in a profile is reported as "add your Groq key", which
+        # sends somebody to the Providers page for a problem that is not there.
+        from agent.agent import _missing_credential_labels
+        from agent.settings.validation import Diagnostic
+
+        self.assertEqual(
+            _missing_credential_labels(
+                [
+                    Diagnostic(
+                        severity="error",
+                        code="model.unknown",
+                        path="profiles.p.pipeline.llm.model",
+                        message="No such model: groq/nope.",
+                    )
+                ]
+            ),
+            [],
+        )
+
+    def test_a_provider_named_twice_is_listed_once(self):
+        from agent.agent import _missing_credential_labels
+
+        self.assertEqual(
+            _missing_credential_labels(self._diagnostics("Groq", "Groq")), ["Groq"]
+        )
+
+    def test_a_setup_notice_is_published_and_never_raises(self):
+        from agent.agent import _publish_setup_notice
+
+        publisher = RecordingPublisher()
+        _publish_setup_notice(publisher, "Profile 'Pipeline' needs a Groq key", "Add it.")
+        self.assertEqual(publisher.topics, ["lumine.notice"])
+        self.assertEqual(publisher.records[0]["title"], "Profile 'Pipeline' needs a Groq key")
+
+        class Broken:
+            def emit_and_publish(self, *_args, **_kwargs):
+                raise RuntimeError("the pipe is gone")
+
+        # The failure path is the wrong place to add a second failure.
+        _publish_setup_notice(Broken(), "t", "m")
+
+    def test_an_empty_diagnostic_list_names_nothing(self):
+        from agent.agent import _missing_credential_labels
+
+        self.assertEqual(_missing_credential_labels([]), [])
+        self.assertEqual(_missing_credential_labels(None), [])
+
+    def test_a_rejection_reason_prefers_the_diagnostic_that_names_a_provider(self):
+        from agent.agent import _rejection_reason
+
+        class Rejected(Exception):
+            diagnostics = [
+                Diagnostic(
+                    severity="error",
+                    code="llm.unsupported",
+                    path="p.llm",
+                    message="That stage does not take a thinking level.",
+                ),
+                Diagnostic(
+                    severity="error",
+                    code="credential.missing",
+                    path="p.tts",
+                    message="Cartesia has no credential available.",
+                ),
+            ]
+
+        self.assertEqual(
+            _rejection_reason(Rejected()),
+            "Cartesia has no credential available.",
+        )
+
+    def test_a_rejection_reason_falls_back_to_the_exception_text_and_never_to_nothing(self):
+        from agent.agent import _rejection_reason
+
+        # A plugin's own ValueError is more use than a generic sentence, and an
+        # empty sentence is the one thing that must never reach a person.
+        self.assertEqual(
+            _rejection_reason(ValueError("speed must be a float for sonic-3")),
+            "speed must be a float for sonic-3",
+        )
+        self.assertEqual(_rejection_reason(RuntimeError()), "RuntimeError while building the voice profile.")
 
 
 class PipelineConfigTests(unittest.TestCase):
@@ -327,18 +452,24 @@ class ToolResultDisclosureTests(unittest.TestCase):
 
 
 class AppLauncherTests(unittest.TestCase):
+    # Each test patches the installed-app index out. These three assert the
+    # legacy PATH/startfile chain on its own terms, and a developer's Start
+    # Menu -- or a real PowerShell probe -- must never be what decides whether
+    # they pass. The index branch is `test_app_index.py`'s subject.
+    INDEX_OUT = patch.object(apps.app_index, "resolve", return_value=None)
+
     def test_path_launch_reports_success_without_waiting(self):
-        with patch.object(apps.shutil, "which", return_value="C:/apps/notepad.exe"), patch.object(apps, "spawn") as spawn:
+        with self.INDEX_OUT, patch.object(apps.shutil, "which", return_value="C:/apps/notepad.exe"), patch.object(apps, "spawn") as spawn:
             self.assertEqual(apps.launch("notepad"), "Opened notepad.")
         spawn.assert_called_once_with(["C:/apps/notepad.exe"])
 
     def test_missing_app_has_a_specific_error(self):
-        with patch.object(apps.shutil, "which", return_value=None), patch.object(apps.sys, "platform", "win32"), patch.object(apps.os, "startfile", side_effect=FileNotFoundError):
+        with self.INDEX_OUT, patch.object(apps.shutil, "which", return_value=None), patch.object(apps.sys, "platform", "win32"), patch.object(apps.os, "startfile", side_effect=FileNotFoundError):
             with self.assertRaisesRegex(ToolError, "couldn't find an app"):
                 apps.launch("missing-app")
 
     def test_found_app_failure_is_distinct_from_missing_app(self):
-        with patch.object(apps.shutil, "which", return_value="C:/apps/notepad.exe"), patch.object(apps.sys, "platform", "linux"), patch.object(apps, "spawn", side_effect=PermissionError("denied")):
+        with self.INDEX_OUT, patch.object(apps.shutil, "which", return_value="C:/apps/notepad.exe"), patch.object(apps.sys, "platform", "linux"), patch.object(apps, "spawn", side_effect=PermissionError("denied")):
             with self.assertRaisesRegex(ToolError, "found notepad"):
                 apps.launch("notepad")
 
