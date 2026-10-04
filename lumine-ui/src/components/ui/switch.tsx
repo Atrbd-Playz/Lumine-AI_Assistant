@@ -39,17 +39,85 @@ export type SwitchProps = {
   fallback?: boolean;
   /** The explanation behind the `?`. */
   help?: string;
+  /**
+   * Draw the switch alone, keeping `label` as its accessible name.
+   *
+   * For placing it in a row that already states the setting -- a tool card whose
+   * heading is the tool's name, for instance. The visible label is dropped rather
+   * than repeated because "Weather  Weather  [on]" is a card that reads as a
+   * mistake, and the name is still announced because it is still the accessible
+   * name. Nothing is lost but the duplicate.
+   */
+  hideLabel?: boolean;
+  /**
+   * Greyed out and inert while a write is in flight.
+   *
+   * For a row of switches sharing one document: the document is written whole,
+   * so a second click while the first is still being saved would race it. Both
+   * switches dim rather than the one being written, because the other is just as
+   * unsafe to click right now.
+   */
+  disabled?: boolean;
 };
 
 /** What a boolean can be written as, matching the worker's own reading. */
 const TRUEY = /^(true|1|yes|on)$/i;
 const FALSEY = /^(false|0|no|off)$/i;
 
-export function Switch({ label, value, onChange, fallback = false, help }: SwitchProps) {
+export function Switch({ label, value, onChange, fallback = false, help, hideLabel, disabled }: SwitchProps) {
   const id = useId();
   const trimmed = value.trim();
   const parsed = trimmed === "" ? null : TRUEY.test(trimmed) ? true : FALSEY.test(trimmed) ? false : null;
   const on = parsed ?? fallback;
+
+  const knob = (
+    <span
+      aria-hidden="true"
+      className={
+        "absolute top-[3px] h-4 w-4 rounded-full bg-white shadow-elev-1 transition-all duration-150 " +
+        (on ? "left-[19px]" : "left-[3px]")
+      }
+    />
+  );
+
+  const track =
+    "relative mt-0.5 h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-150 " +
+    "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent " +
+    (disabled ? "cursor-progress opacity-55 " : "") +
+    (on ? "bg-accent" : "bg-surface-muted shadow-elev-1");
+
+  const button = (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      disabled={disabled}
+      onClick={() => onChange(on ? "false" : "true")}
+      className={track}
+    >
+      {knob}
+    </button>
+  );
+
+  // Named by `aria-label` rather than `aria-labelledby`, because with the visible
+  // label hidden there is no element for the reference to point at -- and a
+  // switch with no accessible name is one a screen reader announces as "switch,
+  // on" with nothing about which setting it belongs to.
+  if (hideLabel) {
+    return (
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(on ? "false" : "true")}
+        className={track}
+      >
+        {knob}
+      </button>
+    );
+  }
 
   return (
     <div className="flex min-w-0 items-start justify-between gap-3">
@@ -72,26 +140,7 @@ export function Switch({ label, value, onChange, fallback = false, help }: Switc
           </p>
         )}
       </div>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
-        aria-labelledby={`${id}-label`}
-        onClick={() => onChange(on ? "false" : "true")}
-        className={
-          "relative mt-0.5 h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-150 " +
-          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent " +
-          (on ? "bg-accent" : "bg-surface-muted shadow-elev-1")
-        }
-      >
-        <span
-          aria-hidden="true"
-          className={
-            "absolute top-[3px] h-4 w-4 rounded-full bg-white shadow-elev-1 transition-all duration-150 " +
-            (on ? "left-[19px]" : "left-[3px]")
-          }
-        />
-      </button>
+      {button}
     </div>
   );
 }

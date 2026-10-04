@@ -81,10 +81,52 @@ function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+/**
+ * One in-flight promise per command, shared by whoever else asks at the same time.
+ *
+ * Two callers genuinely want the same answer during a cold launch — the AI
+ * settings hook and the setup gate both read the provider catalog and the
+ * effective configuration — and each of those reads is a Python interpreter
+ * start. Worse, `main.tsx` mounts the tree inside `React.StrictMode`, and React 19
+ * runs a mount effect twice in development on purpose; the first request is still
+ * running when the second one starts and is then thrown away, so `tauri dev` paid
+ * for eight interpreter starts to obtain four answers.
+ *
+ * A second caller therefore *joins* the first request rather than issuing its own.
+ * This is deduplication, not caching: the entry is removed the moment the promise
+ * settles, so nothing here can ever hand back a stale answer. The desktop layer
+ * holds the per-process cache that does that job, and it is the only layer that
+ * knows what a read actually costs.
+ *
+ * Keyed on the command and its arguments, sorted so two callers that build the
+ * same argument object with different key order still share one request.
+ */
+const inFlight = new Map<string, Promise<unknown>>();
+
+function requestKey(command: string, args?: Record<string, unknown>): string {
+  if (!args) return command;
+  const entries = Object.entries(args)
+    .filter(([, value]) => value !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right));
+  return entries.length === 0 ? command : `${command}:${JSON.stringify(entries)}`;
+}
+
 /** Run a Tauri command, turning "not running inside the app" into a clear error. */
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) throw new DesktopUnavailableError();
-  return invoke<T>(command, args);
+  const key = requestKey(command, args);
+  const running = inFlight.get(key);
+  if (running) return running as Promise<T>;
+
+  const promise = invoke<T>(command, args);
+  inFlight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    // Only cleared if it is still ours: a later caller may already have replaced
+    // the slot, and deleting that would un-share the request it is waiting on.
+    if (inFlight.get(key) === promise) inFlight.delete(key);
+  }
 }
 
 export async function getProviderCatalog(): Promise<ProviderCatalog> {
@@ -113,11 +155,23 @@ export type CatalogTool = {
   category: string;
   /**
    * `"answers"` only tells Lumine something. `"opens"` acts on this machine.
+   * `"acts"` reaches a web page, `"sends"` leaves the conversation entirely.
    *
    * The distinction is stated rather than left to the name, because it is the
-   * thing a person is deciding about when they leave a tool switched on.
+   * thing a person is deciding about when they leave a tool switched on. The
+   * labels live in `WorkspaceView`, and `tool_catalog.py --check` fails on a
+   * value outside this union.
    */
-  effect: "answers" | "opens";
+  effect: "answers" | "opens" | "acts" | "sends";
+  /**
+   * Whether this tool asks before it acts: `"auto"` or `"ask"`.
+   *
+   * The floor, computed in the worker from the tool's own action class -- so
+   * it can never promise an automatic that the gate would not honour, and it
+   * never declines below what the code enforces. A user who tightens policy
+   * gets *more* asking than this badge shows, never less.
+   */
+  permission: "auto" | "ask";
   /** Whether reaching it involves the internet. */
   network: boolean;
   parameters: {
@@ -126,10 +180,29 @@ export type CatalogTool = {
     required: boolean;
     help: string;
   }[];
-  /** False when an environment toggle has switched it off for this run. */
+  /**
+   * False when a toggle has switched it off for this run -- an environment
+   * variable, or the `tools.<id>` switch in the saved document.
+   */
   enabled: boolean;
   /** Which toggle did it. Empty when enabled. */
   disabledReason: string;
+  /**
+   * Whether this tool has an on/off switch the page may write.
+   *
+   * Published rather than assumed, because the answer and the write path must be
+   * the same fact: a card that draws a switch the worker will not read, or hides
+   * one it will, is a control that lies in one direction or the other.
+   */
+  switchable: boolean;
+  /**
+   * The document key this tool's switch lives at, e.g. `tools.browse`.
+   *
+   * Taken from the worker so the page writes the key the worker reads. A switch
+   * that saves somewhere else looks perfect and does nothing, which is the worst
+   * shape a settings control can have.
+   */
+  configKey: string;
 };
 
 /**

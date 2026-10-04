@@ -384,6 +384,46 @@ export type ConfigDocument = {
    * only what the catalog declares.
    */
   voices?: SavedVoice[];
+  /**
+   * Per-tool on/off switches, keyed by tool id.
+   *
+   * This is the one toggle that lives in the document rather than in
+   * `agent/.env`, because it is the one a settings screen has to be able to
+   * write: "this app may not send messages for me" is a decision a person makes
+   * and revokes from inside the app, not one they should have to make by editing
+   * a file and restarting a worker.
+   *
+   * `on` and `off` only. The worker reads an unrecognised value as `on`, because
+   * this key exists to *reduce* what Lumine can do and an instruction it did not
+   * understand is not one it should obey -- the opposite holds for
+   * `messaging.whatsapp.mode`, which fails closed on purpose.
+   */
+  tools?: Record<string, "on" | "off">;
+  /**
+   * The music library: which one folder, and whether Lumine may play from it.
+   *
+   * A document key rather than an environment variable, for the reason `tools` is
+   * one — the folder is chosen by a native picker and has to be revokable from
+   * inside the app. `LUMINE_MEDIA_LIBRARY` sits underneath it for a machine
+   * configured by file.
+   *
+   * `enabled` fails **closed**, unlike `tools.<id>`: an unrecognised value reads
+   * as `off` because this key grants a capability rather than reducing one. The
+   * worker validates a bad value as an *error*, so a misspelling cannot leave a
+   * document that looks configured and plays nothing.
+   */
+  media?: MusicSettings;
+};
+
+/** The Music section, as the document stores it. */
+export type MusicSettings = {
+  /** `on` | `off`. Ships `off`. */
+  enabled?: "on" | "off";
+  /** The absolute path of the one folder Lumine may play from. */
+  library?: string;
+  /** Whether subfolders are searched. Default on, because a folder named `vocal`
+   *  is nearly always inside another one. */
+  recursive?: boolean;
 };
 
 // ---------------------------------------------------------------------------
