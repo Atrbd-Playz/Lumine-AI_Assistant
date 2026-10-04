@@ -68,9 +68,11 @@ from urllib.parse import quote
 try:
     from ...runtime.permission_gate import require_approval
     from ...runtime.progress import step as progress_step
+    from ...runtime.voice_line import SAID, SILENT
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from runtime.permission_gate import require_approval
     from runtime.progress import step as progress_step
+    from runtime.voice_line import SAID, SILENT
 
 from . import whatsapp_ops as ops
 from . import whatsapp_refs as refs
@@ -1517,10 +1519,12 @@ async def send_whatsapp(
     # facts about one event produces two sentences.
     channel = await web.announce_sent(context, who)
     ledger.mark(who, text or file_path, "sent")
-    if channel == SILENT:
-        # Nothing outside the model can speak on this profile -- a native-audio
-        # one raises on `say()` -- so its sentence is the confirmation and it is
-        # the only one. Said plainly rather than left to be inferred.
+    if channel not in (SAID, "generated"):
+        # Nothing outside the model can speak on this profile -- a native-audio one
+        # raises on `say()`, which is what `gemini-3.8-live` does -- so its own
+        # sentence is the confirmation, and it is the only one. Said plainly rather
+        # than left to be inferred, because "say this once" is an instruction the
+        # model can follow and "you have already said it" would be a lie.
         return f"Sent to {who} on WhatsApp. Say this once, in your own words."
     return (
         f"Sent to {who} on WhatsApp. You have already said this out loud, so do "
