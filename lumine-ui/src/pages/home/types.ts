@@ -95,6 +95,7 @@ export type IconName =
   | "video"
   | "video-off"
   | "monitor"
+  | "globe"
   | "speaker"
   | "speaker-off"
   | "sun"

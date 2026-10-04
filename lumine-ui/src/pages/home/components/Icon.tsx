@@ -27,6 +27,7 @@ import {
   VideoCamera,
   VideoCameraSlash,
   MonitorArrowUp,
+  Globe,
   SpeakerHigh,
   SpeakerSlash,
   Info,
@@ -97,6 +98,11 @@ const iconMap: Record<IconName, PhosphorIcon> = {
   // Arrow up out of a screen, which is the direction a screenshare travels and
   // the direction Tauri asks the OS to allow.
   monitor: MonitorArrowUp,
+  // The browser preview's host line. A globe rather than a second monitor mark,
+  // because the preview is a page on the web and `monitor` already means "the
+  // user's screen being shared" — two meanings on one glyph would make the two
+  // corner cards read as the same kind of thing.
+  globe: Globe,
   speaker: SpeakerHigh,
   "speaker-off": SpeakerSlash,
   // The everyday rail. Weather is drawn from a small vocabulary of its own rather
