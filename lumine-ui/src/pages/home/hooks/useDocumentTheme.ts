@@ -13,8 +13,17 @@ import type { ThemeMode } from "../types";
  * Setting the same class and the same custom properties on `<html>` closes that
  * gap. Everything is removed again on cleanup so a stale palette cannot outlive
  * the app that set it.
+ *
+ * The collapsed rail is mirrored for the same reason and with the same mechanism.
+ * `--sidebar-width` is what the notification stack's left inset is measured from,
+ * and that stack is portalled — so a folded rail would otherwise leave three
+ * cards sitting across the icons it just folded away.
  */
-export function useDocumentTheme(mode: ThemeMode, variables: CSSProperties) {
+export function useDocumentTheme(
+  mode: ThemeMode,
+  variables: CSSProperties,
+  navCollapsed = false,
+) {
   // `variables` is rebuilt on every render, so depend on its shape rather than
   // its identity. Writing the same properties again is a no-op for the style
   // attribute, so an extra run costs nothing but avoids re-running the effect
@@ -25,6 +34,7 @@ export function useDocumentTheme(mode: ThemeMode, variables: CSSProperties) {
     const root = document.documentElement;
     root.classList.remove("theme-light", "theme-dark");
     root.classList.add(`theme-${mode}`);
+    root.classList.toggle("is-nav-collapsed", navCollapsed);
     for (const [property, value] of Object.entries(JSON.parse(serialized) as Record<string, string>)) {
       if (value !== undefined && value !== null) root.style.setProperty(property, String(value));
     }
@@ -34,5 +44,5 @@ export function useDocumentTheme(mode: ThemeMode, variables: CSSProperties) {
         root.style.removeProperty(property);
       }
     };
-  }, [mode, serialized]);
+  }, [mode, serialized, navCollapsed]);
 }

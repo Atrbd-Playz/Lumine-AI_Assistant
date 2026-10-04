@@ -248,6 +248,13 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
      the single piece of information the stage carries that the transcript does
      not. The subtree becoming presentational is the point; none of it was meant
      to be navigated. */
+  {/* No sizing utilities here, deliberately: `.presence`'s size lives in
+      `pages/index.css` as a viewport clamp, and a Tailwind utility on this
+      element outranks that stylesheet — utilities sit in a later cascade
+      layer than the components layer index.css is written in. `w-full h-full`
+      was here and silently pinned the avatar at 256px at every window size,
+      which is how the "responsive avatar" stopped responding. Size it there
+      or nowhere. */}
   return <div role="img" className={`presence presence--${state} ${showAvatarColor ? "" : "presence--no-color"}`} aria-label={`Lumine is ${state}`}>
     <div className="presence-halo halo-one" /><div className="presence-halo halo-two" />
     <div className="presence-orbit orbit-one" /><div className="presence-orbit orbit-two" />
