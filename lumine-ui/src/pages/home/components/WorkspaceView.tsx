@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
-import { getToolCatalog, type CatalogTool, type ToolCategory } from "../../../features/settings/aiConfigClient";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  getConfig,
+  getToolCatalog,
+  saveConfig,
+  type CatalogTool,
+  type ToolCategory,
+} from "../../../features/settings/aiConfigClient";
 import { TabStrip, type TabStripItem } from "../../../components/ui/tabstrip";
 import { Hint } from "../../../components/ui/hint";
+import { Switch } from "../../../components/ui/switch";
 import type { WorkspaceNavId } from "../constants";
 import { Icon } from "./Icon";
 
@@ -32,6 +39,17 @@ type ToolState =
   /** The helper could not be read, which is not the same as "no tools". */
   | { kind: "unavailable" }
   | { kind: "ready"; tools: CatalogTool[]; categories: ToolCategory[] };
+
+/**
+ * What a switch write is doing, and what went wrong if it failed.
+ *
+ * A separate channel from the tool list on purpose. The list is *read* from the
+ * worker, so a failed read replaces the grid with an explanation; the switches
+ * *write* to the saved document, and a failed write must not do that. Putting the
+ * error in the same slot would mean either losing every card because one toggle
+ * was refused, or losing the one message that says the toggle was refused.
+ */
+type SaveState = { saving: boolean; error: string | null };
 
 /** The tab that means "do not filter". Not published: it is a view concern. */
 const ALL = "__all__";
@@ -79,6 +97,7 @@ export function WorkspaceView({ kind, onSettings }: { kind: WorkspaceKind; onSet
 function ToolsPage() {
   const [state, setState] = useState<ToolState>({ kind: "loading" });
   const [tab, setTab] = useState(ALL);
+  const [save, setSave] = useState<SaveState>({ saving: false, error: null });
 
   useEffect(() => {
     let live = true;
@@ -94,6 +113,73 @@ function ToolsPage() {
       live = false;
     };
   }, []);
+
+  /**
+   * Flip one tool's switch and save it.
+   *
+   * Read-modify-write rather than a dedicated command, because the document is
+   * the document: a command that rewrote one key would have to know how to merge
+   * it with whatever else the settings screens had written, and the honest way to
+   * merge is to hold the document.
+   *
+   * Three details are load-bearing:
+   *
+   * - **The local list updates first**, so the switch moves under the finger.
+   * - **A failure reverts it.** A control that stays where you pushed it while
+   *   the save was refused is claiming something that is not true, and the next
+   *   click would then write the value it thinks is already there.
+   * - **A success re-reads the whole catalog.** This is what makes one switch
+   *   able to move *others*: `desktop_control` silences `browse` and
+   *   `web_control` while it is on, and that second-order effect is decided by
+   *   the worker, not here. Updating only the card that was clicked leaves every
+   *   other card showing the state before the click — so turning the desktop
+   *   control on left two browser cards reading "on" until the next app run.
+   */
+  const toggle = useCallback(async (tool: CatalogTool, next: boolean) => {
+    if (state.kind !== "ready") return;
+    setSave({ saving: true, error: null });
+    const apply = (enabled: boolean) =>
+      setState((current) =>
+        current.kind === "ready"
+          ? {
+              ...current,
+              tools: current.tools.map((item) =>
+                item.id === tool.id
+                  ? {
+                      ...item,
+                      enabled,
+                      disabledReason: enabled ? "" : `Turned off in Settings (tools.${item.id}).`,
+                    }
+                  : item,
+              ),
+            }
+          : current,
+      );
+
+    apply(next);
+    try {
+      const { document } = await getConfig();
+      await saveConfig({
+        ...document,
+        tools: { ...(document.tools ?? {}), [tool.id]: next ? "on" : "off" },
+      });
+      // Reconcile. `saveConfig` drops the tool catalog cache, so this is the
+      // first read that knows about every consequence of the write -- including
+      // the cards this click silenced.
+      const { tools, categories } = await getToolCatalog();
+      if (tools.length > 0) setState({ kind: "ready", tools, categories });
+      setSave({ saving: false, error: null });
+    } catch (cause) {
+      apply(!next);
+      setSave({
+        saving: false,
+        error:
+          cause instanceof Error
+            ? `Could not save that switch: ${cause.message}`
+            : "Could not save that switch.",
+      });
+    }
+  }, [state.kind]);
 
   /**
    * Tab ids, in the worker's declared order, with their counts.
@@ -139,17 +225,41 @@ function ToolsPage() {
   if (state.kind === "unavailable") return <ToolsUnavailable />;
 
   const shown = tab === ALL ? state.tools : state.tools.filter((tool) => tool.category === tab);
+  const total = state.tools.length;
   const off = state.tools.filter((tool) => !tool.enabled).length;
+  const on = total - off;
   const active = tabs.find((entry) => entry.id === tab);
 
   return (
     <div className="tools-panel">
       <TabStrip items={tabs} value={tab} onChange={setTab} label="Tool categories" hintSide="bottom" />
-      {off > 0 && (
-        <p className="tools-note">
-          {off} {off === 1 ? "tool is" : "tools are"} switched off in this environment.
+      {save.error && <p className="tools-note is-error">{save.error}</p>}
+      {/*
+       * The status line, and it is the first thing under the tabs because it is
+       * the page's answer rather than a note about the page. "14 of 17
+       * available" is the question -- *may she reach these* -- answered before
+       * you have read a single card.
+       *
+       * It was a paragraph. "2 tools are switched off. Anything you turn off
+       * here applies from your next call -- the worker builds its toolset when
+       * a call joins, so nothing needs restarting." Both halves are worth
+       * knowing; only the number is worth *seeing*, and burying it in the
+       * middle of a sentence is what put it below the fold in the reader's
+       * attention. Split: the number is large, the reassurance is quiet, and
+       * the reassurance is shown whether or not anything is off -- someone who
+       * has just turned a switch on wants to know it took effect too.
+       */}
+      <div className="tools-status">
+        <p className="tools-status-count">
+          <span className="tools-status-figure">{on}</span>
+          <span className="tools-status-of">of {total} available</span>
+          {off > 0 && <span className="tools-status-off">{off} switched off</span>}
         </p>
-      )}
+        <p className="tools-status-hint">
+          Takes effect from your next call &mdash; Lumine builds her toolset when a call joins, so
+          nothing needs restarting.
+        </p>
+      </div>
       {shown.length === 0 ? (
         <p className="tools-note">No tools in this group.</p>
       ) : (
@@ -157,7 +267,12 @@ function ToolsPage() {
           {active && active.help && <p className="tools-group-note">{active.help}</p>}
           <ul className="tool-grid">
             {shown.map((tool) => (
-              <ToolCard key={tool.id} tool={tool} />
+              <ToolCard
+                key={tool.id}
+                tool={tool}
+                busy={save.saving}
+                onToggle={(next) => void toggle(tool, next)}
+              />
             ))}
           </ul>
         </>
@@ -202,43 +317,215 @@ function ToolsUnavailable() {
   );
 }
 
-function ToolCard({ tool }: { tool: CatalogTool }) {
-  // Named rather than a bare boolean, so a card cannot quietly lose the
-  // distinction between these. Four of the five only answer a question; the one
-  // that starts a program is the reason this view is worth having at all.
-  const effect = tool.effect === "opens" ? "Acts on this device" : "Answers only";
+/**
+ * What a card says, and in what order.
+ *
+ * The order is the design. A reader is weighing one question — *may she reach
+ * this, and what will it cost me* — so the card answers in that order and stops:
+ * name, then what it does, then the two facts that matter, then everything else
+ * behind a disclosure.
+ *
+ * ## Why this is much shorter than it was
+ *
+ * It used to be heading, switch, a paragraph about why it is off, a summary,
+ * three uppercase chips, a full parameter table and a tool id — five type sizes
+ * within five pixels of each other, and the accent colour on two chips that
+ * mean opposite things. Nothing was readable because everything was competing.
+ *
+ * Three changes did most of it:
+ *
+ * - **One accent, and it means one thing.** "This will act on your machine" and
+ *   "this will ask you" were both accent-coloured, so the accent said nothing.
+ *   Now only *asks you first* is accented, because that is the fact a person
+ *   is actually weighing when they leave a tool switched on.
+ * - **Parameters are reference material.** Printing all of them made a six-setting
+ *   card three times the height of a one-setting card, so the grid was ragged and
+ *   the cards could not be compared. They are behind a disclosure now.
+ * - **The tool id is on hover.** It is genuinely useful — it is how a report of
+ *   "she used get_weather" is matched to a card — and it was 17 lines of 10px
+ *   monospace noise on a page nobody was reading it on.
+ */
+function ToolCard({
+  tool,
+  busy,
+  onToggle,
+}: {
+  tool: CatalogTool;
+  /** A save is in flight. Disables every switch, not just the one being written. */
+  busy: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  // Named rather than a bare boolean, so a card cannot quietly lose one of
+  // these. Most only answer a question; "opens" starts or arranges programs on
+  // this machine; "acts" reaches a web page; "sends" would leave the
+  // conversation -- and each is the reason this view is worth having at all.
+  const effect =
+    tool.effect === "opens"
+      ? "Acts on this device"
+      : tool.effect === "acts"
+        ? "Acts on the web"
+        : tool.effect === "sends"
+          ? "Sends messages"
+          : "Answers only";
+  // Whether this tool can talk to somebody else. The *only* thing on a card
+  // given the accent colour, and the reason is measured rather than argued: nine
+  // of seventeen cards ask, and eleven of seventeen can act at all, so neither
+  // of those partitions is a minority and neither colour rule carries
+  // information. One card in seventeen sends. That one is also the only
+  // authority a name cannot tell you -- you can read "weather" and know it
+  // answers, but nothing in "Send a WhatsApp" says what it does to another
+  // person.
+  const sends = tool.effect === "sends";
+  // The worker's floor: whether a call stops to ask. Kept as a value because it
+  // is stated on the card and the accent question depends on it.
+  const asks = tool.permission === "ask";
+  // Why it is off, when there is a reason worth showing. Kept as a value rather
+  // than as a second conditional in the markup, because the summary below must
+  // render exactly once either way.
+  const why =
+    tool.switchable && !tool.enabled && tool.disabledReason ? tool.disabledReason : "";
 
   return (
     <li className={"tool-card" + (tool.enabled ? "" : " is-off")}>
-      <header>
-        <h3>{tool.label}</h3>
-        {!tool.enabled && (
-          <span className="tool-tag is-off" title={tool.disabledReason}>
-            Off
-          </span>
+      <header className="tool-card-head">
+        <h3 className="tool-card-name">{tool.label}</h3>
+        {tool.switchable ? (
+          /*
+            The switch, in the heading row rather than below the summary: it
+            answers "can she reach this" and the heading is what that question is
+            about. Its own label is hidden because the heading one line above
+            already says it, and `hideLabel` keeps it as the accessible name so
+            nothing is lost but the duplicate.
+          */
+          <Switch
+            hideLabel
+            disabled={busy}
+            label={`Let Lumine use ${tool.label}`}
+            value={tool.enabled ? "true" : "false"}
+            onChange={(next) => onToggle(next === "true")}
+            help={
+              tool.enabled
+                ? `${tool.label} is available. Switch it off to keep it out of the tools she can reach.`
+                : `${tool.label} is switched off, so she will not reach for it.`
+            }
+          />
+        ) : (
+          !tool.enabled && (
+            <span className="tool-tag is-off" title={tool.disabledReason}>
+              Off
+            </span>
+          )
         )}
       </header>
-      <p className="tool-summary m-0 text-soft text-[12.5px] leading-[1.55]">{tool.summary}</p>
-      <ul className="tool-facts flex flex-wrap gap-[5px] m-0 p-0 list-none">
-        <li className={"tool-fact tool-fact-effect is-" + tool.effect}>{effect}</li>
-        {tool.network && <li className="tool-fact">Uses the internet</li>}
-      </ul>
-      {tool.parameters.length > 0 && (
-        <dl className="tool-params flex flex-col gap-1.5 m-0 pt-2.5 border-t border-t-border">
-          {tool.parameters.map((parameter) => (
-            <div key={parameter.name}>
-              <dt>
-                {parameter.name}
-                {parameter.required ? "" : " (optional)"}
-              </dt>
-              <dd>{parameter.help}</dd>
-            </div>
-          ))}
-        </dl>
+
+      {/*
+        Why it is off, directly under the heading. A reason the reader has to
+        act on belongs next to the switch, not appended after a paragraph of
+        prose -- and these can be a long sentence, so one line with the full
+        text on hover. A three-line block beside a one-line card is exactly what
+        made the grid ragged.
+      {/*
+        One quiet line, and it is the whole of the card's colour decision.
+
+        ## Why the accent is on "Sends messages" and nothing else
+
+        Two earlier answers were both wrong, and only measuring caught either.
+
+        The accent was on **"asks you first"**, which sounds obviously right and
+        is not: **nine of seventeen cards ask**. Interrupting is the normal case,
+        so accenting it made the accent mean "a tool" -- and the card a person
+        was scanning for, the one that will *not* stop to ask, was the only one
+        drawn in plain grey.
+
+        It then moved to **"can act at all"**, on the reasoning that authority is
+        rarer. Measured, it is *less* rare: **eleven of seventeen**. That made the
+        page worse, and no amount of comment would have caught it, because the
+        number was never looked up.
+
+        So the rule is the only partition that is both a minority and not already
+        inferable from the label: **a tool that can talk to somebody else without
+        you.** One card in seventeen, and the fact a switch on this page exists to
+        govern.
+
+        "Asks you first" stays on the line, in `--color-text`: worth reading, not
+        worth a colour.
+      */}
+      {why && (
+        <p className="tool-card-why" title={why}>
+          <Icon name="close" size={12} />
+          <span>{why}</span>
+        </p>
       )}
-      {/* The id the model actually receives. Not decoration: it is how a report
-          of "she used get_weather" is matched to the card above it. */}
-      <code className="tool-id mt-auto text-faint font-mono text-[10px] font-normal leading-[normal] tracking-[0.02em]">{tool.id}</code>
+
+      <p className="tool-card-summary">{tool.summary}</p>
+
+      {/*
+        One quiet line, and it is the whole of the card's colour decision.
+
+        ## Why the accent is on "Sends messages" and nothing else
+
+        Two earlier answers were both wrong, and only measuring caught either.
+
+        The accent was on **"asks you first"**, which sounds obviously right and
+        is not: **nine of seventeen cards ask**. Interrupting is the normal case,
+        so accenting it made the accent mean "a tool" -- and the card a person
+        was scanning for, the one that will *not* stop to ask, was the only one
+        drawn in plain grey.
+
+        It then moved to **"can act at all"**, on the reasoning that authority is
+        rarer. Measured, it is *less* rare: **eleven of seventeen**. That made the
+        page worse, and no amount of comment would have caught it, because the
+        number was never looked up.
+
+        So the rule is the only partition that is both a minority and not already
+        inferable from the label: **a tool that can talk to somebody else without
+        you.** One card in seventeen, and the fact a switch on this page exists to
+        govern.
+
+        "Asks you first" stays on the line, in `--color-text-soft`: worth reading,
+        not worth a colour, because colouring it claims it is exceptional when it
+        is the majority.
+      */}
+      <p className="tool-card-meta">
+        <span className={sends ? "is-sends" : "is-quiet"}>{effect}</span>
+        <span className="tool-card-dot" aria-hidden="true" />
+        <span className={asks ? "is-asks" : "is-quiet"}>
+          {asks ? "Asks you first" : "Runs on her own"}
+        </span>
+        {tool.network && (
+          <>
+            <span className="tool-card-dot" aria-hidden="true" />
+            <span className="is-quiet">Uses the internet</span>
+          </>
+        )}
+      </p>
+
+      {tool.parameters.length > 0 && (
+        <details className="tool-card-more">
+          <summary>
+            {tool.parameters.length} {tool.parameters.length === 1 ? "setting" : "settings"}
+            <Icon name="expand" size={11} />
+          </summary>
+          <dl className="tool-card-params">
+            {tool.parameters.map((parameter) => (
+              <div key={parameter.name}>
+                <dt>
+                  {parameter.name}
+                  {parameter.required ? "" : " · optional"}
+                </dt>
+                <dd>{parameter.help}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      )}
+
+      {/* The id the model actually receives. Not decoration — it is how a report
+          of "she used get_weather" is matched to this card — and not worth a
+          line of 10px monospace on every card either. Hover, focus, or a copy. */}
+      <code className="tool-card-id" title={`The name the model receives: ${tool.id}`}>
+        {tool.id}
+      </code>
     </li>
   );
 }
