@@ -33,10 +33,33 @@ export function useConversation({ service = mockConversationService }: UseConver
     return nextMessage.id;
   }, []);
 
+  /**
+   * Patch one message in place, and hand back the *same array* when nothing moved.
+   *
+   * Streaming transcription calls this several times a second for one row, and
+   * each call used to build a fresh array by mapping over every item. That is two
+   * costs the reader paid for a change to one line: the whole transcript re-rendered,
+   * and every layout effect keyed on `items` re-ran — including the one that keeps
+   * the view pinned to the tail.
+   *
+   * Returning `current` when no row actually differs gives React nothing to do.
+   * The row comparison is field-by-field rather than a JSON round trip because
+   * these objects hold `Date`s, and two equal timestamps are different objects.
+   */
   const updateMessage = useCallback((id: string, changes: Partial<Omit<ConversationMessage, "id">>) => {
-    setItems((current) => current.map((item) => (
-      isMessage(item) && item.id === id ? { ...item, ...changes } : item
-    )));
+    setItems((current) => {
+      let touched = false;
+      const next = current.map((item) => {
+        if (!isMessage(item) || item.id !== id) return item;
+        // Nothing to merge is nothing to do; a no-op patch still costs a render.
+        const merged = { ...item, ...changes };
+        const keys = Object.keys(merged) as (keyof ConversationMessage)[];
+        if (keys.every((key) => Object.is(merged[key], item[key]))) return item;
+        touched = true;
+        return merged;
+      });
+      return touched ? next : current;
+    });
   }, []);
 
   const updateMessageStatus = useCallback((id: string, status: ConversationMessageStatus) => {

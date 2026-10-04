@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { ConversationMessage as MessageRow } from "./ConversationMessage";
 import { Icon, Mark } from "./Icon";
 import type {
@@ -87,6 +87,31 @@ export type ConversationPanelProps = {
   open: boolean;
 };
 
+/**
+ * How close to the bottom still counts as *reading* the bottom.
+ *
+ * 48px rather than zero because a tail that has to be exact is a tail nobody can
+ * stay on: one rubber-band pixel from the end and the transcript stops following,
+ * so a row arrives that the reader never sees arrive. 48px is about the height of
+ * the last row's own margin, which is the smallest band that cannot be left
+ * behind by ordinary reading.
+ */
+const TAIL_THRESHOLD = 48;
+
+/** Remaining scrollable distance from the tail, in pixels. */
+function distanceFromTail(element: HTMLElement): number {
+  return element.scrollHeight - element.scrollTop - element.clientHeight;
+}
+
+/** Whether the transcript should follow the tail on the next growth. */
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
 export function ConversationPanel({
   items,
   agentStatus,
@@ -101,9 +126,46 @@ export function ConversationPanel({
 }: ConversationPanelProps) {
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
-  const [showNew, setShowNew] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  /**
+   * Whether the reader is at the tail, as one value with two readers.
+   *
+   * `pinned` is what renders; `pinnedRef` is what the growth path reads. They
+   * have to be one fact — the growth handler runs inside a layout effect, and
+   * reading the state variable there means closing over the value from the
+   * commit that is still being applied, which is how a transcript ends up
+   * scrolling when the reader scrolled away from the new message half a second
+   * ago.
+   */
+  const [pinned, setPinned] = useState(true);
+  const pinnedRef = useRef(true);
+  /**
+   * How many rows have been on screen, so `unseen` is a delta.
+   *
+   * It used to be `showNew ? 0 : items.length`, which is either nothing or
+   * *everything the session has ever said*. Scroll up once during a long call
+   * and the button claims forty new rows, thirty-nine of which the reader
+   * watched arrive. This is the baseline, and it advances only while the tail is
+   * visible — the one moment "everything so far" is genuinely "everything seen".
+   */
+  const [seen, setSeen] = useState(0);
+
+  const setFollowing = useCallback((next: boolean) => {
+    pinnedRef.current = next;
+    setPinned(next);
+  }, []);
+
+  const scrollToTail = useCallback((behavior: ScrollBehavior = "auto") => {
+    const element = scrollRef.current;
+    // A zero-height element is the panel being shut, not an empty transcript.
+    // Writing `scrollTop` to one throws it away, so a reader who opens the
+    // transcript after a long call would land wherever the last visible offset
+    // happened to be.
+    if (!element || element.clientHeight === 0) return;
+    element.scrollTo({ top: element.scrollHeight, behavior });
+  }, []);
 
   // Opening puts the caret in the composer from every path that can open it. A
   // frame's wait is not cosmetic: with the panel shut the composer is still
@@ -116,21 +178,108 @@ export function ConversationPanel({
     return () => cancelAnimationFrame(frame);
   }, [open]);
 
-  // Follow the tail only when the reader is already at it. The transcript grows
-  // mid-read — a turn finishes, a tool starts, a new line arrives — and an
-  // auto-scrolling transcript is unreadable while you are reading it. The
-  // "jump" affordance is what makes the alternative honest.
+  /**
+   * Opening also means "show me the end".
+   *
+   * Three things open this panel and none of them is a message arriving: the
+   * stage's transcript switch, the command palette, and `mod+shift+enter`. Each
+   * is a request to *read* the conversation, and the readable end of a
+   * conversation is its latest message — so the tail is claimed explicitly rather
+   * than inferred from an offset that survived while the panel was `display:
+   * none`. Without this, a panel reopened after a few turns of speech opened in
+   * the middle with nothing to say so.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      scrollToTail("auto");
+      setFollowing(true);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, scrollToTail, setFollowing]);
+
+  /**
+   * Follow the tail only when the reader is already at it.
+   *
+   * The transcript grows mid-read — a turn finishes, a tool starts, an interim
+   * transcript chunk lands — and an auto-scrolling transcript is unreadable
+   * while you are reading it. The "jump" affordance is what makes the
+   * alternative honest.
+   *
+   * Three details are load-bearing and each one was a bug first:
+   *
+   * - **`useLayoutEffect`, not `useEffect`.** The rows are in the DOM by the time
+   *   a layout effect runs, so `scrollHeight` is already the new height. A
+   *   passive effect runs after the browser has been handed a frame, which means
+   *   the transcript visibly jumps *after* painting the new message instead of
+   *   arriving with it.
+   * - **`auto`, not `"smooth"`.** Streaming transcription re-runs this on every
+   *   interim chunk. Restarting a smooth scroll animation two or three times a
+   *   second means the tail is always chasing a target that has just moved, so
+   *   it lags behind the speaker — a lag is exactly what an unreadable
+   *   auto-scroll looks like. The button keeps `smooth`, because that is a
+   *   single deliberate gesture.
+   * - **The zero-size guard.** While the panel is shut every measurement is
+   *   zero, so the "am I at the tail" arithmetic returns 0 and concludes yes.
+   *   That is why messages used to arrive into a hidden transcript, be counted
+   *   as seen, and never raise the jump button.
+   */
+  useLayoutEffect(() => {
+    if (!pinnedRef.current) return;
+    scrollToTail("auto");
+  }, [items, scrollToTail]);
+
+  /**
+   * Re-pin when the transcript grows for a reason that is not a new row.
+   *
+   * A webfont swapping in, a bubble re-wrapping as the window resizes, or an
+   * interim transcript being replaced by its final text all change the height
+   * of rows that are already on screen. None of them change `items` by
+   * reference, so the layout effect above does not run for them — and the
+   * transcript drifts away from the tail a line at a time with no explanation.
+   * Observing the list's own box catches every one of them, and only acts while
+   * the reader is already following, so a reader who has scrolled away is never
+   * moved.
+   *
+   * The dependency is the *existence* of the list rather than the effect's mount,
+   * because the list is not in the tree at all while the transcript is empty: an
+   * observer attached once on mount found no node, and an empty list is exactly
+   * the state the first message arrives into.
+   */
+  const hasRows = items.length > 0;
+  useEffect(() => {
+    const list = listRef.current;
+    if (!hasRows || !list || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (pinnedRef.current) scrollToTail("auto");
+    });
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [hasRows, scrollToTail]);
+
+  // Same condition, same trigger: at the tail means the newest row is rendered,
+  // so the count of things the reader is behind on goes back to zero.
+  useEffect(() => {
+    if (pinned) setSeen(items.length);
+  }, [pinned, items.length]);
+
+  // A new arrival while the reader has scrolled up is a "there is something
+  // below" signal, not something to yank them back down for. A listener rather
+  // than a recompute inside the effect above, because the two answer different
+  // questions: one reacts to the list changing, this one reacts to the reader
+  // moving.
   useEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
-    const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-    if (distance < 96) {
-      element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-      setShowNew(false);
-    } else {
-      setShowNew(true);
-    }
-  }, [items]);
+    const onScroll = () => {
+      if (element.clientHeight === 0) return;
+      setFollowing(distanceFromTail(element) < TAIL_THRESHOLD);
+    };
+    element.addEventListener("scroll", onScroll, { passive: true });
+    return () => element.removeEventListener("scroll", onScroll);
+  }, [setFollowing]);
+
+  const unseen = pinned ? 0 : Math.max(0, items.length - seen);
 
   const submit = useCallback(() => {
     const content = draft.trim();
@@ -237,7 +386,7 @@ export function ConversationPanel({
           {items.length === 0 ? (
             <PanelEmpty />
           ) : (
-            <div className="conversation-list">
+            <div ref={listRef} className="conversation-list">
               {items.map((item, index) => {
                 const previous = items[index - 1];
                 const next = items[index + 1];
@@ -275,17 +424,20 @@ export function ConversationPanel({
           )}
         </div>
 
-        {showNew && items.length > 0 && (
+        {!pinned && items.length > 0 && (
           <button
             type="button"
             className="conversation-new-messages"
             onClick={() => {
-              const element = scrollRef.current;
-              if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-              setShowNew(false);
+              // Smooth, because this is one deliberate gesture rather than a
+              // stream of them — and dropped when the reader has asked for less
+              // motion, where an animated scroll over a screen of text is
+              // exactly the movement they turned off.
+              scrollToTail(prefersReducedMotion() ? "auto" : "smooth");
+              setFollowing(true);
             }}
           >
-            ↓ New messages
+            {unseen > 0 ? `↓ ${unseen} new` : "↓ New messages"}
           </button>
         )}
       </div>
