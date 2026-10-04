@@ -594,6 +594,19 @@ input {
   background: var(--color-canvas);
 }
 
+/* The `Suspense` fallback for the home route itself, which is the one route that
+   is never deferred — so this box should never be seen. It exists so that a
+   chunk that fails to load leaves a filled cell rather than a hole in the grid,
+   which is what an unresolved promise inside a grid renders as: the other child
+   stretches over the whole window and the sidebar goes with it. */
+.lumine-page-loading {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-canvas);
+}
+
 .workspace-header h1 {
   margin: 8px 0 10px;
   color: var(--color-text);
@@ -853,10 +866,96 @@ input {
   font-size: 12.5px;
 }
 
+/*
+ * A switch write that was refused. Loud, because the alternative is the worst
+ * outcome this control has: the switch stays where you pushed it while nothing was
+ * saved, so the page reports a permission the worker does not have.
+ */
+.tools-note.is-error {
+  color: var(--color-danger);
+  font-weight: 500;
+}
+
+/*
+ * The status line.
+ *
+ * One number, large, and one sentence, small. Editorial rather than chatty: a
+ * figure on the left, a footnote on the right, sharing a baseline. The figure is
+ * the only large type on the page, and that is deliberate -- the page's job is
+ * to answer "may she reach these", and this is the answer.
+ *
+ * `margin-left: auto` on the hint is what makes it a footnote instead of a
+ * second sentence. It also costs nothing on a narrow window, because the row
+ * wraps and both items fall back to the left.
+ */
+.tools-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 24px;
+  margin: 0 0 22px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text) 9%, transparent);
+}
+
+.tools-status-count {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 13px;
+}
+
+.tools-status-figure {
+  color: var(--color-text);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1;
+  /* Two tools, then twelve: the figure must not shift width as it counts, or
+     the sentence beside it jitters on every toggle. */
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.tools-status-off {
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: var(--color-text-soft);
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.tools-status-hint {
+  margin: 0 0 0 auto;
+  max-width: 46ch;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+/*
+ * The grid.
+ *
+ * 280px, not 246px. A card has to hold a real sentence and a switch side by
+ * side without either wrapping badly, and at 246px the summary broke to three
+ * lines while the heading stayed on one -- which is what made the page look
+ * noisy rather than dense. Three columns at this panel width, four on a wide
+ * one, two on a narrow one.
+ *
+ * `align-items` is left at stretch so cards in a row share a height. A grid of
+ * ragged cards cannot be *scanned*, and scanning is the only thing this page is
+ * for: you are not reading seventeen cards, you are looking for the one tool
+ * that does something you did not expect.
+ */
 .tool-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(246px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -895,63 +994,130 @@ input {
   }
 }
 
+/* ===================================================================
+   A tool card.
+
+   The whole page exists to answer one question -- *may she reach this, and
+   what will it cost me* -- so a card answers it in that order and stops:
+
+     what it is  ->  what it does  ->  what it will cost  ->  the switch
+   ...with everything else behind a disclosure.
+
+   ## Why this needed rewriting
+
+   It used to be heading, switch, a paragraph about why it is off, a summary,
+   three uppercase chips, a full parameter table and a tool id. Five type
+   sizes inside five pixels of each other -- 9, 10, 11, 12.5, 14 -- and the
+   summary, the id and the fact list had **no stylesheet at all**, because they
+   were carrying utility classes inline. Nothing was readable because nothing
+   had been decided: every element was competing to be the thing you looked at
+   first.
+
+   Four decisions fixed most of it:
+
+   - **Three sizes, and nothing below 12px.** 15 for the name, 13 for the
+     sentence, 12 for the consequences. A page of 9px uppercase monospace is not
+     dense, it is damaged.
+   - **One accent, and it means one thing.** "Acts on this device" and "asks you
+     first" were *both* accent-coloured, so the accent said nothing at all. Only
+     **"asks you first"** is coloured now, because that is the fact someone is
+     actually weighing when they leave a tool switched on. Everything else is
+     grey, which is what makes the grey readable.
+   - **Reference material is on demand.** Printing every parameter made a
+     six-setting card three times the height of a one-setting card, so the grid
+     was ragged and cards could not be compared. They are behind a disclosure.
+   - **The tool id appears on hover.** It is genuinely useful -- it is how a
+     report of "she used get_weather" is matched to a card -- and it was 17
+     lines of 10px monospace on a page nobody was reading it on.
+   =================================================================== */
+
 .tool-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 15px 16px 14px;
+  gap: 10px;
+  padding: 16px 18px 14px;
   background: var(--color-surface);
   border-radius: var(--radius-md);
   box-shadow: var(--elevation-1);
-  transition: box-shadow 140ms ease;
+  /* Compositor-only. An earlier `transition: box-shadow` animated a property
+     that costs a repaint of the whole card, which is why it was removed. */
+  transition: transform 140ms ease, box-shadow 140ms ease;
 }
 
 .tool-card:hover {
   box-shadow: var(--elevation-2);
-}
-
-/*
- * A tool that is switched off is shown, not hidden. Someone who turned something
- * off needs to be able to see it is off and why; making it disappear would leave
- * them wondering whether the app had dropped it.
- */
-.tool-card.is-off {
-  background: var(--color-surface-muted);
-  box-shadow: none;
+  transform: translateY(-1px);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .tool-card {
     transition: none;
   }
+
+  .tool-card:hover {
+    transform: none;
+  }
 }
 
-.tool-card header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+/* A keyboard reader has to be able to see where they are. The switch inside
+   takes focus, so the card around it follows -- otherwise the ring is a dot
+   with no context. */
+.tool-card:focus-within {
+  box-shadow: var(--elevation-2), 0 0 0 2px color-mix(in srgb, var(--color-accent) 42%, transparent);
 }
 
-.tool-card h3 {
-  margin: 0;
-  color: var(--color-text);
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
+/*
+ * A tool that is switched off is shown, not hidden -- someone who turned
+ * something off needs to see that it is off and why, and making it vanish
+ * would leave them wondering whether the app had dropped it.
+ *
+ * Three signals, and *none of them is a background swap*: a status rail down
+ * the left edge, the name dropping to soft, and the body dropping to faint.
+ * Swapping the whole fill made every disabled card a different height and a
+ * different temperature from its neighbour, so the one thing a person scanning
+ * the grid was trying to do -- compare cards -- got harder exactly where the
+ * grid was least regular.
+ */
+.tool-card.is-off {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-text) 14%, transparent);
 }
 
-.tool-card.is-off h3 {
+.tool-card.is-off .tool-card-name,
+.tool-card.is-off .tool-card-summary {
   color: var(--color-text-soft);
 }
 
+/* --- the name and the switch ------------------------------------------- */
+
+.tool-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tool-card-name {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+  /* `balance` rather than a negative tracking value. The tracking was there to
+     stop long headings wrapping, and it does that by making every heading
+     slightly wrong instead of only the wrapping ones. */
+  text-wrap: balance;
+}
+
+/* The one thing on a card that is not switchable and is therefore not self
+   describing: a `Off` chip has to say what it is about. */
 .tool-tag {
   flex: 0 0 auto;
-  padding: 2px 7px;
-  border-radius: 6px;
-  font: 500 9px var(--font-mono);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0;
 }
 
 .tool-tag.is-off {
@@ -959,7 +1125,265 @@ input {
   background: color-mix(in srgb, var(--color-text) 9%, transparent);
 }
 
-.tool-fact {
+/* --- why it is off ------------------------------------------------------ */
+
+.tool-card-why {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.tool-card-why svg {
+  flex: 0 0 auto;
+  align-self: center;
+  opacity: 0.7;
+}
+
+.tool-card-why span {
+  /* One line, with the whole sentence on `title`. These reasons run long --
+     "Turned off while desktop.input is on -- desktop_control can drive a
+     browser window itself" -- and a three-line block beside a one-line card
+     is the raggedness this page was suffering from. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  text-wrap: pretty;
+}
+
+/* --- what it does ------------------------------------------------------- */
+
+.tool-card-summary {
+  margin: 0;
+  color: var(--color-text-soft);
+  font-size: 13px;
+  line-height: 1.55;
+  /* `pretty` because a summary that ends on a single orphaned word reads as a
+     layout bug, and this is a page people are told the layout is trustworthy
+     on. */
+  text-wrap: pretty;
+}
+
+/* --- the two consequences, on one quiet line ---------------------------- */
+
+.tool-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: auto 0 0;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--color-text) 9%, transparent);
+  color: var(--color-text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tool-card-meta .is-quiet {
+  color: var(--color-text-soft);
+}
+
+/*
+ * The accent, and it is reserved for exactly one thing: **a tool that can talk
+ * to somebody else without you.**
+ *
+ * It was on "Asks you first" -- nine of seventeen cards, so the accent meant
+ * "a tool" and the one that would *not* interrupt you was the only card drawn
+ * in plain grey. It then moved to "can act at all" -- eleven of seventeen, which
+ * is worse. Both were guesses, and measuring the catalog is what caught them.
+ *
+ * `sends` is one card in seventeen, so it is unmistakable, and it is the only
+ * authority on this page a label cannot tell you: a name like "weather" or "open
+ * an app" already says what it does, and nothing in "Send a WhatsApp" says what
+ * it does to another person.
+ */
+.tool-card-meta .is-sends {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+/*
+ * Everything else on this line is `--color-text-soft`, including "Asks you
+ * first". It is worth reading -- it is the fact a person weighs when deciding
+ * whether to leave a tool on -- and it is not worth a colour, because colouring
+ * it says it is exceptional when it is the majority.
+ */
+.tool-card-meta .is-asks {
+  color: var(--color-text-soft);
+}
+
+.tool-card-dot {
+  width: 3px;
+  height: 3px;
+  align-self: center;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.45;
+}
+
+/* --- reference material, on request ------------------------------------- */
+
+.tool-card-more {
+  margin: 0;
+}
+
+.tool-card-more > summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  cursor: pointer;
+  list-style: none;
+  color: var(--color-text-soft);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  border-radius: 6px;
+  transition: color 120ms ease;
+}
+
+.tool-card-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-card-more > summary:hover {
+  color: var(--color-text);
+}
+
+/* A caret, not an icon that lies. `expand` is rotated to `collapse` when open,
+   because a chevron that keeps pointing right while the list is below it is a
+   lie about the state of the thing. */
+.tool-card-more > summary svg {
+  transition: transform 130ms ease;
+}
+
+.tool-card-more[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-card-more > summary svg {
+    transition: none;
+  }
+}
+
+.tool-card-params {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 9px 0 0;
+  padding: 10px 0 0;
+  border-top: 1px solid color-mix(in srgb, var(--color-text) 9%, transparent);
+}
+
+.tool-card-params dt {
+  color: var(--color-text);
+  /* Weight and size only, so it inherits the page's sans. `--font-sans` is not
+     a token in this stylesheet -- only `--font-display` and `--font-mono` are
+     declared -- and an undefined custom property inside a `font` shorthand
+     invalidates the whole declaration, which silently loses the size too. */
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tool-card-params dd {
+  margin: 2px 0 0;
+  color: var(--color-text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+/* --- the name the model receives ---------------------------------------- */
+
+/*
+ * Kept, and out of the way. `opacity` rather than `display` or `visibility`, so
+ * it stays in the accessibility tree and stays selectable -- it is reference
+ * material, and reference material should not be *missing*. Revealed on focus
+ * as well as hover, because the person who needs it most is often navigating
+ * by keyboard.
+ */
+.tool-card-id {
+  color: var(--color-text-soft);
+  font: 400 11px var(--font-mono);
+  opacity: 0;
+  transition: opacity 130ms ease;
+  cursor: text;
+  user-select: all;
+}
+
+.tool-card:hover .tool-card-id,
+.tool-card:focus-within .tool-card-id {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-card-id {
+    transition: none;
+  }
+}
+
+/*
+ * The approval card -- the one place the app asks before anything happens.
+ *
+ * Fixed rather than in flow because a question that pushes the transcript
+ * around is a question nobody reads: it arrives during a call, from the worker,
+ * at a moment of its choosing, and it has to land where the eye already is.
+ * The stack sits above everything else in the document (the dialog scale stops
+ * at 30) on purpose -- a time-boxed question must be answerable even with
+ * settings open, or the answer is simply missed and the tool refuses.
+ *
+ * No entrance animation. The card's whole message is "decide now", and an
+ * animation is delay wearing a costume; it also keeps this out of every
+ * prefers-reduced-motion question by having nothing to disable.
+ */
+.permission-stack {
+  position: fixed;
+  left: 50%;
+  bottom: 96px;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(430px, calc(100vw - 32px));
+  /* The gaps between cards must not eat clicks meant for the stage. */
+  pointer-events: none;
+}
+
+.permission-card {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 13px 15px 13px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-2);
+}
+
+.permission-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/*
+ * The class is the ladder, and the colour is the rung: sensitive and
+ * destructive read as the danger they are rather than as two more grey tags.
+ * The label itself comes from the worker's own classification, never from the
+ * request text -- a summary that called a deletion "reading" would otherwise
+ * pick its own colour.
+ */
+.permission-class {
+  flex: 0 0 auto;
   padding: 2px 7px;
   border-radius: 6px;
   color: var(--color-text-soft);
@@ -969,26 +1393,133 @@ input {
   text-transform: uppercase;
 }
 
-/*
- * The one fact that is not cosmetic. A tool that starts a program is a different
- * kind of permission from one that reads a weather API, and the card says so in
- * the accent colour rather than leaving it to the label.
- */
-.tool-fact-effect.is-opens {
-  color: var(--color-accent);
-  background: var(--color-accent-soft);
+.permission-class.is-sensitive,
+.permission-class.is-destructive {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
 }
 
-.tool-params dt {
-  color: var(--color-text);
+.permission-clock {
+  color: var(--color-text-soft);
   font: 500 10.5px var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
-.tool-params dd {
-  margin: 2px 0 0;
+.permission-summary {
+  color: var(--color-text);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+/*
+ * The question is what Lumine is saying *right now*, so it is the largest thing
+ * on the card and the only thing in the assertive live region. It is deliberately
+ * not a heading: the sentence is the message, and a heading above it would make
+ * the eye read the class label as the subject.
+ */
+.permission-question {
+  color: var(--color-text);
+  font-size: 14.5px;
+  line-height: 1.45;
+  font-weight: 500;
+}
+
+/*
+ * The exact target, set apart from the sentence. A message recipient or a
+ * browser address is a *value to check*, not more prose, so it gets its own row,
+ * a monospaced face, and a label -- the difference between reading and trusting.
+ */
+.permission-detail {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+.permission-detail-label {
+  flex: 0 0 auto;
+  color: var(--color-text-soft);
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.permission-consequence {
   color: var(--color-text-soft);
   font-size: 11.5px;
-  line-height: 1.5;
+  line-height: 1.45;
+}
+
+.permission-target {
+  align-self: flex-start;
+  min-width: 0;
+  padding: 2px 7px;
+  border-radius: 6px;
+  color: var(--color-text-soft);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  font: 500 10.5px var(--font-mono);
+  /* A long address must not push the buttons off the card. Clipped rather than
+     wrapped: a wrapped URL is hard to read aloud and harder to compare. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.permission-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/*
+ * The hint has nowhere else to go on a narrow card, so it takes its own line
+ * when the buttons cannot share one. Voice consent is not a fallback -- it is
+ * the other half of the same request -- and a user who cannot click should
+ * learn that from the card, not from failing to find a button.
+ */
+.permission-hint {
+  margin-right: auto;
+  color: var(--color-text-soft);
+  font-size: 11.5px;
+}
+
+.permission-allow {
+  padding: 8px 16px;
+  border-radius: 10px;
+  color: var(--color-stage-text);
+  background: var(--color-accent);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.permission-deny {
+  padding: 8px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.permission-allow:disabled,
+.permission-deny:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 560px) {
+  .permission-actions {
+    flex-wrap: wrap;
+  }
+
+  .permission-hint {
+    flex-basis: 100%;
+    margin-right: 0;
+  }
 }
 
 .avatar-lab-page {
@@ -1416,7 +1947,6 @@ input {
    the panel is a column instead of a row, so the call strip's height is a
    property of the call strip and nothing else can move it. */
 .main-space {
-  --call-h: 84px;
   --panel-w: 0px;
   /* Two horizontal rhythms, and both are declared once.
 
@@ -2058,6 +2588,23 @@ input {
   background: var(--color-danger);
 }
 
+/* The one rule the transcript scroller needs that no utility class says.
+
+   `overscroll-behavior: contain` because every other scroller in this app
+   declares it — the widget strip, the notes list, the dropdown, the settings
+   panes — and the transcript was the only one that did not, so a wheel gesture
+   that reached the end of the transcript kept travelling up into the shell
+   instead of stopping where the text stops.
+
+   `scroll-padding-bottom` is what keeps the last bubble clear of the composer
+   when the panel is scrolled to its end: without it the final row's *padding*
+   counts as scrollable overflow and the reader lands with a message's tail
+   tucked under the composer's top edge. */
+.conversation-scroll {
+  overscroll-behavior: contain;
+  scroll-padding-bottom: 8px;
+}
+
 .conversation-list {
   display: flex;
   flex-direction: column;
@@ -2528,25 +3075,36 @@ input {
 
 /* The greeting, and only the greeting.
 
-   The bottom padding is the clearance above the two corner instruments, and it is
-   a `clamp` on *height* rather than the `110px` this was at one fixed width. Both
-   blocks are anchored to the stage's bottom edge, so what separates them is a
-   vertical number — and a vertical number on a window 600px tall has to be a
-   different one from the same window at 1080, or one of the two stops fitting.
-   The old value also only applied above 1050px, so on a laptop the two blocks
-   overlapped and only a short headline saved you. */
-/* The padding exists to clear the corner instruments, which are absolutely
-   positioned off the stage floor — not to make a gap. `9vh` tracks the clock's
-   own growth (`bottom: 3vh` plus a `2.6vh` figure) instead of outrunning it, so
-   at 900 tall it is 76px against a clock top edge at 71px, where the old
-   `clamp(38px, 12vh, 100px)` was 100px against the same 71px. That 24px is the
-   stage presence's growth budget; taking it from here rather than from the
-   widget band keeps the banner band's height contract untouched. */
+   The bottom padding exists to clear the corner instruments, which are
+   absolutely positioned off the stage floor — not to make a gap, and not in
+   two curves. This used to be a pair of clamps (`9vh` above a height
+   breakpoint, `11vh` below it) *plus* an `8vh` Tailwind utility on the
+   element itself, and the utility was the one that ran: utilities sit in a
+   later cascade layer than this file's components layer, so `pb-[8vh]`
+   silently replaced both clamps with 48px at 800x600 against a clock whose
+   top edge reaches 56px — the greeting ran into the clock while the measured
+   rule went unwritten. One value, one place, no utility on the element.
+
+   The value is the clock's own geometry plus ten, written out: the clock's
+   top edge is its `bottom: clamp(18px, 3vh, 32px)` plus a `17px` body plus
+   its figure's `clamp(21px, 2.6vh, 26px)`, so this expression is that sum
+   plus the clearance. Not `3vh + 48px`, which was the first draft here and
+   only tracks the *bottom* term: above ~807px tall the figure starts growing
+   at 2.6vh while a slope of 3vh keeps its distance from the bottom — at
+   1080 the two drift apart to a single pixel of daylight between the clock
+   and the headline. Both clamps are the clock's clamps, so they cannot be
+   changed in one place without the gap changing in the other, and the sum
+   has its own floors and caps: 66px at the bottom (the 800x600 measurement),
+   85px at the top, 10px of daylight everywhere between.
+
+   That 66px floor is also the number `.presence`'s row-fit envelope above was
+   measured against: this curve and that one are a pair, and changing one
+   changes the other's rows. */
 .stage-copy {
   position: relative;
   z-index: 2;
   align-self: end;
-  padding-bottom: clamp(34px, 9vh, 76px);
+  padding-bottom: calc(clamp(18px, 3vh, 32px) + clamp(21px, 2.6vh, 26px) + 27px);
   text-align: center;
   animation: rise 0.5s both;
 }
@@ -2610,18 +3168,47 @@ input {
    Lumine presence / avatar
    ========================================================================== */
 
-/* The avatar scales with the window, and it has to: the stage is a band with a
-   ceiling now, not whatever height the window happens to have left over, so a
-   fixed 270px square would be the one thing in the section that refused to fit
-   it. The height is what drives the clamp, because the band's height is the
-   budget this has to share with the greeting above it.
+/* The avatar is the size of the Avatar Lab's, and the ceiling is where that
+   arithmetic lands: `.avatar-lab-face` is a flat `250px`, `.presence-body` is
+   `64.4%` of this square, so `250 / 0.644 = 388.2`. At the 800x600 this app
+   opens at, the flat 256px this element was pinned to rendered a 165px disc
+   against the lab's 250px — the "the home screen has a miniature of it" read,
+   on the window the app opens on.
 
-   `33vh` rather than `30vh`, and `150px` rather than `140px` at the floor. The
-   growth is paid for out of `.stage-copy`'s `padding-bottom`, not out of the
-   widget band: that padding was `clamp(38px, 12vh, 100px)` — 100px of dead
-   space at 900 tall, against a corner clock whose top edge reaches only 71px
-   above the stage floor. It is now sized against the clock rather than against
-   the window, which is where the extra 3vh comes from.
+   ONE curve, at every height, and there is no height breakpoint any more.
+   Two envelopes meet inside the expression and `min()` picks the lower:
+
+   - `38.8vh` is the design ramp: it reaches the 388px ceiling at ~1000 tall
+     and above that the ceiling holds. This is the sizing story on any window
+     with room to spare.
+   - `calc(75.2vh - 290px)` is the row-fit envelope, and it is a measured
+     line, not a taste. The stage is a band — `grid-template-rows: 72px
+     minmax(0, 1fr) auto` — so the avatar's row is whatever the window has
+     left after the header, the greeting and the widget band below. Measured
+     at 147px at 800x600 (transcript open, greeting wrapped to two lines),
+     256 at 760, 349 at 900, 469 at 1080 — the last two measured with the
+   greeting's taller-window padding. `.orbit-one` spans `90.4%` of this
+     square, so the outer ring fits the row exactly when the square is at
+     most `row / 0.904` — and that quotient *is* this line: at 600 it allows
+     162.6px and the line gives 161.2, at 760 it allows 283.4 and the line
+     gives 281.5. A margin of roughly 1.5px everywhere, the same "within a
+     few pixels of the largest square that fits" the old two-branch rule was
+     measured to.
+
+   The jump the old `max-height: 760px` branch caused — disc crossing 142px
+   to 190px while a window was dragged through 760 — is gone with the branch:
+   this expression is continuous, so 760 and 761 differ by under a pixel.
+   The Lab itself still cannot be copied wholesale, and the reason is the
+   page, not the avatar: the Lab is a scrolling document whose stage measured
+   771px at every window height tried, because nothing constrains it. The home
+   stage is the band this envelope was measured against.
+
+   And no Tailwind utility may ever size this element again. `w-full h-full`
+   was on it, and utilities cascade in a *later layer* than the components
+   layer this file is written in: the pin won, every clamp above was dead
+   stylesheet, and the avatar sat at a flat 256px at every window size —
+   overflowing a 147px row at 800x600 while starving a 468px one at 1080.
+   The rule that keeps this honest is written on the element in Presence.tsx.
 
    Width and height are the *same expression*, on purpose and permanently: this
    square is the aspect ratio, and `.presence-body` at `64.4%` and its object at
@@ -2630,8 +3217,8 @@ input {
    being a badge. */
 .presence {
   position: relative;
-  width: clamp(150px, 33vh, 440px);
-  height: clamp(150px, 33vh, 440px);
+  width: clamp(150px, min(38.8vh, calc(75.2vh - 290px)), 388px);
+  height: clamp(150px, min(38.8vh, calc(75.2vh - 290px)), 388px);
   display: grid;
   place-items: center;
 }
@@ -2646,11 +3233,20 @@ input {
    same reason the body is: at `inset: 52px` a fixed ring stops meaning the same
    thing the moment the square stops being 270px, and halo-two in particular
    would have slipped *behind* the body at the small end — invisible, in a rule
-   nobody would think to check. */
+   nobody would think to check.
+
+   This is also why growing `.presence` needed no change here. All four are
+   percentage insets, so scaling the square scales the whole ring assembly with
+   it — same insets, same blur-free hairlines, same two spin directions, same
+   12s/8s periods. The design is preserved by not being touched. The two
+   *glows* are the exception, because `filter: blur()` and `box-shadow` are
+   absolute lengths and a 24px blur on a 324px halo is a visibly tighter edge
+   than the same blur on a 174px one; they carry the Lab's values at the new
+   ceiling below. */
 .halo-one {
   inset: 8.15%;
   background: color-mix(in srgb, var(--color-accent) 18%, transparent);
-  filter: blur(24px);
+  filter: blur(30px);
   animation: breath 5s ease-in-out infinite;
 }
 
@@ -2690,7 +3286,7 @@ input {
     color-mix(in srgb, var(--color-avatar) 38%, white),
     var(--color-avatar)
   );
-  box-shadow: 0 0 56px color-mix(in srgb, var(--color-avatar) 38%, transparent);
+  box-shadow: 0 0 64px color-mix(in srgb, var(--color-avatar) 38%, transparent);
   /* The `animation: avatar-float` that was here is gone, and the three
      state-dependent cycles below it with it.
 
@@ -2836,17 +3432,22 @@ input {
   box-shadow: none;
 }
 
+/* The only thing grounding the face in this mode — the disc has no gradient and
+   no glow above to do it — so it has to scale with the disc or it stops being a
+   contact shadow and becomes a hairline under a much larger head. The horizontal
+   inset is already a percentage and was left alone; the three lengths are the
+   disc's `5 / 11 / 8px` carried onto its new 250px size at the same `2.23`. */
 .presence--no-color .presence-body::after {
   content: "";
   position: absolute;
   z-index: -1;
   right: 18%;
-  bottom: 5px;
+  bottom: 11px;
   left: 18%;
-  height: 11px;
+  height: 25px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--color-stage) 48%, transparent);
-  filter: blur(8px);
+  filter: blur(18px);
 }
 
 .presence--listening .orbit-one {
@@ -2864,8 +3465,12 @@ input {
   animation-duration: 2s;
 }
 
+/* The speaking glow keeps its ratio to the resting one rather than its old
+   absolute size: `78 / 56 = 1.39`, carried onto the new `64px` base. Scaling
+   only the base would have made speaking *less* emphatic than it was, because
+   the pair would have moved toward each other. */
 .presence--speaking .presence-body {
-  box-shadow: 0 0 78px color-mix(in srgb, var(--color-avatar) 68%, transparent);
+  box-shadow: 0 0 89px color-mix(in srgb, var(--color-avatar) 68%, transparent);
 }
 
 .presence--speaking .presence-body object {
@@ -2892,30 +3497,320 @@ input {
 }
 
 /* ==========================================================================
+   Notifications
+   ========================================================================== */
+
+/* Two of this file's numbers belong on `:root` rather than on the element that
+   first needed them, because the notification stack is portalled to `<body>` and
+   is therefore not a descendant of either.
+
+   `--sidebar-width` was already declared twice for exactly this reason — once on
+   `:root` for portalled surfaces and once on `.lumine-app` for the grid — so this
+   is the established pattern and not a new one. `--call-h` moves here rather than
+   being copied: `.main-space` inherits it unchanged, so the call strip's height
+   and the notification stack's clearance are still one number.
+
+   The collapsed rail is a class rather than a variable so it can be observed from
+   `:root`; `useDocumentTheme` mirrors the theme for the same reason and mirrors
+   this alongside it. */
+:root {
+  --call-h: 84px;
+}
+
+@media (min-width: 781px) {
+  :root {
+    --sidebar-width: 204px;
+  }
+}
+
+:root.is-nav-collapsed {
+  --sidebar-width: 64px;
+}
+
+/* The count of notifications the viewport has folded away, as a caption above the
+   cards rather than as another card.
+
+   Everything else about a toast is a Tailwind utility on the component, because it
+   is all theme-token work and `cn()` already merges it. This one is CSS because
+   it is chrome *around* the stack rather than part of it — and because it has to
+   be a plain pill, centred on its own measure, which is not a thing a full-width
+   flex child can be.
+
+   `pointer-events: none` is on the component rather than here, because the
+   component owns the interaction surface of its own children. */
+.toast-overflow {
+  background: color-mix(in srgb, var(--color-text) 7%, var(--color-surface));
+}
+
+/* ==========================================================================
    Activity timeline
    ========================================================================== */
 
-/* A 3px edge in the row's tone, rather than a coloured dot.
-   A dot has to be looked at; an edge is read peripherally, which is what a
-   timeline wants — you are scanning for the one red line, not reading. */
-.activity-timeline,
-.activity-timeline-head {
-  padding: 0 42px;
-}
+/* The page is a `.workspace-view` like Tools and Memory, so it has a shell that
+   owns the gutter and the canvas. What is left here is the surface that is
+   genuinely its own.
 
-.activity-timeline {
+   `is-column` is the one addition. `.workspace-view` scrolls its whole contents,
+   which is right for Tools — the grid can be taller than the window — and wrong
+   for a live log: the header would scroll away and the strip would always show a
+   scrollbar for a list that is only a few lines long. So this variant makes the
+   page a column and hands the overflow to the list, which is the element that has
+   something to scroll. */
+.workspace-view.is-column {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  height: 100%;
+  overflow: hidden;
+  /* The shared gutter is 58px on *both* edges because these pages scroll and the
+     bottom of a scrolling page should match its top. This one does not scroll:
+     the list inside it does, and it is pinned to the tail. A 58px band under a
+     live log is 58px of the log nobody sees, so the bottom gutter is trimmed to
+     the same 16px the tab strip uses. */
+  padding-bottom: 16px;
 }
 
+.activity-page {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  /* `width: 100%` is not redundant next to `container-type`. That declaration
+     applies inline-size containment, and containment stops the element taking
+     its inline size from the way a stretched flex item otherwise does — the page
+     collapsed to the width of its longest unbreakable word. */
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  /* The counters and the tab strip below both size themselves against *this*
+     box, not the window — the rail folding and the panel opening change what fits
+     without changing a single pixel of viewport, which no `@media` can observe.
+     `.widget-strip` already declares this for the same reason. */
+  container-type: inline-size;
+}
+
+/* The heading, the counters and the list are one measure. The shared
+   `.workspace-header` caps itself at 860px because it is a paragraph with a
+   button beside it; here it would leave the trash icon 140px in from the edge of
+   the list under it, which reads as two things that do not belong to each other. */
+.activity-page > .workspace-header {
+  max-width: none;
+}
+
+/* The strip's own 40px gutters are for the settings overlay, whose panes are
+   narrower than this page and need the breathing room. Here they would pull the
+   strip in from both edges of the list it filters.
+
+   The top padding is reduced for the same reason as the card padding below: at
+   the 800x600 this app opens at, everything above the list is competing with the
+   list, and the log is the only part of this page anybody scrolls. */
+.activity-page .settings-tabs-bar {
+  padding: 12px 0 0;
+}
+
+.activity-surface {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  margin-top: 16px;
+}
+
+/* The scroll region, named so the reason it is a flex column is in one place.
+
+   `.activity-surface` hands its leftover height to exactly one child, and that
+   child has to be a flex column for the hand-off to reach the list inside it. */
+.activity-scroll-region {
+  min-height: 0;
+}
+
+/* On a phone the shell stops being a column: the window itself scrolls, so a
+   flex column with `overflow: hidden` would leave the list with no height at all
+   rather than a short one. The list gets a cap instead of a share. */
+@media (max-width: 780px) {
+  .workspace-view.is-column {
+    display: block;
+    overflow: visible;
+  }
+
+  .activity-page {
+    display: block;
+  }
+
+  .activity-surface {
+    margin-top: 18px;
+  }
+
+  .activity-list {
+    max-height: 62vh;
+  }
+}
+
+/* Five counters across the top, in the same raised-surface language as a tool
+   card. They are a *summary*, not a filter, and they are deliberately not
+   buttons: a number that looks pressable and does nothing is worse than a
+   number that plainly is one.
+
+   The column count is a container query rather than `auto-fit`, because five
+   cards at a fixed minimum wrap into a ragged 3 + 2 at every width in between.
+   Stated as three exact steps — five across, then three, then one — the row is
+   either full or clearly stacked. */
+.activity-stats {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+@container (min-width: 420px) {
+  .activity-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@container (min-width: 660px) {
+  .activity-stats {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+.activity-stat {
+  padding: 11px 14px 10px;
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
+}
+
+.activity-stat-label {
+  display: block;
+  margin: 0 0 4px;
+  font: 500 9px var(--font-mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+.activity-stat-value {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font: 500 20px/1.1 var(--font-display);
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-stat-unit {
+  font: 500 10.5px var(--font-ui);
+  letter-spacing: 0;
+  color: var(--color-text-faint);
+}
+
+/* The one counter worth interrupting for is coloured; the rest are neutral. A
+   page where every number is red is a page where none of them is. */
+.activity-stat.is-alert .activity-stat-value {
+  color: var(--color-danger);
+}
+
+/* One day, one box.
+
+   A sticky day label moves only while its containing block is in the scrollport,
+   and a containing block is its parent — so with one `<li>` per row the label
+   held for a single row's height and then scrolled away with it. A day being one
+   `<li>` is what makes the label follow the whole day. */
+.activity-day-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Day separators. A log with no dates is a wall of lines; the eye needs to know
+   how far back it is looking, and that is the one fact a row cannot carry
+   without repeating it two hundred times.
+
+   `margin: 0` is here rather than as a utility because this is an `<h2>`: a
+   heading inside a list item gets the document's heading margins by default, and
+   a 24px gap on top of a sticky separator pushes the first row of each day out
+   from under its own label. */
+.activity-day {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 2px 7px;
+  /* Opaque, with a five-pixel fade on its own lower edge.
+     A half-transparent label reads as a smudge: rows scroll *underneath* it, and
+     the row that is half under it is half readable, which is the one thing a
+     section label must not be. The fade is there so it reads as floating over the
+     list rather than as a solid bar glued to the scrollport's top edge. */
+  background: linear-gradient(to bottom, var(--color-canvas) 0 calc(100% - 5px), transparent);
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-faint);
+}
+
+.activity-day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding-bottom: 18px;
+  /* Chain the scroll into the page, not out of it: a wheel gesture at the top of
+     the timeline used to carry on into the shell and scroll the whole window
+     while the list itself was already where it could go. */
+  overscroll-behavior: contain;
+  overflow-y: auto;
+  /* A visible scrollbar here, and the reason is this page specifically. The
+     transcript and the widget band hide theirs because they follow the tail and
+     there is nothing to find; a log is read *by* scrolling — to look up what
+     happened before a failure, or after a slow turn — and a list that scrolls
+     invisibly is indistinguishable from a list that does not scroll. This is the
+     same `thin` treatment the settings panes use. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.activity-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.activity-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.activity-list::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+.activity-list:hover::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-text-faint) 60%, transparent);
+  background-clip: content-box;
+}
+
+/* A 2px edge in the row's tone, rather than a coloured dot. A dot has to be
+   looked at; an edge is read peripherally, which is what a timeline wants — you
+   are scanning for the one red line, not reading. */
 .activity-row {
   position: relative;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
-  padding: 8px 12px 8px 15px;
+  padding: 9px 12px 9px 14px;
   border-radius: 8px;
   transition: background-color 140ms ease;
 }
@@ -2924,8 +3819,36 @@ input {
   background: color-mix(in srgb, var(--color-text) 3.5%, transparent);
 }
 
-/* Above the list, not fixed to the bottom: a timeline's "there is more below" sits
-   at the end of what is visible. */
+/* The glyph sits in a tinted chip for the same reason a toast's does: a bare
+   outline next to two lines of text is decoration, and a chip is a category. */
+.activity-row-glyph {
+  margin-top: 1px;
+  border-radius: 7px;
+  background: color-mix(in srgb, currentColor 12%, var(--color-surface));
+}
+
+/* The measurement a latency row exists to carry. Mono and tabular so a column of
+   them lines up and a 40 ms row is visibly different from a 400 ms one — which
+   is the entire reason this page is worth having. */
+.activity-row-ms {
+  margin-top: 2px;
+  padding: 1px 5px 2px;
+  border-radius: 5px;
+  font: 500 10px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  color: var(--color-text-faint);
+  background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  white-space: nowrap;
+}
+
+.activity-row-ms.is-slow {
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 14%, transparent);
+}
+
+/* Above the list, not fixed to the bottom: a timeline's "there is more below"
+   sits at the end of what is visible. */
 .activity-jump {
   position: absolute;
   left: 50%;
@@ -3245,15 +4168,186 @@ input {
  * statement of that reads as a video call with one participant who cannot see
  * you. The badge says which it is, in five words.
  */
+/* Anchored to the stage, not to the avatar box. It used to live *inside*
+   `.stage-presence` — `top: 18px; right: 18px` of a container whose size the
+   avatar clamp decides — so a fixed 176px card rode on top of her face at
+   every size, and at the small end outgrew the container it was pinned to.
+   It is now a sibling of the presence and takes the stage's own chrome
+   rhythm: `--stage-gutter` is the same number the date and the corner clock
+   are read against, and `top: 84px` is the 72px header row plus the same
+   12px the share strip below leaves.
+
+   Above the avatar, and the reason is still paint order rather than DOM
+   order: `.presence-body` is `position: relative` with `z-index: 1`, and a
+   positive z-index paints in a later layer than a positioned element left at
+   `auto` (CSS 2.1 Appendix E, step 8 vs step 9) — the disc covered this card
+   corner for corner before. `2` rather than a big number, inside the stage's
+   own stacking context (`.command-stage` isolates): above the presence (1),
+   at the same level as `.stage-copy` but *earlier* in tree order, so a
+   greeting that grows up into this corner still wins, and below
+   `.stage-gate` (3).
+
+   Width follows the stage by container query unit rather than staying 176px:
+   the stage's width is a variable — whole width with the transcript shut,
+   ~380px less with it open — and `22cqw` is exactly the old 176px at the
+   800px window this app opens at, growing to 210px on a wide stage and
+   never dropping below 140px when the transcript starves it. */
 .self-view {
   position: absolute;
-  top: 18px;
-  right: 18px;
-  width: 176px;
+  top: 84px;
+  right: var(--stage-gutter);
+  z-index: 2;
+  width: clamp(140px, 22cqw, 210px);
   border-radius: 14px;
   overflow: hidden;
   background: var(--color-surface);
   box-shadow: var(--elevation-3);
+}
+
+/*
+ * The screen-share status strip, across the top of the stage under its header
+ * row.
+ *
+ * The preview in the corner answers "what am *I* looking at"; this answers the
+ * question a share is actually anxious about — "is she receiving it right now".
+ * A corner card cannot ask it: the same card shows for a capture that was
+ * deliberately never published (a model with no image input), and a person
+ * reading only the picture would conclude the wrong one. So the strip states
+ * the fact from `isVideoPublished`, in the same two phrases the preview's own
+ * badge uses — "Lumine can see this screen" / "Only you can see this" — so
+ * the corner and the strip can never disagree.
+ *
+ * `role="status"`, not a control. Starting and stopping is the CallBar's job,
+ * and two stop buttons are one confirmation too many. It is also absolute, not
+ * a grid row: a strip that grew the stage by a line would shove the avatar and
+ * the greeting down every time a share started — the same mistake as the `<p>`
+ * that used to grow the call strip, and for the same reason.
+ *
+ * The pip is static on purpose. The share's truth is the sentence beside it,
+ * not a pulse, and a dot that beat would be one more animation for
+ * prefers-reduced-motion to answer for.
+ *
+ * Translucent, and of necessity: measured at 800x600 the avatar's outer ring
+ * reaches to 72.6px — the strip's own first pixel — and stays under it until
+ * about 920px tall, so this band always crosses the orbit hairlines on a
+ * short window. An opaque bar would cut a spinning arc in two at its edge;
+ * letting the rings show through makes the crossing read as one layer over
+ * another, which is what it is. Below about 705px tall the band also laps
+ * the top of the disc — 12px of it at 800x600, the window this app opens
+ * at — which is the same argument one level down: glass, not paint, so what
+ * passes under the strip stays visible. */
+.share-strip {
+  position: absolute;
+  top: 72px;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 0 var(--stage-gutter);
+  color: var(--color-stage-text-soft);
+  background: color-mix(in srgb, var(--color-accent) 10%, color-mix(in srgb, var(--color-stage) 58%, transparent));
+  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  font-size: 12px;
+}
+
+.share-strip-pip {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.share-strip-label {
+  font: 500 10px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--color-stage-text);
+  white-space: nowrap;
+}
+
+.share-strip-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-strip-state.is-shared {
+  color: var(--color-accent);
+}
+
+/* Below 460px of stage — the transcript open on the 800px window this app
+   opens at — the mono label is the first thing to go. The pip and the state
+   sentence are the payload; "SCREEN SHARING" beside a sentence that begins
+   with "Screen sharing" is the redundant half. */
+@container (max-width: 460px) {
+  .share-strip-label {
+    display: none;
+  }
+}
+
+/* The preview steps down when a strip is present, which is what the sibling
+   combinator is for: `.share-strip` is rendered *before* `.self-view` in
+   MainSpace, so this rule — and only this rule — moves the card. 72px header
+   row + 34px strip + the same 12px the strip itself leaves, and a smaller
+   card, because a share is exactly the state where the stage is shortest
+   (the strip's window is the 800x600 one) and a card that clears the greeting
+   is a card that got out of its way. The floor is 126px rather than 116: the
+   bar's badge alone measures 103.5px and it sits inside card-minus-18px of
+   padding, so 116 left the share badge five pixels short of the edge it
+   clips at. */
+.share-strip ~ .self-view {
+  top: 118px;
+  width: clamp(126px, 18cqw, 190px);
+}
+
+/* The bar states two facts — which source this is, and whether the room can
+   see it — and only one of them is load-bearing: `Only you can see this` is
+   the sentence for someone who has just been asked to trust a camera. Measured
+   at their real classes: source icon + label 38.2px, camera badge 109.1px,
+   share badge 103.5px, so the pair wants 155.3px inside card-minus-18px. The
+   label is the redundant half whenever the pair stops fitting — the strip
+   above says "Lumine can see this screen" out loud during a share, and the
+   icon says "camera" without words — so below these container widths it goes
+   and the badge keeps the whole line. `position: absolute` rather than
+   `display: none`, and deliberately: the element carries Tailwind's own
+   `inline-flex`, and utilities out-rank this file's components layer — the
+   same rule that made the old presence clamp dead. Absolute + invisible wins
+   on properties no utility sets, and it frees the line for the badge. The
+   badge takes the space with `margin-left: auto`, so it stays on the right
+   whether the label is there or not.
+
+   The thresholds are the fit points, rounded out: 800px of stage gives a
+   camera card of 176px (158px inside, 155.3 needed), and 950px with a strip
+   gives 171px (153px inside, 149.7 needed). */
+@container (max-width: 800px) {
+  .self-view-source {
+    position: absolute;
+    visibility: hidden;
+  }
+}
+
+@container (max-width: 950px) {
+  .share-strip ~ .self-view .self-view-source {
+    position: absolute;
+    visibility: hidden;
+  }
+}
+
+/* Backstop for the badge itself: nowrap is a utility on it, so a bar tighter
+   than the badge clips rather than wraps — this lets it shrink and ellipsize
+   instead, and `margin-left: auto` holds it to the right edge either way. */
+.self-view-badge {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .self-view-video {
@@ -3271,9 +4365,236 @@ input {
   transform: none;
 }
 
+/* The browser preview: what Lumine's own browser window is showing.
+ *
+ * Placed *below* the self-view rather than beside it, and for a reason that is
+ * about honesty rather than layout. When both are up, they are two different
+ * views — the user's camera and a page Lumine is driving — and putting them side
+ * by side in the same corner treatment would invite the reading that they are the
+ * same thing. Stacked, the eye reads them as two separate facts, which is what
+ * they are.
+ *
+ * `object-fit: contain`, unlike the camera's `cover`: this is a screenshot of a
+ * document, and cropping the edge off a page hides the control that was probably
+ * the reason for the screenshot. The letterboxing is the honest outcome.
+ *
+ * Wider and lower than the self-view, because a web page is a wide, short thing
+ * and a cropped portrait card would show a stripe of a page. */
+.browser-preview {
+  position: absolute;
+  top: 84px;
+  right: var(--stage-gutter);
+  z-index: 2;
+  width: clamp(180px, 28cqw, 300px);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--color-surface);
+  box-shadow: var(--elevation-3);
+}
+
+/* Both cards up: the self-view drops below the preview rather than overlapping
+   it. `:has()` rather than a JS class because the *presence* of the preview is
+   the whole condition — there is no state to mirror into a prop, and a prop that
+   had to be kept in step with the sibling's existence is a prop that will not be.
+   The offset is the card's own height plus the gap; 210px is its clamp ceiling
+   plus the bar, so the two cannot touch at any window size. */
+.self-view:has(+ .browser-preview) {
+  top: 330px;
+}
+
+.browser-preview-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: contain;
+  background: #11100f;
+}
+
+.browser-preview-failed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  aspect-ratio: 16 / 10;
+  padding: 0 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--color-text-soft);
+  background: var(--color-surface-muted);
+}
+
+.browser-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 9px;
+  background: var(--color-surface);
+  font-size: 11px;
+}
+
+.browser-preview-host {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-soft);
+}
+
+/* The badge states what the picture is: something Lumine *can* see. It does not
+ * say she is reading it, because a screenshot reaches her context only when the
+ * model explicitly asks — the picture here is evidence about the browser, not a
+ * claim about the model. Same rule as the self-view badge, and the same two
+ * phrases, so the corner can never contradict itself. */
+.browser-preview-badge {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+
+/* The label line goes first when the bar gets tight: the host is the recoverable
+ * half, and the age is decoration on top of a fact the picture already shows. */
+@container (max-width: 800px) {
+  .browser-preview-host {
+    position: absolute;
+    visibility: hidden;
+  }
+}
+
 .self-view-badge.is-shared {
   color: var(--color-accent);
   background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+/* --- desktop preview -------------------------------------------------------
+   The window `desktop_control` is working in. Metadata rather than a picture,
+   because the tool reads the accessibility tree rather than capturing pixels --
+   so this is a short list of facts, not an image.
+
+   It sits above the browser preview rather than beside it, because the desktop
+   tool is the one that moves the user's pointer: when both are up, it is the one
+   they need to read first. The browser preview is pushed down by the same
+   amount as the self-view is, so the three cards stack instead of overlapping. */
+.desktop-preview {
+  position: absolute;
+  top: 84px;
+  right: var(--stage-gutter);
+  z-index: 3;
+  width: clamp(200px, 30cqw, 320px);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--color-surface);
+  box-shadow: var(--elevation-3);
+}
+
+.desktop-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px;
+  background: var(--color-surface);
+  font-size: 11px;
+}
+
+.desktop-preview-window {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--color-text-soft);
+}
+
+/* The window title is the half worth keeping when the bar gets tight -- it is
+   the one fact that tells a user whether she is in the window they meant. */
+.desktop-preview-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* States what the agent currently holds: this is the one card on screen that
+ * means "she has the mouse and keyboard". A different colour from the browser
+   badge on purpose -- a page she is looking at and a screen she is controlling
+ * are not the same claim, and the corner must never let them read alike. */
+.desktop-preview-badge {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+  font-size: 10px;
+  letter-spacing: 0.01em;
+}
+
+.desktop-preview-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 0 9px 7px;
+  background: var(--color-surface);
+}
+
+.desktop-preview-fact {
+  font-size: 10.5px;
+  color: var(--color-text-soft);
+}
+
+/* A fact the user can act on. Warn is not "error": nothing here has failed, it
+ * is a limitation worth knowing about -- a screen with no names still works on
+ * a coordinate, it just always asks. */
+.desktop-preview-fact.is-warn {
+  color: var(--color-warning, var(--color-text));
+}
+
+.desktop-preview-fact.is-quiet {
+  opacity: 0.66;
+}
+
+/* The DPI line is the only prose in the card, and it is prose because it is the
+ * one thing a user cannot infer: the clicks will look slightly wrong with no
+ * error anywhere, and "scale the display to 100%" is the actual fix. */
+.desktop-preview-warning {
+  margin: 0;
+  padding: 7px 9px;
+  border-top: 1px solid color-mix(in srgb, var(--color-text) 10%, transparent);
+  background: color-mix(in srgb, var(--color-warning, var(--color-text)) 10%, transparent);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--color-text-soft);
+}
+
+/* When both cards are up, the browser preview drops below the desktop one. The
+   offset is the desktop card's own height plus the gap; 150px clears its bar,
+   its fact row, and a one-line warning. */
+.desktop-preview ~ .browser-preview {
+  top: 234px;
+}
+
+.self-view:has(+ .browser-preview) {
+  top: 330px;
+}
+
+@container (max-width: 800px) {
+  .desktop-preview-title {
+    max-width: 96px;
+  }
 }
 
 .local-models-list button {
@@ -3306,6 +4627,348 @@ input {
   color: var(--color-text-faint);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
+}
+
+/* ==========================================================================
+   Music library
+
+   A file list is not presence, so nothing here moves. One accent marks hover
+   and one marks the row being played; the rest is type and spacing. Every
+   colour is an existing token -- this section introduces no palette, because a
+   screen with its own colours is a screen that has to be maintained twice.
+   ========================================================================== */
+
+.music-status-row {
+  align-items: baseline;
+}
+
+.music-status {
+  min-width: 0;
+  text-wrap: pretty;
+}
+
+.music-search-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  height: 34px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition: border-color 140ms ease;
+}
+
+.music-search-field:focus-within {
+  border-color: var(--color-accent);
+}
+
+.music-search-field .music-icon {
+  flex: none;
+  color: var(--color-text-faint);
+}
+
+.music-search-field input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  font-size: 12.5px;
+  color: var(--color-text);
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.music-search-field input::placeholder {
+  color: var(--color-text-faint);
+}
+
+/* The native clear affordance is a second X next to ours. */
+.music-search-field input[type="search"]::-webkit-search-cancel-button {
+  display: none;
+}
+
+.music-search-clear {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--color-text-faint);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+
+.music-search-clear:hover {
+  color: var(--color-text);
+}
+
+.music-search-hint {
+  margin: 6px 2px 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--color-text-faint);
+}
+
+/* Two columns only when there is a rail to put beside the list. A rail beside a
+   single album wastes a third of the width for nothing. */
+.music-body {
+  display: grid;
+  gap: 14px;
+}
+
+.music-body:has(.music-playlists) {
+  grid-template-columns: minmax(120px, 168px) minmax(0, 1fr);
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .music-body:has(.music-playlists) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.music-playlists {
+  position: sticky;
+  top: 0;
+}
+
+.music-rail-label {
+  margin: 0 0 5px 8px;
+  font-size: 10.5px;
+  color: var(--color-text-faint);
+}
+
+.music-playlists button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  text-align: left;
+  color: var(--color-text-soft);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.music-playlists button:hover {
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+}
+
+.music-playlists button.is-current {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  font-weight: 500;
+}
+
+.music-rail-name {
+  min-width: 0;
+}
+
+.music-rail-count {
+  margin-left: auto;
+  flex: none;
+  font-size: 10.5px;
+  color: var(--color-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.music-track {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+  border-radius: var(--radius-sm);
+  transition: background-color 140ms ease;
+}
+
+.music-track:hover {
+  background: color-mix(in srgb, var(--color-canvas) 60%, transparent);
+}
+
+/* The name and the play button are one target. Two buttons per row for one
+   action is one too many to hit on a list. */
+.music-track-main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  text-align: left;
+  color: var(--color-text);
+  font-size: 12.5px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.music-track-main:disabled {
+  cursor: progress;
+}
+
+.music-track-name {
+  min-width: 0;
+  font-weight: 500;
+}
+
+/* A version is a tag, not part of the title -- which is the whole reason two
+   tracks can share a name and still be distinguishable. */
+.music-tags {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.music-tag {
+  padding: 1px 5px;
+  font-size: 10px;
+  letter-spacing: 0.01em;
+  color: var(--color-text-faint);
+  background: color-mix(in srgb, var(--color-canvas) 75%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.music-track-folder {
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-text-faint);
+}
+
+.music-track-score {
+  flex: none;
+  font-size: 10.5px;
+  color: var(--color-text-faint);
+}
+
+.music-track-play {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  margin-right: 4px;
+  color: var(--color-text-soft);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.music-track-play:hover:not(:disabled) {
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+.music-track-play:disabled {
+  cursor: progress;
+  color: var(--color-accent);
+}
+
+/* Three bars, not a spinner: it means "this one is playing", not "waiting". */
+.music-eq rect {
+  transform-origin: center;
+  animation: music-eq 900ms ease-in-out infinite;
+}
+
+.music-eq rect:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.music-eq rect:nth-child(3) {
+  animation-delay: 280ms;
+}
+
+@keyframes music-eq {
+  0%,
+  100% {
+    transform: scaleY(0.55);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .music-eq rect {
+    animation: none;
+  }
+}
+
+.music-count,
+.music-empty {
+  padding: 10px 8px;
+  font-size: 11.5px;
+  color: var(--color-text-faint);
+}
+
+.music-skeleton {
+  display: block;
+  height: 11px;
+  margin: 9px 8px;
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+  border-radius: var(--radius-sm);
+}
+
+.music-notice {
+  margin-top: 12px;
+  color: var(--color-text-soft);
+}
+
+.music-error {
+  margin-top: 12px;
+  color: var(--color-danger);
+}
+
+.music-path {
+  min-width: 0;
+}
+
+.music-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 34px 20px;
+  text-align: center;
+}
+
+.music-empty-glyph {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  color: var(--color-text-faint);
+  background: color-mix(in srgb, var(--color-canvas) 70%, transparent);
+  border-radius: 999px;
+}
+
+.music-empty-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+  text-wrap: balance;
+}
+
+.music-empty-text {
+  max-width: 46ch;
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--color-text-soft);
+  text-wrap: pretty;
 }
 
 /* ==========================================================================
@@ -5851,34 +7514,23 @@ input {
    Responsive layout
    ========================================================================== */
 
-/* The stage's height, and the two things that trade against it.
+/* There is deliberately no `max-height` query in this section.
 
-   The avatar's size and the clearance above the corner instruments are both
-   `vh` clamps, so a short window shrinks both instead of pushing the greeting off
-   the bottom of the section. This is the low end of those two clamps — not a
-   second opinion about them, just their minimum said once, beside the other media
-   queries where someone changing one will find the other.
+   There used to be one — `@media (max-height: 760px)` carrying second copies
+   of `.presence` (`29vh` against `38.8vh`) and `.stage-copy` (`11vh` against
+   `9vh`), because the greeting's clearance had to be *measured* differently
+   on a short window than the avatar's row-fit allowed. Two branches meant two
+   answers at 760/761: the disc crossed 142px to 190px while a window was
+   dragged through that seam, and the greeting's clearance jumped 15px the
+   other way.
 
-   The floor is 66px, not 40. The left-hand instrument is `bottom: 18px` and
-   38px tall, so its top edge sits at 56px from the stage's floor — a clearance
-   computed against a number rather than felt out, because at 800x600, the window
-   this app opens at, 40px leaves the clock and the greeting two pixels apart and
-   a headline one line longer would have closed it. */
-@media (max-height: 760px) {
-  .presence {
-    width: clamp(150px, 29vh, 340px);
-    height: clamp(150px, 29vh, 340px);
-  }
-
-  /* Unchanged from the floor that was measured here: at 600 tall the clock's
-     top edge sits 56px up and this stays at 66px, so the greeting clears it by
-     10px. The short window has no slack to give the avatar, which is why the
-     avatar's own short-window figure only moved 26vh -> 29vh instead of
-     following the desktop one to 33vh. */
-  .stage-copy {
-    padding-bottom: clamp(66px, 11vh, 84px);
-  }
-}
+   Both rules now have one curve each, measured against the same rows, and
+   they are a pair: `.stage-copy`'s padding is the clock's own geometry plus
+   ten (a flat 66px floor at the bottom), and `.presence`'s `min()` envelope
+   is the row that is left over after it. If a short window needs different
+   numbers, change the envelope and the clamp where they are defined —
+   re-adding a height branch here reintroduces the seam rather than fixing
+   one. */
 
 /* The gutter is what moves here, not the header. `.context-left` and
    `.context-right` read the same variable, so the corner clock comes down with
