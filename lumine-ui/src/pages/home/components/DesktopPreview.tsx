@@ -1,45 +1,37 @@
 import { Icon } from "./Icon";
 
 /**
- * The window Lumine is looking at, when `desktop_control` is in use.
+ * What the desktop tool last looked at, as one line of the vision deck.
  *
- * ## Why this is a list and not a picture
+ * ## Why this is a row and never a picture
  *
- * The desktop tool reads the Windows accessibility tree rather than capturing
- * pixels, so it knows *names* — "Save", "Search", "Delete" — rather than a
- * rectangle of pixels. Showing those names is both what the data actually is and
- * more useful than a screenshot: a user glancing at this can see whether
- * Lumine is about to click the thing they meant. A JPEG here would be a
- * lower-resolution, more expensive picture of less.
+ * There is no picture. The desktop path reads the window's **accessibility
+ * tree**, so what exists here is a name, a count and a generation number, and
+ * the previous card drew them inside a 176px box with a bar and three pills —
+ * the same chrome a screenshot gets, around nothing that needed it.
  *
- * ## Why it is not a toast
+ * It used to be worse than wasteful. This card was absolutely positioned at
+ * the same `top` as the self-view and the browser preview, so all three sat in
+ * one corner on top of each other, and the rule meant to separate them was
+ * written for a sibling order the markup does not have (see `VisionDeck`).
  *
- * Same reason as `BrowserPreview`, and the same accumulation problem: a toast is
- * gone in four seconds, which is exactly the moment a user reaches for the mouse
- * and wants to know what she is about to touch. Desktop control is the capability
- * where "what is she looking at" is a question with real consequences.
+ * ## Why the generation is shown
  *
- * ## Why the generation is on the face of it
+ * It is what the model clicks against. A user approving an action wants to know
+ * which look of the screen it was planned against, and the number is the only
+ * thing that answers that — "a moment ago" cannot, because two observations a
+ * second apart are both "a moment ago" and only one of them has the Save button
+ * in it.
  *
- * The worker mints a generation per observation and refuses any action planned
- * against an older one. Showing that number is what lets a user correlate what
- * they see with what the model is reasoning about — and it is the number the
- * permission card is asking them to approve against.
+ * ## Why the DPI warning stays at full size
  *
- * ## The two warnings, and why each is worth its row
- *
- * **`Nothing here can be clicked by name`** is not a failure. A canvas, a game,
- * or a terminal exposes no names, and Lumine can still act there on a
- * coordinate — which is the weakest tier and always asks first. Hiding that
- * would make a working-but-limited screen look broken.
- *
- * **DPI warning** means the process could not opt into per-monitor DPI
- * awareness, so coordinates it reads and coordinates it clicks are in different
- * spaces and every click lands at the scale factor's distance from where it was
- * aimed. It is rare, it is silent, and a user who has not been told will assume
- * the feature is broken rather than mis-scaled.
+ * `dpiAligned` is false when this system will not let Lumine read screen
+ * positions the same way she clicks them, and the consequence is that **every
+ * click lands at the scale factor's distance from where it was aimed**. It is
+ * rare, it is silent, and a user who has not been told will assume the feature
+ * is broken rather than mis-scaled — so it is a sentence, not a tint, and it
+ * says what to do about it.
  */
-
 export type DesktopPreviewProps = {
   /** The latest observation, or null when the desktop tool has not looked yet. */
   state: {
@@ -70,49 +62,69 @@ export function DesktopPreview({ state }: DesktopPreviewProps) {
   const age = ageLabel(state.ageMs);
   const stale = state.ageMs !== undefined && state.ageMs > 20_000;
 
+  /*
+   * The generation is permanent; the third slot is whichever secondary fact
+   * matters for *this* state — because at the deck's floor all three do not fit.
+   *
+   * Measured with the deck at its 184px width floor, which leaves 146px of
+   * track for column 2:
+   *
+   *     screen #7 · 12 controls · 3s ago   171px   ellipsises
+   *     screen #7 · 12 controls            132px
+   *     screen #107 · 12 controls          144px
+   *     screen #7 · 47s ago                116px
+   *     screen #7 · no names               125px
+   *
+   * The generation wins the slot outright because it is the one thing nothing
+   * else can supply: `docs` calls it what the model clicks against, and a
+   * generation cut to `scre…` — which is what happened when it shared the
+   * *detail* line with the claim — is neither readable nor reconstructable.
+   *
+   * Count and age then take turns. `age` is the expendable one: a fresh age of
+   * "3s ago" answers a question nobody asked, while a stale one is the only
+   * thing that can say why the tint is on. The count is named in AGENTS.md as
+   * this row's job ("lists what she can click"), so it keeps the slot until
+   * something actually goes old.
+   */
+  const generation = `screen #${state.generation}`;
+  let meta: string;
+  if (!state.addressable) {
+    meta = `${generation} · no names`;
+  } else if (stale && age) {
+    meta = `${generation} · ${age}`;
+  } else {
+    meta = `${generation} · ${state.elements} ${state.elements === 1 ? "control" : "controls"}`;
+  }
+
   return (
-    <aside className="desktop-preview" aria-label="The window Lumine is working in">
-      <div className="desktop-preview-bar">
-        <span className="desktop-preview-window">
-          <Icon name="monitor" size={12} />
-          <span className="desktop-preview-title">
-            {state.window || "your desktop"}
-          </span>
-        </span>
-        <span className="desktop-preview-badge">
-          {/* The generation is what the model clicks against, so it is shown
-              rather than hidden: a user approving an action wants to know which
-              look of the screen it was planned against. */}
-          Lumine is looking at this · screen #{state.generation}
-        </span>
-      </div>
+    <aside className="vision-row vision-row--desktop" aria-label="The window Lumine is working in">
+      <span className="vision-row-icon" aria-hidden="true">
+        <Icon name="monitor" size={13} />
+      </span>
+      <span className="vision-row-title">{state.window || "your desktop"}</span>
+      {/*
+        The claim, alone on its line and in the same shape the browser row
+        uses: this is the one place the user is told which of the two surfaces
+        Lumine is currently working from.
 
-      <div className="desktop-preview-facts">
-        {state.addressable ? (
-          <span className="desktop-preview-fact">
-            {state.elements} {state.elements === 1 ? "control" : "controls"} she can
-            click
-          </span>
-        ) : (
-          <span className="desktop-preview-fact is-warn">
-            Nothing here can be clicked by name
-          </span>
-        )}
-        {state.process ? (
-          <span className="desktop-preview-fact is-quiet">{state.process}</span>
-        ) : null}
-        {age ? (
-          <span className={stale ? "desktop-preview-fact is-warn" : "desktop-preview-fact is-quiet"}>
-            looked {age}
-          </span>
-        ) : null}
-      </div>
-
+        It lost `· screen #N` deliberately — see the `meta` computation above.
+        The claim and the generation together are 202px against a 146px track
+        at the deck's floor, so sharing a line meant the *generation* was what
+        the ellipsis ate, and that is the fact worth least to a reader.
+      */}
+      <span className="vision-row-detail">Lumine is looking at it</span>
+      <span
+        className={
+          "vision-row-meta" + (stale || !state.addressable ? " is-warn" : "")
+        }
+      >
+        {meta}
+      </span>
       {!state.dpiAligned ? (
-        <p className="desktop-preview-warning">
-          This system would not let Lumine read screen positions the same way she
-          clicks them, so clicks may land slightly off. Scaling the display to
-          100% usually fixes it.
+        <p className="vision-row-warning">
+          This system would not let Lumine read screen positions the same way she clicks
+          them, so clicks may land slightly off. Scaling the display to 100% usually fixes
+          it.
         </p>
       ) : null}
     </aside>

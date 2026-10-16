@@ -42,10 +42,10 @@ import { useAgentRuntime, type AgentRuntimeEvent } from "./agentRuntime";
  * ## It is not reset when a session ends
  *
  * Deliberately. Nothing in this module is *shown* unless a capture is live
- * (`SelfView` and the share strip are both rendered from the active capture),
- * and a capture cannot outlive its call — `useLocalMedia` releases the tracks
- * when the session goes away. So a stale phase has no surface to appear on, and
- * the worker writes a fresh baseline the moment the next session starts.
+ * (`VisionDeck` renders `SelfView` only from the active capture), and a capture
+ * cannot outlive its call — `useLocalMedia` releases the tracks when the
+ * session goes away. So a stale phase has no surface to appear on, and the
+ * worker writes a fresh baseline the moment the next session starts.
  */
 
 /** Mirrors `agent/runtime/visual_state.py::PHASES`, rung for rung. */

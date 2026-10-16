@@ -4182,255 +4182,247 @@ input {
   to { transform: rotate(360deg); }
 }
 
-/* ---- Self view ---------------------------------------------------------- */
+/* ---- Vision deck ---------------------------------------------------------- */
 
 /*
- * The user's own picture, in the corner of the command stage.
+ * Everything Lumine is looking at, in one column at the top-right of the stage.
  *
- * Mirrored, because a preview of yourself that is not mirrored is a preview of a
- * stranger. The caption along the bottom is not decoration: the frames are not
- * reaching Lumine, and a live picture in the corner of the window with no
- * statement of that reads as a video call with one participant who cannot see
- * you. The badge says which it is, in five words.
+ * ## What replaced what
+ *
+ * This one block replaces four surfaces and about 440 lines of CSS that were
+ * arranged by hand. Three of them were absolutely-positioned cards anchored to
+ * the *same* corner:
+ *
+ *     .self-view        top: 84px
+ *     .browser-preview  top: 84px
+ *     .desktop-preview  top: 84px
+ *
+ * and one was a full-width strip that printed the same sentence the self-view's
+ * badge printed. The stylesheet tried to separate them — `.self-view:has(+
+ * .browser-preview)` was written twice, and `.desktop-preview ~
+ * .browser-preview { top: 234px }` — but the markup renders `BrowserPreview`
+ * *before* `SelfView`, so `+` never matched and the cards overlapped exactly.
+ * The rule that did fire pushed a card to `top: 234px` inside a stage that is
+ * `overflow: hidden` and only 342px tall at the 800x600 window this app opens
+ * at, so the bottom of that card was taken silently.
+ *
+ * ## Why the edges and not a running total
+ *
+ * A hand-computed `top` per card is the shape of that bug, and it comes back
+ * every time a surface is added. This deck is a flex column anchored by
+ * `top` and `bottom` — the stage's own edges — so a fourth surface costs one
+ * row and no arithmetic, and a card cannot be pushed out of a box nobody is
+ * measuring.
+ *
+ * ## Measured, not estimated
+ *
+ * Read out of a live DOM at 800x600 rather than derived, because a first draft
+ * of this comment got three of these numbers wrong by arithmetic:
+ *
+ * - `.command-stage` is row 1 of `grid-template-rows: minmax(0,1fr)
+ *   var(--band-h) var(--call-h)` → **342px** tall.
+ * - Its floor, `.stage-context.context-right`, is **38px** tall and rests on a
+ *   18px offset, so its top edge is **56px** above the stage's bottom. (It was
+ *   first assumed to be 53px from three children; the markup has two.)
+ * - The column therefore has **202px**, and the deck resolves to its **184px**
+ *   width floor here — `26cqw` of a 276px stage is only 72px.
+ *
+ * What that fits, measured child by child (`overflow` = content − 202):
+ *
+ *     capture only ................. 129px    fits
+ *     desktop only .................. 61px    fits
+ *     browser picture only ......... 132px    fits
+ *     capture + desktop ............ 193px    fits
+ *     capture + browser row + desktop 246px   ** +44 **
+ *     ... plus a stale desktop + the DPI warning   352px   ** +150 **
+ *
+ * So the *common* two-surface case fits at the floor, and the full three-surface
+ * case is exactly one row over — the browser row is 45px and the overage is
+ * 44px, which is why the next paragraph says one row and not "some".
+ *
+ * ## Why it scrolls rather than overflowing
+ *
+ * `overflow-y: auto` is the backstop, and it is meant to be *seen*. The
+ * previous behaviour was `.command-stage`'s `overflow: hidden` taking the
+ * bottom of a card silently, on a card whose `top` was a running total of its
+ * own siblings. A thin scrollbar is the honest outcome.
+ *
+ * The 150px case is the one worth knowing about: `dpiAligned: false` adds a
+ * prose warning that is itself ~110px tall, so with every surface up the user
+ * scrolls to reach the sentence that tells them why clicks land off-target. It
+ * is reachable rather than absent, which is the improvement — but it is the
+ * first thing to shorten if this corner ever grows a fourth surface.
+ *
+ * `z-index: 2`, inside the stage's own stacking context: above `.presence-body`
+ * (1), which is why the card no longer sat under the avatar's disc, and below
+ * `.stage-gate` (3).
  */
-/* Anchored to the stage, not to the avatar box. It used to live *inside*
-   `.stage-presence` — `top: 18px; right: 18px` of a container whose size the
-   avatar clamp decides — so a fixed 176px card rode on top of her face at
-   every size, and at the small end outgrew the container it was pinned to.
-   It is now a sibling of the presence and takes the stage's own chrome
-   rhythm: `--stage-gutter` is the same number the date and the corner clock
-   are read against, and `top: 84px` is the 72px header row plus the same
-   12px the share strip below leaves.
-
-   Above the avatar, and the reason is still paint order rather than DOM
-   order: `.presence-body` is `position: relative` with `z-index: 1`, and a
-   positive z-index paints in a later layer than a positioned element left at
-   `auto` (CSS 2.1 Appendix E, step 8 vs step 9) — the disc covered this card
-   corner for corner before. `2` rather than a big number, inside the stage's
-   own stacking context (`.command-stage` isolates): above the presence (1),
-   at the same level as `.stage-copy` but *earlier* in tree order, so a
-   greeting that grows up into this corner still wins, and below
-   `.stage-gate` (3).
-
-   Width follows the stage by container query unit rather than staying 176px:
-   the stage's width is a variable — whole width with the transcript shut,
-   ~380px less with it open — and `22cqw` is exactly the old 176px at the
-   800px window this app opens at, growing to 210px on a wide stage and
-   never dropping below 140px when the transcript starves it. */
-.self-view {
+.vision-deck {
   position: absolute;
-  top: 84px;
+  top: 76px;
   right: var(--stage-gutter);
+  /* The floor is the call-length card, not an arbitrary number, and this is
+     the one hand-written number the deck owns.
+
+     `.stage-context.context-right` sits at `bottom: clamp(18px, 3vh, 32px)`
+     on this same `--stage-gutter`. Measured in a browser at 800x600: the card
+     is **38px** tall (`<span>` + `<strong>`, one 4px gap), rests on that 18px
+     offset, so its top edge is **56px** above the stage's bottom. The deck
+     stops at 64px — `18 + 46`, the card's 38 plus this column's own 8px gap.
+
+     Measured rather than derived, because a first draft of this comment
+     claimed 71px from a three-child assumption the markup does not have, and
+     over-clearing costs the same 25px that under-clearing would — this column
+     is 202px tall at 800x600 and there is nowhere to spare.
+
+     It is unlike the `top: 234px` it replaces: that was a running total of the
+     deck's *own* children, which changes whenever content changes, whereas
+     this is a fixed neighbour's height, which does not. If it is ever wrong,
+     the failure is a scrollbar (`overflow-y` below) rather than two surfaces
+     drawn on top of each other. */
+  bottom: calc(clamp(18px, 3vh, 32px) + 46px);
   z-index: 2;
-  width: clamp(140px, 22cqw, 210px);
-  border-radius: 14px;
+  width: clamp(184px, 26cqw, 264px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The backstop, and it is meant to be seen rather than designed around.
+     A capture plus a browser row plus a desktop row is one row over the
+     800x600 budget; the previous behaviour was `.command-stage`'s
+     `overflow: hidden` clipping a card with no indication anything was
+     there. A thin scrollbar is the honest outcome. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+/* ---- The user's own picture ------------------------------------------------ */
+
+/*
+ * The one surface with a live track in it, and the deck's one status sentence
+ * as its header.
+ *
+ * Mirrored, because a preview of yourself that is not mirrored is a preview of
+ * a stranger. The sentence is not decoration: the frames may not be reaching
+ * Lumine, and a live picture in the corner with no statement of that reads as
+ * a video call with one participant who cannot see you.
+ *
+ * In the deck's flow rather than anchored to the stage. It used to be
+ * `position: absolute; top: 84px`, which is what let three cards share one
+ * corner; and before that it was pinned inside `.stage-presence`, a container
+ * whose size the avatar clamp decides, so a fixed 176px card rode on her face.
+ */
+.self-view {
+  margin: 0;
+  flex: 0 0 auto;
+  border-radius: 12px;
   overflow: hidden;
   background: var(--color-surface);
   box-shadow: var(--elevation-3);
 }
 
 /*
- * The screen-share status strip, across the top of the stage under its header
- * row.
+ * The status line, and it is `role="status"` in the component rather than here.
  *
- * The preview in the corner answers "what am *I* looking at"; this answers the
- * question a share is actually anxious about — "is she receiving it right now".
- * A corner card cannot ask it: the same card shows for a capture that was
- * deliberately never published (a model with no image input), and a person
- * reading only the picture would conclude the wrong one. So the strip states
- * the fact from `isVideoPublished`, in the same two phrases the preview's own
- * badge uses — "Lumine can see this screen" / "Only you can see this" — so
- * the corner and the strip can never disagree.
+ * It replaced two surfaces that said the same thing: a full-width `.share-strip`
+ * under the stage's header and this card's own badge, rendered the *same
+ * sentence* on purpose — "so the corner and the strip can never disagree" — which
+ * is one fact paid for twice, and on the two states where the fallbacks differed
+ * (`visionShareText` gave the strip "Lumine can see this screen" and the badge
+ * "Shared with Lumine" for the same publish) one fact stated two *different* ways.
  *
- * `role="status"`, not a control. Starting and stopping is the CallBar's job,
- * and two stop buttons are one confirmation too many. It is also absolute, not
- * a grid row: a strip that grew the stage by a line would shove the avatar and
- * the greeting down every time a share started — the same mistake as the `<p>`
- * that used to grow the call strip, and for the same reason.
- *
- * The pip is static on purpose. The share's truth is the sentence beside it,
- * not a pulse, and a dot that beat would be one more animation for
- * prefers-reduced-motion to answer for.
- *
- * Translucent, and of necessity: measured at 800x600 the avatar's outer ring
- * reaches to 72.6px — the strip's own first pixel — and stays under it until
- * about 920px tall, so this band always crosses the orbit hairlines on a
- * short window. An opaque bar would cut a spinning arc in two at its edge;
- * letting the rings show through makes the crossing read as one layer over
- * another, which is what it is. Below about 705px tall the band also laps
- * the top of the disc — 12px of it at 800x600, the window this app opens
- * at — which is the same argument one level down: glass, not paint, so what
- * passes under the strip stays visible. */
-.share-strip {
-  position: absolute;
-  top: 72px;
-  left: 0;
-  right: 0;
-  z-index: 2;
-  height: 34px;
+ * The pip is static on purpose. The truth is the sentence beside it, and a dot
+ * that beat would be one more animation for `prefers-reduced-motion` to answer
+ * for.
+ */
+.self-view-status {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 9px;
-  padding: 0 var(--stage-gutter);
-  color: var(--color-stage-text-soft);
-  background: color-mix(in srgb, var(--color-accent) 10%, color-mix(in srgb, var(--color-stage) 58%, transparent));
-  border-bottom: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
-  font-size: 12px;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 9px;
+  background: var(--color-surface);
+  font-size: 11px;
+  color: var(--color-text-soft);
 }
 
-.share-strip-pip {
+.self-view-pip {
   width: 7px;
   height: 7px;
   flex: 0 0 auto;
   border-radius: 50%;
+  background: color-mix(in srgb, var(--color-text) 30%, transparent);
+}
+
+/* The accent fires only when the track is actually in the room. `isPublished`
+   floors the text as well as the colour in the component, so a model with no
+   image input, or a publish that failed, stays neutral rather than claiming a
+   share it is not making. */
+.self-view-status.is-shared .self-view-pip {
   background: var(--color-accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
-.share-strip-label {
-  font: 500 10px var(--font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--color-stage-text);
-  white-space: nowrap;
-}
-
-.share-strip-state {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.share-strip-state.is-shared {
+.self-view-status.is-shared .self-view-state {
   color: var(--color-accent);
 }
 
-/* Below 460px of stage — the transcript open on the 800px window this app
-   opens at — the mono label is the first thing to go. The pip and the state
-   sentence are the payload; "SCREEN SHARING" beside a sentence that begins
-   with "Screen sharing" is the redundant half. */
-@container (max-width: 460px) {
-  .share-strip-label {
-    display: none;
-  }
+.self-view-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
 }
 
-/* The preview steps down when a strip is present, which is what the sibling
-   combinator is for: `.share-strip` is rendered *before* `.self-view` in
-   MainSpace, so this rule — and only this rule — moves the card. 72px header
-   row + 34px strip + the same 12px the strip itself leaves, and a smaller
-   card, because a share is exactly the state where the stage is shortest
-   (the strip's window is the 800x600 one) and a card that clears the greeting
-   is a card that got out of its way. The floor is 126px rather than 116: the
-   bar's badge alone measures 103.5px and it sits inside card-minus-18px of
-   padding, so 116 left the share badge five pixels short of the edge it
-   clips at. */
-.share-strip ~ .self-view {
-  top: 118px;
-  width: clamp(126px, 18cqw, 190px);
-}
-
-/* The bar states two facts — which source this is, and whether the room can
-   see it — and only one of them is load-bearing: `Only you can see this` is
-   the sentence for someone who has just been asked to trust a camera. Measured
-   at their real classes: source icon + label 38.2px, camera badge 109.1px,
-   share badge 103.5px, so the pair wants 155.3px inside card-minus-18px. The
-   label is the redundant half whenever the pair stops fitting — the strip
-   above says "Lumine can see this screen" out loud during a share, and the
-   icon says "camera" without words — so below these container widths it goes
-   and the badge keeps the whole line. `position: absolute` rather than
-   `display: none`, and deliberately: the element carries Tailwind's own
-   `inline-flex`, and utilities out-rank this file's components layer — the
-   same rule that made the old presence clamp dead. Absolute + invisible wins
-   on properties no utility sets, and it frees the line for the badge. The
-   badge takes the space with `margin-left: auto`, so it stays on the right
-   whether the label is there or not.
-
-   The thresholds are the fit points, rounded out: 800px of stage gives a
-   camera card of 176px (158px inside, 155.3 needed), and 950px with a strip
-   gives 171px (153px inside, 149.7 needed). */
-@container (max-width: 800px) {
-  .self-view-source {
-    position: absolute;
-    visibility: hidden;
-  }
-}
-
-@container (max-width: 950px) {
-  .share-strip ~ .self-view .self-view-source {
-    position: absolute;
-    visibility: hidden;
-  }
-}
-
-/* Backstop for the badge itself: nowrap is a utility on it, so a bar tighter
-   than the badge clips rather than wraps — this lets it shrink and ellipsize
-   instead, and `margin-left: auto` holds it to the right edge either way. */
-.self-view-badge {
-  margin-left: auto;
+/* The sentence shrinks and ellipsises rather than wrapping. It is the payload
+   of the card and the whole reason the header exists, so it gets the line and
+   everything else on it is `flex: 0 0 auto`. */
+.self-view-state {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .self-view-video {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 16 / 9;
   object-fit: cover;
   background: #11100f;
   transform: scaleX(-1);
 }
 
 /* A screen share is already the right way round, and mirroring it would make text
-   on the shared screen unreadable â€” which is the one thing a screenshare is for. */
+   on the shared screen unreadable — which is the one thing a screenshare is for. */
 .self-view--screen .self-view-video {
   transform: none;
 }
 
-/* The browser preview: what Lumine's own browser window is showing.
+/*
+ * The browser preview, in two shapes.
  *
- * Placed *below* the self-view rather than beside it, and for a reason that is
- * about honesty rather than layout. When both are up, they are two different
- * views — the user's camera and a page Lumine is driving — and putting them side
- * by side in the same corner treatment would invite the reading that they are the
- * same thing. Stacked, the eye reads them as two separate facts, which is what
- * they are.
+ * `picture` is the card with the screenshot in it; `row` is one line of text.
+ * `VisionDeck` picks, and it picks once: there is one picture slot in the
+ * column and the user's own capture has first claim on it. When the capture is
+ * up the browser is a row at a third of the height, and the claim survives the
+ * change of shape — only the pixels go.
  *
  * `object-fit: contain`, unlike the camera's `cover`: this is a screenshot of a
  * document, and cropping the edge off a page hides the control that was probably
  * the reason for the screenshot. The letterboxing is the honest outcome.
- *
- * Wider and lower than the self-view, because a web page is a wide, short thing
- * and a cropped portrait card would show a stripe of a page. */
+ */
 .browser-preview {
-  position: absolute;
-  top: 84px;
-  right: var(--stage-gutter);
-  z-index: 2;
-  width: clamp(180px, 28cqw, 300px);
-  border-radius: 14px;
+  margin: 0;
+  flex: 0 0 auto;
+  border-radius: 12px;
   overflow: hidden;
   background: var(--color-surface);
   box-shadow: var(--elevation-3);
 }
 
-/* Both cards up: the self-view drops below the preview rather than overlapping
-   it. `:has()` rather than a JS class because the *presence* of the preview is
-   the whole condition — there is no state to mirror into a prop, and a prop that
-   had to be kept in step with the sibling's existence is a prop that will not be.
-   The offset is the card's own height plus the gap; 210px is its clamp ceiling
-   plus the bar, so the two cannot touch at any window size. */
-.self-view:has(+ .browser-preview) {
-  top: 330px;
-}
-
 .browser-preview-image {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 16 / 9;
   object-fit: contain;
   background: #11100f;
 }
@@ -4440,7 +4432,7 @@ input {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 16 / 9;
   padding: 0 10px;
   text-align: center;
   font-size: 11px;
@@ -4448,11 +4440,37 @@ input {
   background: var(--color-surface-muted);
 }
 
+/*
+ * The bar, and why it wraps.
+ *
+ * Host and claim are ~255px of content between them against ~166px of bar at
+ * the deck's 184px floor — and up to ~246px at its 264px ceiling, so they do
+ * not fit on one line at *any* width this deck can have. Without `wrap` flex
+ * shrank both instead, and the badge measured 92px against the 145px it needs:
+ * "Lumine can see this" is the sentence this whole card exists to say (its own
+ * docstring: the page is something the user cannot see), and it was the thing
+ * being ellipsised while the host — visible in the screenshot above it — kept
+ * its space.
+ *
+ * So the claim gets a line of its own. `justify-content: space-between` then
+ * behaves for free: with both items on one line the badge sits right, and the
+ * line it wraps onto has it alone, so `space-between` seats it at the start.
+ * That is why `.browser-preview-badge` no longer carries `margin-left: auto` —
+ * two mechanisms, and the second would drag the wrapped line right.
+ *
+ * The cost is measured rather than assumed: the bar goes 26px -> 43px, so the
+ * picture card is 151px instead of 132px. A browser picture *beside* a desktop
+ * row comes to 214px (145 + 8 + 61) against the same 202px column and now
+ * scrolls by 12px at 800x600 — where before it was 201px and fit by exactly one
+ * pixel, which is coincidence rather than a budget. A readable claim beats a
+ * one-pixel fit.
+ */
 .browser-preview-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 3px 8px;
   padding: 5px 9px;
   background: var(--color-surface);
   font-size: 11px;
@@ -4469,13 +4487,22 @@ input {
   color: var(--color-text-soft);
 }
 
-/* The badge states what the picture is: something Lumine *can* see. It does not
- * say she is reading it, because a screenshot reaches her context only when the
- * model explicitly asks — the picture here is evidence about the browser, not a
- * claim about the model. Same rule as the self-view badge, and the same two
- * phrases, so the corner can never contradict itself. */
+/*
+ * The claim, and the accent, on the browser card.
+ *
+ * It states what the picture is: something Lumine *can* see. It does not say
+ * she is reading it, because a screenshot reaches her context only when the
+ * model explicitly asks — the picture here is evidence about the browser, not
+ * a claim about the model.
+ *
+ * The accent fires here and nowhere else at the same time, and that is a
+ * property of the deck rather than of this rule: `VisionDeck` renders the
+ * `picture` variant only when the user is sharing nothing, which is exactly
+ * when there is no `.self-view-status` above it to hold the accent. Two
+ * accents in one corner is the same mistake as two sentences in one corner,
+ * one step later.
+ */
 .browser-preview-badge {
-  margin-left: auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4488,138 +4515,88 @@ input {
   letter-spacing: 0.01em;
 }
 
-/* The label line goes first when the bar gets tight: the host is the recoverable
- * half, and the age is decoration on top of a fact the picture already shows. */
-@container (max-width: 800px) {
-  .browser-preview-host {
-    position: absolute;
-    visibility: hidden;
-  }
-}
+/* --- vision rows ------------------------------------------------------------
+   The compact form of a surface that has something to say and no picture to
+   show: the browser beside a capture, and the desktop always.
 
-.self-view-badge.is-shared {
-  color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
-}
+   A two-column grid — icon, then everything else — rather than a flex row,
+   because the desktop surface carries more than one line (a generation, a
+   control count, an age, and sometimes the DPI warning) and a flex row would
+   wrap them onto unpredictable lines. Column 2 is one track that every line
+   after the title spans, so they all start at the same x whether or not the
+   title ellipsised.
 
-/* --- desktop preview -------------------------------------------------------
-   The window `desktop_control` is working in. Metadata rather than a picture,
-   because the tool reads the accessibility tree rather than capturing pixels --
-   so this is a short list of facts, not an image.
-
-   It sits above the browser preview rather than beside it, because the desktop
-   tool is the one that moves the user's pointer: when both are up, it is the one
-   they need to read first. The browser preview is pushed down by the same
-   amount as the self-view is, so the three cards stack instead of overlapping. */
-.desktop-preview {
-  position: absolute;
-  top: 84px;
-  right: var(--stage-gutter);
-  z-index: 3;
-  width: clamp(200px, 30cqw, 320px);
-  border-radius: 14px;
+   Neutral, deliberately. Every row says "Lumine is looking at this", and
+   painting four of them in the accent would make the accent mean "a row" —
+   which is the same failure the Tools page had when its accent fired on every
+   card that could act at all. The accent belongs to the one surface that is
+   making a claim the user is anxious about. */
+.vision-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 1px 7px;
+  flex: 0 0 auto;
   overflow: hidden;
-  background: var(--color-surface);
-  box-shadow: var(--elevation-3);
-}
-
-.desktop-preview-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
   padding: 6px 9px;
+  border-radius: 10px;
   background: var(--color-surface);
+  box-shadow: var(--elevation-2);
   font-size: 11px;
+  color: var(--color-text-soft);
 }
 
-.desktop-preview-window {
+.vision-row-icon {
+  grid-row: 1;
   display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  color: var(--color-text-soft);
+  align-self: center;
 }
 
-/* The window title is the half worth keeping when the bar gets tight -- it is
-   the one fact that tells a user whether she is in the window they meant. */
-.desktop-preview-title {
+.vision-row-title {
+  grid-row: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+}
+
+/* The claim, in the same words the other surface uses, because it is the same
+   kind of fact about a different thing. */
+.vision-row-detail {
+  grid-column: 2;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* States what the agent currently holds: this is the one card on screen that
- * means "she has the mouse and keyboard". A different colour from the browser
-   badge on purpose -- a page she is looking at and a screen she is controlling
- * are not the same claim, and the corner must never let them read alike. */
-.desktop-preview-badge {
-  margin-left: auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 2px 6px;
-  border-radius: 999px;
-  color: var(--color-accent);
-  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
-  font-size: 10px;
-  letter-spacing: 0.01em;
-}
-
-.desktop-preview-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 0 9px 7px;
-  background: var(--color-surface);
-}
-
-.desktop-preview-fact {
+.vision-row-meta {
+  grid-column: 2;
   font-size: 10.5px;
-  color: var(--color-text-soft);
 }
 
 /* A fact the user can act on. Warn is not "error": nothing here has failed, it
- * is a limitation worth knowing about -- a screen with no names still works on
- * a coordinate, it just always asks. */
-.desktop-preview-fact.is-warn {
+   is a limitation worth knowing about -- a screen with no names still works on
+   a coordinate, it just always asks, and an observation twenty seconds old is
+   not the screen they are looking at now. */
+.vision-row-meta.is-warn {
   color: var(--color-warning, var(--color-text));
 }
 
-.desktop-preview-fact.is-quiet {
-  opacity: 0.66;
-}
-
-/* The DPI line is the only prose in the card, and it is prose because it is the
- * one thing a user cannot infer: the clicks will look slightly wrong with no
- * error anywhere, and "scale the display to 100%" is the actual fix. */
-.desktop-preview-warning {
-  margin: 0;
+/* The DPI line is the only prose in a row, and it is prose because it is the
+   one thing a user cannot infer: the clicks will look slightly wrong with no
+   error anywhere, and "scale the display to 100%" is the actual fix. It bleeds
+   to the row's own edges so the tint meets the border-radius instead of
+   stopping short of it, and the row's `overflow: hidden` does the clipping. */
+.vision-row-warning {
+  grid-column: 1 / -1;
+  margin: 5px -9px -6px;
   padding: 7px 9px;
   border-top: 1px solid color-mix(in srgb, var(--color-text) 10%, transparent);
   background: color-mix(in srgb, var(--color-warning, var(--color-text)) 10%, transparent);
   font-size: 10.5px;
   line-height: 1.45;
-  color: var(--color-text-soft);
-}
-
-/* When both cards are up, the browser preview drops below the desktop one. The
-   offset is the desktop card's own height plus the gap; 150px clears its bar,
-   its fact row, and a one-line warning. */
-.desktop-preview ~ .browser-preview {
-  top: 234px;
-}
-
-.self-view:has(+ .browser-preview) {
-  top: 330px;
-}
-
-@container (max-width: 800px) {
-  .desktop-preview-title {
-    max-width: 96px;
-  }
 }
 
 .local-models-list button {

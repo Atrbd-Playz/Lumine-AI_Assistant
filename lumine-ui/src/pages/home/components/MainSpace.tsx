@@ -5,9 +5,7 @@ import type { LumineState } from "../types";
 import { Icon } from "./Icon";
 import { Presence } from "./Presence";
 import { CallBar } from "./CallBar";
-import { SelfView } from "./SelfView";
-import { BrowserPreview } from "./BrowserPreview";
-import { DesktopPreview } from "./DesktopPreview";
+import { VisionDeck } from "./VisionDeck";
 import { ConversationPanel, type PanelKind } from "./ConversationPanel";
 import { ConversationToggle, NotesToggle } from "./ConversationToggle";
 import { NotesPanel } from "./NotesPanel";
@@ -17,7 +15,6 @@ import type { ConversationAgentStatus, ConversationItem } from "../conversation/
 import type { ConversationBubbleVariant } from "../types";
 import type { LumineVoiceConnectionState } from "../../../features/voice/useLumineVoice";
 import type { LocalMedia } from "../../../features/voice/useLocalMedia";
-import { useVisualState, visionShareText } from "../../../lib/visualState";
 import type { LumineEmotionIntent } from "../../../components/avatar/avatarTypes";
 
 type MainSpaceProps = {
@@ -196,18 +193,15 @@ export function MainSpace({
   const copy = STATE_COPY[state];
   const today = new Intl.DateTimeFormat(undefined, { weekday: "long", day: "2-digit", month: "long" }).format(new Date());
   const live = LIVE_STATES.includes(sessionStatus);
-  // The worker's own answer to "is a picture actually arriving", and it is the
-  // only answer available from this side of the pipe: a live share and a frozen
-  // one look identical to the process holding the track. `null` until the first
-  // `visual` record, which `visionShareText` treats as "say nothing new" rather
-  // than as a claim.
-  const vision = useVisualState();
-  const shareText =
-    visionShareText(vision?.phase, isVideoPublished, "screen") ??
-    (isVideoPublished ? "Lumine can see this screen" : "Only you can see this");
   // One source, because the room only ever uses one. `media.active` is already
   // exclusive, so the preview cannot be showing a different track from the one
   // Lumine is looking at.
+  //
+  // This is a pass-through and nothing more. What Lumine can *see* — the
+  // worker's phase, and the one sentence that says so — is decided inside
+  // `VisionDeck`, which is the only thing that renders it; keeping the state
+  // here produced a second reader of the same fact in the file that used to
+  // draw a status strip beside the card.
   const preview = media.active;
 
   // Only meaningful during a call: the media controls are not drawn otherwise,
@@ -323,59 +317,28 @@ export function MainSpace({
         </div>
 
         {/*
-          The screen-share status strip, the preview, and why both are stage
-          children rather than children of the avatar box.
+          Everything Lumine is looking at, in one column.
 
-          The strip is the answer to a question the preview alone could not
-          ask: a picture in the corner says what *you* are looking at, not
-          what Lumine is receiving — and "is she seeing my screen right now"
-          is the one fact a share is anxious about. It is `role="status"`
-          rather than a control: starting and stopping is the CallBar's job,
-          and two stop buttons is one confirmation too many.
+          This used to be four separate surfaces: a full-width `.share-strip`
+          under the header, and three absolutely-positioned cards (self-view,
+          browser preview, desktop preview) all anchored to `top: 84px; right:
+          var(--stage-gutter)`. The strip printed the same sentence the card's
+          badge printed; the cards overlapped because the rule meant to
+          separate them was written for a sibling order the markup did not
+          have; and the one rule that did fire pushed a card past the bottom of
+          a stage that is `overflow: hidden`.
 
-          The preview used to be pinned inside `.stage-presence` — the avatar's
-          own box — which anchored a fixed 176px card to a container whose size
-          the avatar clamp decides, so the card sat *on* her face at every size
-          and outgrew the box at the small end. Both are now direct children of
-          the stage, so both anchor to the stage's own edges: the strip under
-          the header row, the preview into the top-right corner on the same
-          `--stage-gutter` the clock and date are measured by. The preview comes
-          after the strip in tree order because `.share-strip ~ .self-view` is
-          what drops it below the strip when one is present.
-
-          Absolute rather than a grid row: a strip that grew the stage by a line
-          would move the avatar and the greeting every time a share started —
-          the same mistake as the `<p>` that used to grow the call strip.
+          `VisionDeck` is a flex column anchored by the stage's own edges, so a
+          fourth surface costs one row and no arithmetic. It renders nothing at
+          all when there is nothing to show, which is the common case — the
+          avatar and the greeting own the stage the rest of the time.
         */}
-        {preview?.source === "screen" && (
-          <div className="share-strip" role="status">
-            <span className="share-strip-pip" aria-hidden="true" />
-            <span className="share-strip-label">Screen sharing</span>
-            <span className={`share-strip-state${isVideoPublished ? " is-shared" : ""}`}>{shareText}</span>
-          </div>
-        )}
-        {/*
-          The browser preview and the self-view, in that order.
-
-          Two different views of two different things — a page Lumine's own
-          browser is driving, and the user's camera — so the preview goes first
-          and the CSS drops the self-view below it when both are up. Order matters
-          for the `:has()` sibling selector and for the reading: the top card is
-          the one she is working in.
-        */}
-        <BrowserPreview preview={browserPreview} />
-        {/*
-          The desktop window, above the browser preview.
-
-          Ordering is a reading, not a layout detail: the desktop tool is the
-          one that moves the user's pointer, so when both are up it is the one
-          they most need to see first. `desktop-control:has` already selects the
-          first card for the `:has()` rules that keep it sized correctly.
-        */}
-        <DesktopPreview state={desktopState} />
-        {preview && (
-          <SelfView stream={preview.stream} source={preview.source} isPublished={isVideoPublished} phase={vision?.phase} />
-        )}
+        <VisionDeck
+          preview={preview}
+          isPublished={isVideoPublished}
+          browserPreview={browserPreview}
+          desktopState={desktopState}
+        />
 
         {/*
           The greeting, and only the greeting.

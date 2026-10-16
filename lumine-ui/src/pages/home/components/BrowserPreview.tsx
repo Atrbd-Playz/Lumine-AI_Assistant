@@ -25,6 +25,23 @@ import { Icon } from "./Icon";
  * model that can receive frames. Two surfaces, one rule: never claim a share that
  * is not happening.
  *
+ * ## Why there are two shapes of this card
+ *
+ * `VisionDeck` shows exactly one picture at a time, because two 16:9 cards plus
+ * the user's own capture do not fit in the corner of a stage that is 342px tall
+ * at the 800x600 window this app opens at — the old three absolutely-positioned
+ * cards either overlapped or ran off the bottom, and `overflow: hidden` on the
+ * stage took the overflow silently. So the browser is the *picture* when the user
+ * is sharing nothing (which is also the only case where the deck has room for
+ * it), and a **row** otherwise: the same claim, the same host, the same age, at
+ * a third of the height.
+ *
+ * The claim survives the change of shape, because the claim is the point. A row
+ * that said only "example.com · 12s" would be a screenshot's caption with the
+ * load-bearing half left out — the reason to show this at all is that the page
+ * is something the user *cannot* see, and "Lumine can see this" is the sentence
+ * that says so.
+ *
  * ## Why the age is shown
  *
  * A picture with no timestamp reads as live. This is a photograph of a page that
@@ -43,6 +60,15 @@ export type BrowserPreviewProps = {
     /** Milliseconds since capture, measured on arrival. */
     ageMs?: number;
   } | null;
+  /**
+   * `picture` is the card with a screenshot in it; `row` is one line of text.
+   *
+   * `VisionDeck` decides, and it decides once: the deck renders the picture only
+   * for the surface that owns its one picture slot. A caller that picks `row`
+   * for a preview which is the deck's only content is spending 100px of a card
+   * on a caption.
+   */
+  variant?: "picture" | "row";
 };
 
 /** Seconds, or "just now". Rounded up, because "0s old" reads as broken. */
@@ -56,7 +82,7 @@ function ageLabel(ageMs: number | undefined): string | null {
   return `${Math.round(minutes / 60)}h ago`;
 }
 
-export function BrowserPreview({ preview }: BrowserPreviewProps) {
+export function BrowserPreview({ preview, variant = "picture" }: BrowserPreviewProps) {
   const [failed, setFailed] = useState(false);
 
   // Reset the failure when a new picture arrives, or one broken decode would
@@ -75,6 +101,19 @@ export function BrowserPreview({ preview }: BrowserPreviewProps) {
     host = preview.url ? new URL(preview.url).host : "";
   } catch {
     host = "";
+  }
+  const claim = age ? `Lumine can see this · ${age}` : "Lumine can see this";
+
+  if (variant === "row") {
+    return (
+      <aside className="vision-row" aria-label="The page Lumine is browsing">
+        <span className="vision-row-icon" aria-hidden="true">
+          <Icon name="globe" size={13} />
+        </span>
+        <span className="vision-row-title">{host || "the browser"}</span>
+        <span className="vision-row-detail">{claim}</span>
+      </aside>
+    );
   }
 
   return (
@@ -97,9 +136,7 @@ export function BrowserPreview({ preview }: BrowserPreviewProps) {
           <Icon name="globe" size={11} />
           {host || "the browser"}
         </span>
-        <span className="browser-preview-badge">
-          {age ? `Lumine can see this · ${age}` : "Lumine can see this"}
-        </span>
+        <span className="browser-preview-badge">{claim}</span>
       </div>
     </aside>
   );

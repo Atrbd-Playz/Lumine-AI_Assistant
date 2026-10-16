@@ -134,6 +134,7 @@ The home experience is organized as follows:
 - [lumine-ui/src/pages/Home.tsx](lumine-ui/src/pages/Home.tsx) — page shell, and the
   `Suspense` boundary every non-home destination loads behind
 - [lumine-ui/src/pages/home/components/MainSpace.tsx](lumine-ui/src/pages/home/components/MainSpace.tsx) — command surface, call bar, self-view
+- [lumine-ui/src/pages/home/components/VisionDeck.tsx](lumine-ui/src/pages/home/components/VisionDeck.tsx) - the one corner that answers "what is Lumine looking at": self-view, browser, desktop
 - [lumine-ui/src/pages/home/components/CallBar.tsx](lumine-ui/src/pages/home/components/CallBar.tsx) — idle handset, then mute / camera / screen / end
 - [lumine-ui/src/pages/home/components/SelfView.tsx](lumine-ui/src/pages/home/components/SelfView.tsx) - the user's camera, and whether Lumine can see it
 - [lumine-ui/src/pages/home/components/Presence.tsx](lumine-ui/src/pages/home/components/Presence.tsx) — animated avatar and state mapping
