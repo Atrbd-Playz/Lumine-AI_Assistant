@@ -18,6 +18,32 @@ the whole tool:
   :func:`fill_deny_reason` -- no card, no timeout, no "allow once". A
   permission card is a question a person answers in seconds, and "type your
   password" is a question this product never asks.
+
+## The one fact that pushes the other way, and why it is bounded
+
+:func:`is_search_control` is the single exception to the rule above, and it is
+deliberate rather than a leak. **A search form submits a query, not the user's
+data**, so it is an ordinary ``act`` rather than a ``sensitive`` submission.
+Without it "search YouTube for X" asked for permission, on the grounds that
+Enter inside a ``<form>`` is HTML's implicit submission -- which is true of the
+mechanism and false of the intent, and it made the most routine thing this
+browser does the most interrupted.
+
+The bound is written down rather than assumed, because this is the only place a
+page-presented fact *lowers* a class:
+
+- It requires a **positive** signal that the form is a search form --
+  ``<form role="search">``, a ``searchbox`` control, or the form's only text
+  field typed ``search``. A comment box, a checkout, a sign-in form and a
+  contact form all still ask, because none of them carries one.
+- What it moves is one class on one form. A hostile page gains what an ordinary
+  click already gives it (``act``); it does not gain anybody's keystrokes,
+  because Lumine only types what the user dictated, a password field is refused
+  before the gate is reached (:func:`fill_deny_reason`), and every other
+  submission is still ``sensitive``.
+- It never reaches ``read``. A search does put the query on the wire, so it is
+  an ``act`` -- the class :mod:`.search` has always reported for a tabulated
+  site -- and never a pretence that nothing left the machine.
 """
 
 from __future__ import annotations
@@ -186,13 +212,80 @@ def host_verdict(
 SUBMIT_TYPES = frozenset({"submit", "image"})
 
 
-def classify_click(*, tag: object, type_: object, in_form: bool) -> str:
+#: The ``role`` a control carries when it is a search box, and the ``type`` of a
+#: search input. Both are HTML's own vocabulary rather than words a page chose
+#: for a label, which is what makes them usable here at all: a page cannot
+#: rename a checkbox into a search box without changing what the element is.
+SEARCH_ROLE = "searchbox"
+SEARCH_INPUT_TYPE = "search"
+
+
+def is_search_control(
+    *,
+    tag: object = "",
+    type_: object = "",
+    role: object = "",
+    in_form: object = False,
+    form_role: object = "",
+    sole_field: object = False,
+) -> bool:
+    """Whether this control is the search box of a search form.
+
+    The narrowest question that answers "is submitting this a *search*?", asked
+    from structure only. Three ways to say yes, and a plain text input in a
+    plain ``<form>`` is none of them:
+
+    - the ``<form>`` itself declares ``role="search"`` -- YouTube, Google and
+      Amazon all do, and it is the strongest signal because it describes the
+      form rather than the field;
+    - the control reports the ``searchbox`` role and is **not** a lone
+      ``type=search`` field in a larger form.
+
+    The sole-field requirement on ``type=search`` is the sharp edge, and it is
+    needed because ``state``'s ``roleOf`` *derives* ``searchbox`` from
+    ``type=search``. Without it that derivation would quietly satisfy the
+    ``searchbox`` branch for every filter box on every site, and the whole
+    function would collapse into "any ``type=search`` field is a search form".
+    A filter box is not a search form: it narrows what is already on screen
+    rather than asking another server for something.
+
+    ``sole_field`` is the fact ``state`` already collects for exactly this
+    shape -- Google's field is ``name="q"`` with nothing in its label that says
+    "search", so a search box on the most-used search engine has no label to
+    read and this is the only signal left.
+    """
+    if not in_form:
+        # Nothing to submit, so the question is moot and the caller falls
+        # through to the ordinary rules.
+        return False
+    if str(form_role or "").strip().casefold() == "search":
+        return True
+    typed = str(type_ or "").strip().casefold()
+    if typed == SEARCH_INPUT_TYPE:
+        # Only when it is the form's sole field -- see the docstring.
+        return bool(sole_field)
+    return str(role or "").strip().casefold() == SEARCH_ROLE
+
+
+def classify_click(
+    *,
+    tag: object,
+    type_: object,
+    in_form: bool,
+    search: bool = False,
+) -> str:
     """The permission class for clicking an element described by DOM facts.
 
     ``sensitive`` when the control submits a form -- the moment something the
     user typed moves from their screen toward someone else's server -- and
     ``act`` otherwise. Facts only: this function is never shown a label, a
     title, or any other word the page chose.
+
+    ``search`` is the one caller-supplied fact that lowers the class, and only
+    from ``sensitive`` to ``act``: a search form submits a query rather than the
+    user's data, so submitting it is an ordinary act. See
+    :func:`is_search_control` for why that is bounded, and note it never
+    reaches ``read`` -- the query did go to somebody's server.
 
     The honest limit, written down so nobody mistakes this for more than it
     is: a page's own JavaScript can send data on any click it likes, and no
@@ -205,6 +298,8 @@ def classify_click(*, tag: object, type_: object, in_form: bool) -> str:
     """
     name = str(tag or "").casefold()
     kind = str(type_ or "").casefold()
+    if search:
+        return "act"
     if name == "button":
         # HTML's own rule: a <button> inside a form submits unless it says
         # otherwise; outside a form it is an ordinary control.
@@ -306,16 +401,23 @@ def normalize_key(raw: object) -> str:
 ACTIVATING_KEYS = frozenset({"Enter", " "})
 
 
-def classify_key(key: object, *, tag: object, type_: object, in_form: bool) -> str:
+def classify_key(
+    key: object, *, tag: object, type_: object, in_form: bool, search: bool = False
+) -> str:
     """The permission class for pressing a key on a control described by DOM facts.
 
-    Two rules, both one-way toward asking:
+    Three rules, in order:
 
-    - **Enter inside a form submits it** -- HTML's implicit submission --
-      even when the control is an ordinary text field, so it is
-      ``sensitive`` whatever the element looks like. That is data moving
-      toward someone else's server, which is the line this whole module
-      holds.
+    - **A search box is a search, not a submission.** ``search`` comes from
+      :func:`is_search_control`, and it is checked *before* the Enter-in-a-form
+      rule below because that rule is the one being excepted. "Search YouTube
+      for X" typed a query and pressed Enter inside a ``<form>``, and asking for
+      permission to do it made the most ordinary thing this browser does the
+      thing a user interrupts it for. It lands on ``act``, which never asks.
+    - **Enter inside a form submits it** -- HTML's implicit submission -- so it
+      is ``sensitive`` on any *other* form, whatever the control looks like.
+      That is data moving toward someone else's server, which is the line this
+      whole module holds.
     - **A key that can activate the focused control is a click**, and clicks
       are classified by the DOM (:func:`classify_click`), not by the key.
 
@@ -325,6 +427,8 @@ def classify_key(key: object, *, tag: object, type_: object, in_form: bool) -> s
     of the line.
     """
     name = str(key or "")
+    if search:
+        return "act"
     if name == "Enter" and in_form:
         return "sensitive"
     if name in ACTIVATING_KEYS:

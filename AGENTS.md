@@ -1,10 +1,70 @@
 # Lumine repository instructions
 
+## The North Star — read this first
+
+> **Lumine should feel like a companion living quietly on the computer, not an
+> application the user has to open.** She should sleep when not needed, hear when
+> called, appear when addressed, understand the complete request, act when
+> authorized, communicate naturally, and disappear again when the interaction is
+> over. **The full UI is her home, not her existence.**
+
+Four documents define the product, and every change in this repository is judged
+against them:
+
+| Document | What it decides |
+| --- | --- |
+| [`VISION.md`](VISION.md) | What Lumine is, what she is not, the success criteria, and the surface-routing rule |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | The nine runtime layers, the process model, the lifecycle state machine, the IPC contract, wake and island design |
+| [`ROADMAP.md`](ROADMAP.md) | Phases 0–9 **of the companion track**, with observable exit criteria and what each phase deliberately does not build |
+| [`docs/agent-runtime/`](docs/agent-runtime/README.md) | The **runtime track** — goals, phases 0–10, and the definition of done for the internal agent runtime |
+| [`docs/decisions/`](docs/decisions/) | Fourteen ADRs — load-bearing choices, the alternatives that were refused, and the conditions that would reverse them |
+
+Supporting: [`docs/gap-audit.md`](docs/gap-audit.md) measures the vision against the
+current code, with the conflicts named; [`docs/plans/wave-1-always-on-runtime.md`](docs/plans/wave-1-always-on-runtime.md)
+is the detailed Phase 1 plan.
+
+**The most important architectural facts about the code today**, all of which are
+invisible from reading any single module:
+
+- The app's lifetime is currently the runtime's lifetime. `lib.rs` stops the worker
+  on `ExitRequested`, and nothing but a button press starts it. The vision requires
+  the opposite, and that inversion is Phase 1's first task.
+- **The microphone only exists inside a LiveKit session.** The webview publishes it
+  (`setMicrophoneEnabled`); the Python worker opens no audio device. Anything
+  "always on" needs its own capture path.
+- There is **no** autostart, **no** tray, **no** second window, **no** window-API
+  usage in the frontend, **no** wake word and **no** idle timeout anywhere.
+- `AgentState::Sleeping` means "there is no worker process", which is the *opposite*
+  of the vision's `SLEEPING`. Process state and companion state must stay separate
+  types ([ADR-0012](docs/decisions/0012-process-vs-companion-state.md)).
+- The session greeting is **unconditional**, which fights the one-shot requirement
+  ([ADR-0013](docs/decisions/0013-greeting-conditional.md)).
+
+### Pre-flight for any change
+
+Before implementing a feature, answer in order — and write the answers down if the
+answer is not obvious:
+
+1. **What user problem does this solve?** Anything that does not answer is a demo.
+2. **Which phase does it belong to?** A later-phase feature implemented early will
+   be built on assumptions later phases invalidate.
+3. **Which surface?** Island, full UI, tray, or voice. "The full UI, because that is
+   where the code is" is not an answer — see the routing table in
+   [`VISION.md`](VISION.md).
+4. **Does it conflict with a recorded decision?** If it does, supersede the record
+   explicitly, in writing, with a reason. Do not delete decision files.
+5. **Is a new subsystem or dependency necessary?** Check first whether an existing
+   one already owns the responsibility ([ADR-0010](docs/decisions/0010-layer-ownership.md)).
+
+Build one vertical slice at a time ([ADR-0011](docs/decisions/0011-no-overbuild.md)).
+The roadmap preserves direction; it does not authorise work.
+
 ## Scope and source of truth
 
 - This repository has two independently runnable parts: `agent/` is the Python LiveKit worker; `lumine-ui/` is the React/Vite UI inside a Tauri/Rust shell. There is no root workspace or task runner.
 - The root `package.json` has no app scripts. Run frontend/Tauri commands from `lumine-ui/`; the app entry is `src/main.tsx` → `src/App.tsx` → `src/pages/Home.tsx`.
-- Treat manifests, environment examples, and current source as authoritative when prose conflicts. The root README is empty, and some checked-in `docs/`/nested `AGENTS.md` notes describe earlier scaffold states.
+- Treat manifests, environment examples, and current source as authoritative when prose conflicts. The root [`README.md`](README.md) describes the shipped state and links to both tracks; some checked-in `docs/`/nested `AGENTS.md` notes describe earlier scaffold states.
+- **Two tracks, two roadmaps.** [`ROADMAP.md`](ROADMAP.md) is the companion track (wake, island, lifecycle, memory, proactive). [`docs/agent-runtime/`](docs/agent-runtime/README.md) is the runtime track (router, task model, executor, verification, permissions, persistence). A change belongs to one; check which before assuming a phase number.
 
 ## Runtime shape
 
@@ -32,7 +92,7 @@
   - **The folder is the entire boundary, and both sides of the comparison are resolved.** `library.resolve_track` is a second *consumer* of the shape `messaging/whatsapp_files.py` already uses for attachments: resolve first, then compare, so `..`, an absolute path and a symlink pointing out all land in the same refusal. A caller-supplied root is resolved too — that omission made `scan(root=…)` return nothing at all under a Windows short `8.3` path, silently.
   - **`library_root()` reads the saved document; the environment is the fallback.** It read only `LUMINE_MEDIA_LIBRARY` at first, while the Permissions screen writes `media.library` into the document, and nothing bridged the two — so **choosing a folder in the app did nothing for the worker**. Measured: five consecutive voice requests came back "You haven't picked a music folder yet" *with the tool visibly enabled*, which is the worst shape that bug could take, because the Tools page said the capability was on while every call failed.
   - **`media.enabled` ships ON, and still fails closed.** `tools.<id>` only ever reduces authority so an instruction it did not understand reads as `on`; this one *grants* a capability, so an unrecognised value reads as `off` and `settings/validation.py` treats it as an **error**. Defaulting *on* does not change that: only an **absent** value reaches the default, because falling through on a misspelling would mean `LUMINE_ENABLE_MEDIA=enabled` turned it on — the exact inverse of what was meant. It ships on because the capability is bounded where `desktop.input` is not: one allowlisted folder, and no verb that moves, renames or deletes. A fresh install gets no folder, so the honest default state is "on, with nothing to reach yet".
-  - **Nothing on the music path loads a track list into the frontend.** There is no Music settings tab and no library browser: a filename is not a setting, and a text box matching characters is strictly worse than Lumine matching the words you *said*. `musicClient.ts` lost `searchMusic` / `playTrack` / `MusicHit` / `MusicSearch`, `media_probe.py` lost `tracks`, and the Rust commands `search_music` and `play_music_track` are gone with `canonical_library_root` and `validate_against_library` untouched — those two belong to the **Focus in-app player**, which is a different feature and must not be "simplified" along with this one. What the app shows instead is a **widget** on the home page (`widgets/LocalWidgets.tsx::MusicWidget`) that reads the folder's name out of the saved document — the last path segment of a string it already has, so **it starts no subprocess** — plus a **Permissions** settings section that owns the only part that genuinely is a permission.
+  - **Nothing on the music path loads a track list into the frontend.** There is no Music settings tab and no library browser: a filename is not a setting, and a text box matching characters is strictly worse than Lumine matching the words you *said*. `musicClient.ts` lost `searchMusic` / `playTrack` / `MusicHit` / `MusicSearch`, `media_probe.py` lost `tracks`, and the Rust commands `search_music` and `play_music_track` are gone — and so, with the Focus workspace's removal, are `canonical_library_root`, `validate_against_library` and `is_in_app_audio`, the `media.rs` helpers its in-app player needed. What the app shows instead is a **widget** on the home page (`widgets/LocalWidgets.tsx::MusicWidget`) that reads the folder's name out of the saved document — the last path segment of a string it already has, so **it starts no subprocess** — plus a **Permissions** settings section that owns the only part that genuinely is a permission.
   - **The spelling tolerance is the WhatsApp matcher, imported.** `match.py` reuses `whatsapp_flow._same_word_spoken_two_ways` / `_edit_distance` rather than writing a second edit-distance tuned for filenames. What is genuinely new for files: **version tags** (`vocal`, `no-music`, `acapella`) are split out of the filename and matched on a separate axis, so *"play the Akhon Ami vocal song"* reaches `Akhon Ami (Vocal).mp3` and "play the instrumental version" cannot be answered by the vocal; **partial matching** on *more than half* the query's words; and `Hit.confidence`, one number folding tier and coverage together so "act or ask" is decided like-for-like. Two of those were bugs first: a title-only matcher reported `vocal` as *missing* on a file that is a vocal (the word had been deliberately removed from the title), and comparing raw coverages let a tag-only hit outrank a real title match, so the exact request in the brief came back as "which of these nine?".
   - **A folder is a queue, and this is the whole of the incident fix.** A reported failure was *"when I said play the vocal songs it played all 9 at once, no queue or anything, I couldn't able to hear anything."* `os.startfile` takes **one** file and the OS owns it from there, so the only way to play nine was to start nine. `tools/media/queue.py` now writes one `.m3u8` from already-validated paths and opens **that**; the player's own window owns the order, which is also where skip, pause and stop live. Nothing is bundled — the player that was going to open the first song opens the list instead. One track is opened **directly**, because a one-track queue is one indirection for nothing and `queued: false` has to be true. Queues are named by a hash of their body (idempotent, no accumulation), written outside the library so the next scan cannot offer one as a track, `.m3u8` rather than `.m3u` because the latter is read as the local codepage and turns a Bengali title into mojibake in the player's own list, and a title's newlines are stripped because there is no escape in the format and one would stand up a second `#EXTINF`. `agent/media_queue.py` is the widget's second caller of the same `queue.build` — two processes cannot call each other, so they share a builder rather than an implementation.
   - **The widget's Play all is not the voice path.** `queue_music` opens a queue with no permission gate, on purpose: the gate asks "may Lumine do this", and the person clicking has already answered a different question. The webview only ever supplies a **subfolder name** — never a path — and the script resolves the library root from the saved document itself, so `scanner.is_inside_library` is what stands between the page and a filename.
@@ -156,7 +216,7 @@ leave one running while testing settings changes: the app cannot see it, and
 LiveKit dispatches a room to a single agent, so the worker that answers may not be
 the one holding your saved config.
 
-`npm run tauri dev` starts Vite itself on strict port `5173`; do not start a second Vite server on that port. The port is `5173` rather than the Tauri-conventional `1420` because Hyper-V/WSL reserves `1351-1450` on Windows, and binding an excluded port fails with `EACCES`, not `EADDRINUSE`. `npm run dev` is useful for the UI only, but Tauri `invoke`/microphone flows require the Tauri app. Tauri resolves Python in this order: `LUMINE_PYTHON_BIN`, `VIRTUAL_ENV`, the repository `.venv`, then `python`/`python3`. `LUMINE_AGENT_PATH` and `LUMINE_AGENT_ARGS` affect the Rust worker manager.
+`npm run tauri dev` starts Vite itself on strict port `15173`; do not start a second Vite server on that port. The port is `15173` rather than the Tauri-conventional `1420` (and no longer `5173`) because Hyper-V/WSL redraws 100-port exclusion blocks inside the Windows dynamic port range (`1024-15000` here) on every boot — `1420` fell to `1351-1450`, `5173` to `5156-5255` — and binding an excluded port fails with `EACCES`, not `EADDRINUSE`. `15173` sits above that range, so it survives the redraw. `npm run dev` is useful for the UI only, but Tauri `invoke`/microphone flows require the Tauri app. Tauri resolves Python in this order: `LUMINE_PYTHON_BIN`, `VIRTUAL_ENV`, the repository `.venv`, then `python`/`python3`. `LUMINE_AGENT_PATH` and `LUMINE_AGENT_ARGS` affect the Rust worker manager.
 
 For focused LiveKit helper debugging, run `agent/livekit_token.py <room> <identity>`, `agent/livekit_dispatch.py <room> <agent_name>`, or `agent/livekit_room.py <room>` with the repository Python environment. These helpers load `agent/.env` themselves. `agent/multisession_check.py` dispatches three sequential sessions at one running worker and reports whether all three start — use it when a session joins once and then never again. `agent/broken_stdout_check.py` starts a worker whose stdout is a dead pipe and asserts the job still starts.
 

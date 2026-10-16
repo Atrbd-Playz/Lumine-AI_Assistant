@@ -1,5 +1,39 @@
 # Lumine Frontend and Tauri Architecture
 
+## This is not the whole product
+
+The full UI is **Lumine's home, not her existence**. She must be reachable by voice
+with no window open, and she must appear in a small transient island rather than
+opening this dashboard.
+
+Read [`../VISION.md`](../VISION.md) and [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+first. Both of them describe the target; the lists lower down in this file record
+what exists today, and the gap between the two is deliberate and measured in
+[`../docs/gap-audit.md`](../docs/gap-audit.md).
+
+Consequences that apply to work in this directory *now*, before Phase 1 lands:
+
+- **A feature must be routed to a surface before it is built.** Island, full UI,
+  tray, or voice — see the routing table in [`../VISION.md`](../VISION.md). The full
+  UI is the comfortable place to put things and it is explicitly not the place for
+  anything a user wants during a spoken exchange.
+- **`AgentState` is the process, not the companion.** `sleeping` there means "no
+  worker process"; the companion's `SLEEPING` means the opposite, and the two must
+  not share names or be collapsed
+  ([ADR-0012](../docs/decisions/0012-process-vs-companion-state.md)).
+- **`LumineState` becomes a derived view** of the lifecycle event, and its state
+  tables stay total `Record`s so a new state fails the build
+  ([ADR-0005](../docs/decisions/0005-single-lifecycle-authority.md)).
+- **The island will be a separate webview with its own entry point**, and it must
+  never import from `pages/` or `features/settings`. The dashboard bundle is not
+  the island's bundle ([ADR-0006](../docs/decisions/0006-island-as-primary-surface.md)).
+- **The island will not be able to reuse a Tauri window API call, because there
+  isn't one.** The frontend today imports `invoke`, `listen` and `convertFileSrc`
+  and nothing else — no `@tauri-apps/api/window` anywhere. Window geometry, the
+  always-on-top island and monitor selection are new Rust work.
+- **Do not make this app a prerequisite for anything.** If a capability can only be
+  reached from here, it is misfiled.
+
 ## How does Lumine appear and behave?
 
 The frontend is a React/Vite application inside a Tauri shell. The current UI is intentionally designed to feel like a dedicated AI companion rather than a conventional chatbot.
@@ -29,12 +63,14 @@ Verified implementation details:
 - Tauri app identifier: `com.art.lumine`
 - app title: `Lumine`
 - window dimensions: `800x600`
-- Vite dev server on `http://localhost:5173`. It is not the Tauri-conventional
-  `1420`: Hyper-V/WSL reserves `1351-1450` on Windows, and an excluded port refuses
-  to bind with `EACCES` rather than `EADDRINUSE`, so `strictPort` surfaces it as a
-  bare "permission denied". The HMR port is `5174`. This must stay in step with
-  `build.devUrl` in `tauri.conf.json`, which is static JSON with no env
-  interpolation.
+- Vite dev server on `http://localhost:15173`. It is neither the Tauri-conventional
+  `1420` nor Vite's own `5173`: Hyper-V/WSL redraws 100-port exclusion blocks inside
+  the Windows dynamic port range (measured here as `1024-15000`) on every boot, and an
+  excluded port refuses to bind with `EACCES` rather than `EADDRINUSE`, so `strictPort`
+  surfaces it as a bare "permission denied". `1420` fell to `1351-1450` and `5173` to
+  `5156-5255`; `15173` sits above the range, so it survives the redraw. The HMR port
+  is `15174`. This must stay in step with `build.devUrl` in `tauri.conf.json`, which
+  is static JSON with no env interpolation.
 - `bundle.active: false`. Do not assume `npm run tauri build` produces an installer.
 - default build runs `npm run build` before packaging
 - `bundle.publisher` / `bundle.copyright` name the owner, and reach the binary's
@@ -232,11 +268,6 @@ webview only ever supplies a **subfolder name**, never a path; the script resolv
 the library root from the saved document and `scanner.is_inside_library` is what
 stands between the page and a filename.
 
-**Do not extend this.** `canonical_library_root`, `validate_against_library` and
-`is_in_app_audio` in `media.rs` belong to the **Focus Workspace's in-app player**,
-which is a separate feature. They are why `media.rs` still has a library-boundary
-rule in Rust even though the app's own music commands no longer take a path.
-
 ## The activity log survives a reload, and holds far more
 
 `features/activity/activityFeed.ts` restores from `localStorage` in its `useState`
@@ -319,7 +350,7 @@ Three decisions are load-bearing and none of them is cosmetic.
 ## Lazy loading, and why only two pages still use it
 
 **Two destinations are behind `Suspense`: `WorkspaceView` (Tools) and
-`ActivityTimeline`.** Everything else — Focus, the avatar lab, the settings overlay
+`ActivityTimeline`.** Everything else — the avatar lab, the settings overlay
 and all five settings pages — is a static import again, and the settings overlay's
 own `Suspense` boundary is gone with it.
 

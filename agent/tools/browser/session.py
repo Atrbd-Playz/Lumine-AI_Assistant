@@ -346,15 +346,39 @@ _JS_FACTS = """
   const type = el.getAttribute('type') || '';
   let node = el;
   let inForm = false;
+  let form = null;
   while (node) {
-    if (node.tagName && node.tagName.toLowerCase() === 'form') { inForm = true; break; }
+    if (node.tagName && node.tagName.toLowerCase() === 'form') { inForm = true; form = node; break; }
     node = node.parentElement;
   }
+  // `role`, `formRole` and `soleField` are here for one reason: `web_control`
+  // classifies the same control from `state._JS_COLLECT`, and the two tools
+  // must reach the same answer. When `web_control` could only see `inForm`,
+  // `browse` computed it independently in this script and the two drifted --
+  // `state.py` documents the incident. These three close the remaining gap,
+  // and none of them is in `sig`, which stays `tag|type|inForm` so every
+  // reference already in the wild still verifies.
+  const role = (el.getAttribute('role') || '').trim().toLowerCase() || '';
+  const formRole = (form && (form.getAttribute('role') || '').trim().toLowerCase()) || '';
+  const soleField = (() => {
+    if (tag !== 'input' && tag !== 'textarea') return false;
+    const kind = (el.getAttribute('type') || 'text').toLowerCase();
+    if (!['text', 'search', 'email', 'tel', 'url', ''].includes(kind)) return false;
+    if (!form) return false;
+    const typed = Array.from(form.querySelectorAll('input, textarea')).filter((other) => {
+      const otherType = (other.getAttribute('type') || 'text').toLowerCase();
+      return ['text', 'search', 'email', 'tel', 'url', ''].includes(otherType);
+    });
+    return typed.length === 1 && typed[0] === el;
+  })();
   return {
     found: true,
     tag: tag,
     type: type,
     inForm: inForm,
+    role: role,
+    formRole: formRole,
+    soleField: soleField,
     sig: tag + '|' + type + '|' + (inForm ? '1' : '0'),
     url: location.href,
     label: (

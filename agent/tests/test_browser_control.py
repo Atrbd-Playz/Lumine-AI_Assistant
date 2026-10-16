@@ -409,6 +409,76 @@ class FormValueTests(unittest.TestCase):
         self.assertLessEqual(len(state.form_values_payload(rows)), 40)
 
 
+class ClassifyTests(unittest.TestCase):
+    """``_classify`` was untested, and it was reading the wrong attribute.
+
+    The gate is handed ``action_class`` per element, so this function decides
+    whether a click or an Enter interrupts the user. It had no test at all, and
+    it passed ``detail["value"]`` where the DOM's ``type`` was meant -- so
+    ``<input type="submit" value="Go">`` classified as an ordinary ``act`` and a
+    form submission went through without ever asking, while ``browse``, whose
+    own facts script returns the real attribute, called the same button
+    ``sensitive``. Two tools, one button, and the wrong answer in the one
+    direction that never interrupts.
+    """
+
+    def _classify(self, verb: str, chosen: Candidate, **kwargs) -> str:
+        return control._classify(verb, chosen, **kwargs)[0]
+
+    def test_a_submit_input_is_sensitive(self):
+        chosen = Candidate(
+            index=1,
+            role="button",
+            name="Send",
+            tag="input",
+            detail={"type": "submit", "inForm": True, "value": "Send"},
+        )
+        self.assertEqual(self._classify("click", chosen, text="", key=""), "sensitive")
+
+    def test_a_value_attribute_does_not_decide_the_class(self):
+        # The regression, stated as its own case: a control whose `type` says
+        # submit and whose `value` says something ordinary is still a submitter.
+        chosen = Candidate(
+            index=1,
+            role="button",
+            name="Go",
+            tag="input",
+            detail={"type": "submit", "inForm": True, "value": "go"},
+        )
+        self.assertEqual(self._classify("click", chosen, text="", key=""), "sensitive")
+
+    def test_enter_in_a_search_form_is_an_act(self):
+        # The reported fault on this tool: pressing Enter on YouTube's search box
+        # asked for permission. The form says what it is for.
+        chosen = Candidate(
+            index=1,
+            role="searchbox",
+            name="Search",
+            tag="input",
+            detail={"type": "", "inForm": True, "formRole": "search", "soleField": True},
+        )
+        self.assertEqual(self._classify("press", chosen, text="", key="Enter"), "act")
+
+    def test_enter_in_an_ordinary_form_still_asks(self):
+        # The bound on the exception above: a comment box in a plain form looks
+        # identical minus the form's role, and must still ask.
+        chosen = Candidate(
+            index=1,
+            role="textbox",
+            name="Leave a comment",
+            tag="textarea",
+            detail={"inForm": True},
+        )
+        self.assertEqual(self._classify("press", chosen, text="", key="Enter"), "sensitive")
+
+    def test_typing_and_choosing_are_acts(self):
+        chosen = Candidate(index=1, role="textbox", name="Comment", tag="textarea",
+                           detail={"inForm": True})
+        for verb in ("fill", "type", "select", "hover"):
+            with self.subTest(verb=verb):
+                self.assertEqual(self._classify(verb, chosen, text="x", key=""), "act")
+
+
 class ChangeReportTests(unittest.TestCase):
     def test_a_moved_url_is_reported_as_moved(self):
         self.assertIn("moved to", state.change_report("https://a.test/", "https://b.test/"))

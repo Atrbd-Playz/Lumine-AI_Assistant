@@ -365,14 +365,41 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
         await search.run_search(engine, snap, "kittens", approve=approve)
         self.assertEqual(approve.calls[0]["action_class"], "act")
 
-    async def test_a_search_inside_a_form_that_submits_asks_first(self):
-        # HTML's implicit submission: Enter in a form is a submission whichever way
-        # it was activated, so it is gated exactly as clicking the button would be.
+    async def test_a_search_is_an_act_even_when_its_box_is_in_a_form(self):
+        # The reported fault, and the whole of it: "search YouTube for X" asked
+        # for permission. YouTube's search box is `<input name="search_query">`
+        # inside `<form role="search">`, so it is in a form, and classifying the
+        # submission by the *key* made Enter-in-a-form `sensitive` -- true of the
+        # mechanism, false of the intent. Every tabulated site wraps its search
+        # box in a form, so the most ordinary thing this browser does was the one
+        # the user had to interrupt themselves for.
+        #
+        # `act`, not `read`: the query does go to somebody's server, so this is
+        # not a pretence that nothing left the machine.
         engine = FakeEngine(FakePage("https://example.com/"))
         approve = Recorder()
         snap = snapshot("https://example.com/", [candidate(1, "search", inForm=True)])
         await search.run_search(engine, snap, "kittens", approve=approve)
-        self.assertEqual(approve.calls[0]["action_class"], "sensitive")
+        self.assertEqual(approve.calls[0]["action_class"], "act")
+
+    async def test_the_class_does_not_depend_on_whether_we_recognise_the_site(self):
+        # The site-selector branch of `find_search_field` returns a `SearchField`
+        # built from `sites.py` alone, with `in_form` left at its dataclass
+        # default of `False`, so before this was fixed the *same physical act*
+        # was `act` on the eight tabulated hosts and `sensitive` on everything
+        # else. Classification tracked whether we recognised a hostname rather
+        # than what the act was. Both sites are now charged identically.
+        engine = FakeEngine(FakePage("https://example.com/"))
+        approve = Recorder()
+        known = snapshot("https://www.youtube.com/", [candidate(1, "search", inForm=True)])
+        await search.run_search(engine, known, "baby shark", approve=approve)
+        unlisted = snapshot("https://example.com/", [candidate(1, "search", inForm=True)])
+        await search.run_search(engine, unlisted, "baby shark", approve=approve)
+        self.assertEqual(
+            [call["action_class"] for call in approve.calls],
+            ["act", "act"],
+            "a search cost different amounts on a listed and an unlisted host",
+        )
 
     async def test_the_approval_names_the_host_and_the_query(self):
         # A question naming neither the site nor the words is a question nobody

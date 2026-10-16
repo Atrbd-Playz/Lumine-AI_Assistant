@@ -21,6 +21,8 @@ try:
     from .runtime.permission_gate import acquire_gate, release_gate
     from .runtime.progress import register_publisher, unregister_publisher
     from .runtime.visual_state import VisualState
+    from .runtime.frame_sampler import register_sampler, unregister_sampler
+    from .runtime.vision_link import VisionLink
     from .pipeline.pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
     from .settings.pipeline_config import pipeline_name
     from .runtime.runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
@@ -41,6 +43,8 @@ except ImportError:
     from runtime.permission_gate import acquire_gate, release_gate
     from runtime.progress import register_publisher, unregister_publisher
     from runtime.visual_state import VisualState
+    from runtime.frame_sampler import register_sampler, unregister_sampler
+    from runtime.vision_link import VisionLink
     from pipeline.pipeline_factory import ConfigurationRejected, build_pipeline, build_resolved
     from settings.pipeline_config import pipeline_name
     from runtime.runtime_events import RuntimeEventPublisher, ToolEventBridge, write_event_line
@@ -132,6 +136,19 @@ logging.raiseExceptions = False
 logger = logging.getLogger("lumine")
 WORKER_STARTED_AT = time.monotonic()
 EMOTION_DEBUG = os.getenv("LUMINE_DEBUG_EMOTION", "false").lower() == "true"
+
+#: How often the sight state is re-read between events.
+#:
+#: Both things it exists to notice have no event of their own. Frames that stop
+#: arriving produce nothing at all -- the sampler goes quiet, and quiet is
+#: exactly what a dead stream and an idle screen look like from here -- and a
+#: share whose first frame is late changes state with no record anywhere. So a
+#: slow tick recomputes the block, and only a *changed* block does anything:
+#: the comparison happens here and the cost is one string build.
+#:
+#: Five seconds rather than one: it is a resolution nobody can perceive on a
+#: voice turn, and it bounds how long `vision_degraded` can be wrong by.
+VISION_SYNC_SECONDS = 5.0
 
 
 def emit_runtime_event(event_type: str, **payload):
@@ -322,11 +339,54 @@ def _publish_setup_notice(publisher: Any, title: str, message: str) -> None:
 
 
 class Lumine(Agent):
-    def __init__(self, tools=None, profile: str = "gemini_live"):
+    def __init__(self, tools=None, profile: str = "gemini_live", visual: VisualState | None = None):
+        # Held beside the instructions rather than folded into them, because one
+        # of them changes and the other does not: `base` is the persona and is
+        # paid exactly once, and the sight block is the part a push re-sends.
+        # Composing them at every push from the two pieces is what makes the
+        # whole thing diffable against the last push.
+        self._base_instructions = build_instructions(profile)
+        self._vision = visual
+        self._vision_block = visual.vision_block() if visual is not None else ""
         super().__init__(
-            instructions=build_instructions(profile),
+            instructions=self._base_instructions + self._vision_block,
             tools=tools if tools is not None else get_tools(),
         )
+
+    async def sync_vision_instructions(self) -> bool:
+        """Push the sight state to the model when, and only when, it changed.
+
+        The block is compared as a whole string, so a session whose sight never
+        changes pays for one push at construction and nothing after. That
+        matters more than it looks: ``update_instructions`` re-sends the *entire*
+        instruction string to the provider, so every push costs the persona
+        again -- which is exactly why a push on a timer with no comparison would
+        be a steady tax on every conversation for a line that had not moved.
+
+        Returns whether a push happened, so the caller can log one line per
+        real transition instead of one per tick.
+        """
+        if self._vision is None:
+            return False
+        block = self._vision.vision_block()
+        if block == self._vision_block:
+            return False
+        try:
+            await self.update_instructions(self._base_instructions + block)
+        except Exception:  # noqa: BLE001 - a push must never end a session
+            # Left unadvanced on purpose. The next transition will try again
+            # rather than leaving her with a sight state that is wrong for the
+            # rest of the conversation, and a provider that refuses this call
+            # says so once per transition rather than once per tick.
+            logger.warning("[vision] could not push the sight state to the model", exc_info=True)
+            return False
+        self._vision_block = block
+        # One line, whole block, no frames: `[vision]` marks it as the same
+        # channel the rest of this module logs on, and a squashed single line is
+        # greppable in a way a wrapped paragraph is not.
+        logger.info("[vision] sight state pushed: %s", " ".join(block.split()))
+        return True
+
     async def llm_node(self, chat_ctx, tools, model_settings):
         """Stream the reply out while teaching the voice how it is being said.
 
@@ -598,7 +658,38 @@ async def entrypoint(ctx: JobContext):
     # *which* frames reach the model; this records what that decision means, so
     # the UI can say "last frame 2s ago" instead of implying a live view.
     visual = VisualState(publisher.emit)
+    # Asked of the catalog before anything is built, because this is the one
+    # fact about sight that no room event can ever supply: a model that cannot
+    # read an image receives no frames at all, and an absence of frames is
+    # indistinguishable from a broken capture to anything that has to infer it.
+    # `_stage_sees_frames` already answered it for `room_options`; this is the
+    # same answer, carried so it can be *said* rather than only enforced.
+    visual.note_capability(components.sees_frames)
+    # Declared here rather than at the task, so a shutdown that races session
+    # setup finds a bound name instead of an UnboundLocalError -- which would
+    # be the one failure the shutdown path is not allowed to have.
+    vision_tick: asyncio.Task | None = None
     sampler = components.session_kwargs.get("video_sampler")
+    # The provider-boundary observer. `vision_ready` is a statement about
+    # capability and permission and says nothing about the request that just
+    # went out, so the only thing that can answer "did she actually look?" is
+    # code standing where an image becomes a request. It is optional: a profile
+    # that never sends a frame keeps the sampler and loses only the telemetry.
+    link: VisionLink | None = None
+    if sampler is not None:
+        link = VisionLink(
+            provider=getattr(components, "llm_provider", ""),
+            model=components.model_name,
+            emit=publisher.emit,
+        )
+        link.bind(sampler)
+        attach_sampler = getattr(sampler, "attach_link", None)
+        if callable(attach_sampler):
+            attach_sampler(link)
+        # The session seam a tool needs: a worker serves several rooms, so there
+        # is no module-level "the sampler" to import, and the tool is handed a
+        # RunContext and nothing else. Same shape as the step narrator's.
+        register_sampler(session, sampler)
     attach = getattr(sampler, "attach", None)
     if callable(attach):
         attach(visual)
@@ -634,7 +725,11 @@ async def entrypoint(ctx: JobContext):
         # response ends up describing the window you closed two seconds ago.
         request_fresh = getattr(sampler, "request_fresh", None)
         if callable(request_fresh):
-            request_fresh()
+            # Tagged, because the delivery record is what makes "the picture was
+            # 40ms old when she answered" a number rather than a hope. `general`
+            # is the normal-turn profile; a profile only differs when something
+            # can name *what* is being read, and no realtime turn can.
+            request_fresh("turn", "general")
 
     @session.on("metrics_collected")
     def on_metrics_collected(event):
@@ -696,6 +791,28 @@ async def entrypoint(ctx: JobContext):
             sender_kind=getattr(participant, "kind", None),
             sender_identity=str(getattr(participant, "identity", "")),
         )
+
+    @ctx.room.on("data_received")
+    def on_vision_report(payload, participant, _kind, topic):
+        # A report, not an answer: nothing is authorised by it and nothing
+        # happens because of it beyond a state she is told. So the checks here
+        # are the ones that matter for *that* -- the topic, and not our own
+        # participant -- rather than the gate's, which exists to decide whether
+        # an action may run.
+        if topic != "lumine.vision" or participant is None:
+            return
+        if participant.kind == rtc.ParticipantKind.PARTICIPANT_KIND_AGENT:
+            return
+        # Permission is decided in a browser window this process never sees, so
+        # this is the only path by which "the OS said no" can be known here.
+        # Without it the model is told `enabled` for a capture that was refused,
+        # and the persona's instruction to say so plainly has nothing to say.
+        if visual.note_report(payload):
+            logger.info(
+                "[vision] capture state reported by the app: permission=%s phase=%s",
+                visual.permission,
+                visual.phase(),
+            )
 
     @session.on("conversation_item_added")
     def on_conversation_item_added(event):
@@ -899,6 +1016,12 @@ async def entrypoint(ctx: JobContext):
 
     async def close_session(reason: str = "room ended"):
         publisher.emit("session_ending", room=ctx.room.name, reason=reason)
+        # Stop asking whether the picture is current before the room that made
+        # it current goes away. Left running it would tick into a closed session
+        # for as long as the process lives, which for a persistent worker is
+        # forever.
+        if vision_tick is not None:
+            vision_tick.cancel()
         # Flush what a turn in flight would never close itself, and say the view
         # went dark while the publisher can still carry it.
         latency.end_turn()
@@ -915,6 +1038,11 @@ async def entrypoint(ctx: JobContext):
             release_gate(session)
             unregister_tracker(session)
             unregister_publisher(session)
+            # The sampler seam is keyed on this session for the same reason the
+            # three above are: a tool reaching for a picture in the *next*
+            # conversation must find that conversation's sampler, or none at all
+            # -- never the last one's, which would arm a request nobody serves.
+            unregister_sampler(session)
             # A history grant is a promise about *this* conversation. It must not
             # survive into the next one, where the same words would authorise a
             # different chat.
@@ -940,9 +1068,14 @@ async def entrypoint(ctx: JobContext):
             permissions.close("user left room")
             ctx.shutdown(reason="user left room")
 
+    # Built before `session.start` because the sight block is part of the very
+    # first instruction string: telling her on the first turn that this model
+    # can see, and what is shared, costs nothing -- pushing it one tick later
+    # would cost a full instruction re-send to say what was knowable already.
+    agent = Lumine(tools, profile=components.profile, visual=visual)
     await session.start(
         room=ctx.room,
-        agent=Lumine(tools, profile=components.profile),
+        agent=agent,
         # Resolved by the factory from the catalog, not decided here. `video_input`
         # is what turns a published camera or screenshare track into frames this
         # session can actually read, and the factory is the only place that knows
@@ -965,7 +1098,33 @@ async def entrypoint(ctx: JobContext):
         response_token_limit=components.response_token_limit,
     )
     # A baseline record, so the UI never has to infer "no video" from silence.
-    publisher.emit("visual", reason="idle", **visual.snapshot())
+    # Through the state rather than beside it, because the tick below asks
+    # "has this phase been published yet?" and a record emitted by hand would
+    # not count as an answer.
+    visual.mark_published("idle")
+
+    # Keep both readers current between events: the app, which wants a status
+    # line, and the model, which wants the one line in her instructions that
+    # says whether the picture in front of her is real.
+    #
+    # `pending_phase_change` rather than a local copy of the phase, because
+    # every phase caused by an event has already published itself and a second
+    # record for it is noise. What is left is precisely the transition with no
+    # event: frames going quiet on a share that is still up.
+    last_phase = visual.phase()
+    logger.info("[vision] sight state: can_see=%s permission=%s phase=%s", visual.can_see, visual.permission, last_phase)
+
+    async def vision_state_tick() -> None:
+        nonlocal last_phase
+        while True:
+            await asyncio.sleep(VISION_SYNC_SECONDS)
+            if visual.pending_phase_change():
+                last_phase = visual.phase()
+                visual.mark_published("phase")
+                logger.info("[vision] phase -> %s", last_phase)
+            await agent.sync_vision_instructions()
+
+    vision_tick = asyncio.create_task(vision_state_tick())
 
     # Hold the shared HTTP client for the lifetime of this job, so every tool
     # call reuses one SSL context and one connection pool.

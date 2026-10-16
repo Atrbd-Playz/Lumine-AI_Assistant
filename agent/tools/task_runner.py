@@ -53,10 +53,12 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
 
 try:
     from ..runtime import latency as latency_module
+    from ..runtime.frame_sampler import need_picture
     from ..runtime.latency import measure as latency_measure
     from ..runtime.permission_gate import require_approval
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from runtime import latency as latency_module  # type: ignore[no-redef]
+    from runtime.frame_sampler import need_picture
     from runtime.latency import measure as latency_measure
     from runtime.permission_gate import require_approval
 
@@ -762,6 +764,15 @@ async def _step_desktop_act(ctx: StepContext) -> StepResult:
         observation = desktop_capture.check_generation(generation)
     except ToolError as exc:
         return StepResult(verification.failed("desktop_act", str(exc)))
+
+    # A plan's act gets the same freshness a single tool call gets, and for the
+    # same reason: the *tree* has just been re-read above, but the picture the
+    # model chose this target from is whatever it was when the step was
+    # written. `reason="step"` rather than `"action"` so the delivery record can
+    # tell a planned act from an interactive one -- they have different honest
+    # latencies, and a task engine tolerates more of it than a person does.
+    # Not awaited: the refusal that matters is `check_generation`'s, above.
+    need_picture(ctx, reason="step")
 
     target = str(ctx.step.args.get("target") or "").strip()
     element = None

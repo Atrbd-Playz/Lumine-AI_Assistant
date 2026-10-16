@@ -292,6 +292,27 @@ const TOPIC_BROWSER = "lumine.browser";
  */
 const TOPIC_SCREEN = "lumine.screen";
 
+/**
+ * What the app reports about the operating system's answer to a capture.
+ *
+ * The worker cannot see any of this for itself: the capture happens in a
+ * browser window on the other side of a process boundary, so `denied` is not
+ * observable in Python and has to be told. Without it, a refused permission and
+ * a share that simply is not running arrive as the same empty frame stream, and
+ * only one of those has a fix the user can perform — so the model would say
+ * "you are not sharing anything" to somebody whose camera it is not allowed to
+ * open.
+ *
+ * One word plus an optional message: `enabled`, `denied`, `error`. The worker's
+ * `visual.note_report` decides what it accepts and ignores the rest, so a state
+ * neither side has thought of yet is a no-op rather than a lockstep release.
+ *
+ * Mirrors `visual_state.PERMISSIONS` and the handler `agent.py` registers on
+ * this topic. A mismatch is silent in both directions, which is why the string
+ * is named here rather than inlined.
+ */
+const TOPIC_VISION = "lumine.vision";
+
 const TOKEN_TIMEOUT_MS = 10_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const DISPATCH_TIMEOUT_MS = 10_000;
@@ -1406,6 +1427,41 @@ export class LumineVoiceManager {
       this.error = "That answer did not reach Lumine.";
       this.callbacks.onError(this.error);
       this.publish();
+      return false;
+    }
+  }
+
+  /**
+   * Tell the worker what the operating system said about a capture.
+   *
+   * The relay is one-way and deliberately quiet: the worker owns the state
+   * machine, the app owns the capture, and neither can observe the other's half.
+   * A capture that succeeds, one the OS refuses, and one that fails because no
+   * device exists are three different answers to "why are there no frames", and
+   * the model only has the frame stream to go on.
+   *
+   * Boolean, like `sendPermission`, but for a different reason: this reports
+   * something that already happened, so a failure to deliver changes nothing the
+   * user needs to act on. It must not raise, set `this.error`, or surface a
+   * toast — a background state report that interrupts is worse than one that
+   * was lost, and the worker's own phase still tells the truth either way.
+   *
+   * `message` is the app's own sentence for a failure, carried so the Activity
+   * page can show the reason rather than the word `error`.
+   */
+  async sendVisionState(state: "enabled" | "denied" | "error", message?: string): Promise<boolean> {
+    const session = this.activeSession;
+    if (!session || session.disposed) return false;
+
+    try {
+      const payload = new TextEncoder().encode(JSON.stringify(message ? { state, message } : { state }));
+      await session.room.localParticipant.publishData(payload, {
+        reliable: true,
+        topic: TOPIC_VISION,
+      });
+      return true;
+    } catch (error) {
+      console.warn("[Voice] Vision state report failed", error);
       return false;
     }
   }

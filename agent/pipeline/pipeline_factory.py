@@ -136,6 +136,13 @@ class PipelineComponents:
     #: ``session.start`` treats ``None`` as a supplied-but-wrong type and raises,
     #: so "off" has to be an options object that says off.
     room_options: Any = None
+    #: Whether this session's model can read a frame at all, from the catalog's
+    #: own ``input_modalities``. Kept beside ``room_options`` rather than
+    #: re-derived from it, because ``RoomOptions`` says what the *room* will
+    #: subscribe to and this is a statement about the *model* -- the two agree
+    #: today only because both come from ``_stage_sees_frames``, and the vision
+    #: block tells the model the second one in words.
+    sees_frames: bool = False
     vad: Any | None = None
     stt: Any | None = None
     tts: Any | None = None
@@ -470,6 +477,7 @@ async def _build_realtime_session(resolved: ResolvedProfile) -> PipelineComponen
         tts=tts,
         session_kwargs=session_kwargs,
         room_options=_room_options(can_see),
+        sees_frames=can_see,
     )
 
 
@@ -550,6 +558,12 @@ async def _build_cascade_session(resolved: ResolvedProfile) -> PipelineComponent
         # frames the stage cannot use -- LiveKit ignores frames a model cannot
         # read *without raising*, which is the failure that hides itself.
         room_options=_room_options(False),
+        # And recorded beside it, because the model is told this in words. The
+        # vision block states `can_see` so a cascade session says "this model
+        # cannot see" instead of leaving her to infer it from frames that never
+        # arrive -- which is an absence, and an absence is the one thing a model
+        # cannot distinguish from a bug.
+        sees_frames=False,
     )
 
 

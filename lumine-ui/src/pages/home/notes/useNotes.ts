@@ -14,12 +14,13 @@ const STORAGE_KEY = "lumine.notes.v1";
  *
  * ## Why this is not `localStorage` in two components
  *
- * There are two surfaces for the same notes — the right-hand aside on the home
- * stage, and the Focus page — and each of them used to have been a copy of the
+ * There are surfaces for the same notes — today the right-hand aside on the home
+ * stage, and formerly also the Focus page (removed with the workspace) — and each
+ * of them used to have been a copy of the
  * same read-write block. Two writers to one key is a race the user wins by typing
  * quickly in one surface after having typed in the other, and the loser is the
- * sentence they just wrote. So the key has one reader, one writer, and both
- * surfaces subscribe to it.
+ * sentence they just wrote. So the key has one reader, one writer, and every
+ * surface subscribes to it.
  *
  * ## Why a list of notes rather than one document
  *

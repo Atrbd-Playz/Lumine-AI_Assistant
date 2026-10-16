@@ -74,8 +74,33 @@ export function Sidebar({
   return (
     <aside className={`sidebar${collapsed ? " is-collapsed" : ""}`}>
       <div className="sidebar-brand">
-        <button className="logo-button" aria-label="Lumine home" onClick={() => onChange("home")}>
-          <Mark />
+        {/*
+          The brand doubles as the rail's handle.
+
+          The mark sits where a logo belongs and becomes the fold chevron on hover,
+          which is one control in one place instead of a logo that goes home and a
+          second control somewhere else that folds the rail. Going home is not lost
+          by this — `home` is the first destination in the list two rows below, and a
+          brand mark that navigates is a control whose label changes with the page you
+          are on.
+
+          Hover is on the whole row rather than on the mark, so the pointer does not
+          have to land on 30 pixels; `:focus-visible` gets the same swap, because a
+          keyboard user arriving here by Tab would otherwise be looking at a mark
+          that does not mean "press me".
+        */}
+        <button
+          type="button"
+          className="logo-button"
+          onClick={() => onCollapsedChange(!collapsed)}
+          aria-pressed={collapsed}
+          aria-label={collapseLabel}
+          title={collapseLabel}
+        >
+          <span className="logo-mark"><Mark /></span>
+          <span className="logo-chevron">
+            <Icon name={collapsed ? "expand" : "collapse"} size={15} />
+          </span>
         </button>
         <span>Lumine</span>
       </div>
@@ -167,25 +192,6 @@ export function Sidebar({
           )}
         </div>
       </nav>
-
-      <div className="sidebar-foot w-full pt-3 mt-3 border-t border-t-border">
-        <button
-          type="button"
-          className="sidebar-collapse"
-          onClick={() => onCollapsedChange(!collapsed)}
-          aria-pressed={collapsed}
-          // One string for both. The label said "the navigation" and the tooltip
-          // said "navigation", so hovering and hearing were two different
-          // descriptions of one button — and the tooltip is what a sighted mouse
-          // user reads while the label is what everyone else reads, which is the
-          // wrong pair of sentences to keep apart.
-          aria-label={collapseLabel}
-          title={collapseLabel}
-        >
-          <Icon name={collapsed ? "expand" : "collapse"} size={16} />
-          <span>Collapse</span>
-        </button>
-      </div>
     </aside>
   );
 }

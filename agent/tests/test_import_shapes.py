@@ -83,6 +83,11 @@ AGENT_MODULES = [
     "runtime.latency",
     "runtime.visual_state",
     "runtime.frame_sampler",
+    # The provider-boundary observer. It imports `frame_sampler` through the
+    # package, so it has the same two shapes to survive -- and it is the module
+    # whose whole job is to be *reachable* at the moment an image is built, so a
+    # shape that fails is a feature that silently stops reporting.
+    "runtime.vision_link",
     "runtime.permission_gate",
     "runtime.audit_log",
     "runtime.emotion_contract",

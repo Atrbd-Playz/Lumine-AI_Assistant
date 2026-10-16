@@ -33,6 +33,13 @@ the point of the exercise:
   would produce a number describing nothing, so they get their own table and are
   never mixed into a duration.
 
+A third kind, ``vision_request``, is a *count of an event* rather than a
+duration or a mark: one record the instant a picture either became a request or
+was refused at the provider boundary. They carry no clock of their own, so the
+rate is computed against the capture's own ``elapsed_ms`` window and printed
+with it -- a requests-per-minute figure whose window is not shown is a number
+nobody can check.
+
 The headline is ``turn_end_to_end`` -- user finished speaking to reply actually
 spoken -- because it is the only figure that is the user's own wait end to end.
 Every other row is a component of it.
@@ -177,6 +184,17 @@ def _is_turn_end(record: dict[str, Any]) -> bool:
     return record.get("stage") == "turn_end_to_end"
 
 
+def _collect(into: list[float], value: Any) -> None:
+    """Append a numeric field, ignoring the ones that were not measured.
+
+    ``None`` is a real answer here -- "the picture has no age because there is
+    no picture" -- and dropping it from the sample is what keeps `stats()` from
+    reporting an age of zero for a frame that never existed.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        into.append(float(value))
+
+
 # ---------------------------------------------------------------------------
 # Aggregation
 # ---------------------------------------------------------------------------
@@ -209,12 +227,89 @@ def summarize(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     visual: dict[str, Any] = {}
     notices: Counter[str] = Counter()
 
+    # `vision_request` is one record per *delivery attempt* -- the moment a
+    # picture either became a request or was refused at the provider boundary.
+    # Aggregated rather than kept as a list because the question §17 asks is a
+    # distribution ("how old were the pictures she acted on?") and a rate ("is a
+    # still screen cheap?"), neither of which survives as one row of raw JSON.
+    vision_reasons: Counter[str] = Counter()
+    vision_profiles: Counter[str] = Counter()
+    vision_whys: Counter[str] = Counter()
+    vision_targets: Counter[str] = Counter()
+    vision_frame_age: list[float] = []
+    vision_content_age: list[float] = []
+    vision_wait: list[float] = []
+    vision_bytes: list[float] = []
+    vision_requests = 0
+    vision_attached = 0
+    vision_refused = 0
+    vision_mismatch = 0
+    vision_max_queued = 0
+    vision_superseded = 0
+    vision_counters: dict[str, Any] = {}
+    elapsed_seen: list[float] = []
+
     for record in records:
         record_type = str(record.get("type") or "unknown")
         types[record_type] += 1
         session_id = record.get("session_id")
         if isinstance(session_id, str) and session_id:
             sessions.add(session_id)
+
+        elapsed = record.get("elapsed_ms")
+        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+            elapsed_seen.append(float(elapsed))
+
+        if record_type == "vision_request":
+            vision_requests += 1
+            attached = bool(record.get("image_attached"))
+            vision_attached += attached
+            vision_refused += not attached
+            vision_reasons[str(record.get("request_reason") or "unknown")] += 1
+            vision_profiles[str(record.get("profile") or "unknown")] += 1
+            why = str(record.get("why") or "").strip()
+            if why:
+                # An empty `why` means the image went out; there is nothing to
+                # explain, and counting it would make the refusal ledger a list
+                # of successes nobody asked about.
+                vision_whys[why] += 1
+            target = record.get("provider") or record.get("model")
+            model = record.get("model")
+            vision_targets[f"{target or 'unknown'}{'/' + str(model) if model else ''}"] += 1
+            _collect(vision_frame_age, record.get("frame_age_ms"))
+            _collect(vision_content_age, record.get("content_age_ms"))
+            _collect(vision_wait, record.get("request_duration_ms"))
+            if attached:
+                _collect(vision_bytes, record.get("image_bytes"))
+            result = record.get("result_generation")
+            current = record.get("current_generation")
+            if (
+                isinstance(result, int)
+                and isinstance(current, int)
+                and result != current
+            ):
+                vision_mismatch += 1
+            queued = record.get("queued_video")
+            if isinstance(queued, int) and queued > vision_max_queued:
+                vision_max_queued = queued
+            superseded = record.get("superseded_pending")
+            if isinstance(superseded, int):
+                vision_superseded += superseded
+            # Cumulative counters: the last record wins, because summing them
+            # would count the same refused frame once per later delivery.
+            for key in (
+                "accepted",
+                "dropped_stale",
+                "dropped_unchanged",
+                "dropped_budget",
+                "dropped_expired",
+                "dropped_superseded",
+                "frame_sequence",
+            ):
+                value = record.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    vision_counters[key] = value
+            continue
 
         if record_type == "visual":
             reason = str(record.get("reason") or "unknown")
@@ -280,6 +375,45 @@ def summarize(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
             tool = str(record.get("tool") or "unknown")
             tools_asked[tool] += 1
 
+    window_s = 0.0
+    if len(elapsed_seen) >= 2:
+        window_s = max(0.0, (max(elapsed_seen) - min(elapsed_seen)) / 1000.0)
+    requests_per_minute: float | None = None
+    if vision_requests and window_s > 0:
+        requests_per_minute = vision_requests / (window_s / 60.0)
+
+    counted = vision_counters
+    judged = sum(
+        int(counted.get(key, 0))
+        for key in ("accepted", "dropped_stale", "dropped_unchanged", "dropped_budget")
+    )
+
+    vision = {
+        "requests": vision_requests,
+        "attached": vision_attached,
+        "refused": vision_refused,
+        "reasons": dict(vision_reasons.most_common()),
+        "profiles": dict(vision_profiles.most_common()),
+        "whys": dict(vision_whys.most_common()),
+        "models": dict(vision_targets.most_common()),
+        "frame_age_ms": stats(vision_frame_age) if vision_frame_age else None,
+        "content_age_ms": stats(vision_content_age) if vision_content_age else None,
+        "wait_ms": stats(vision_wait) if vision_wait else None,
+        "image_bytes": stats(vision_bytes) if vision_bytes else None,
+        # The conservation line: every frame the gate judged, split by what
+        # happened to it. A total that does not add up is the report working --
+        # it means a frame took a path nobody accounted for.
+        "judged": judged,
+        "counters": counted,
+        "generation_mismatch": vision_mismatch,
+        "max_queued_video": vision_max_queued,
+        "superseded_pending": vision_superseded,
+        "window_s": _round(window_s),
+        "requests_per_minute": None
+        if requests_per_minute is None
+        else _round(requests_per_minute),
+    }
+
     return {
         "sessions": len(sessions),
         "records": len(records),
@@ -303,6 +437,7 @@ def summarize(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
         },
         "milestones": _milestones(milestones, milestone_detail),
         "visual": {"reasons": dict(reasons.most_common()), "latest": visual or None},
+        "vision": vision,
         "notices": dict(notices.most_common()),
     }
 
@@ -503,6 +638,72 @@ def render(summary: dict[str, Any], counts: dict[str, int], *, top: int = DEFAUL
             )
         if visual["reasons"]:
             out.append("  records: " + ", ".join(f"{k} {v}" for k, v in visual["reasons"].items()))
+
+    vision = summary["vision"]
+    if vision["requests"]:
+        out.append("")
+        out.append("Vision requests -- one record per delivery attempt")
+        out.append(
+            f"  {vision['requests']} requests, {vision['attached']} sent, "
+            f"{vision['refused']} refused at the provider boundary"
+        )
+        if vision["requests_per_minute"] is not None:
+            out.append(
+                f"  rate: {vision['requests_per_minute']} per minute "
+                f"over {vision['window_s']}s of capture"
+            )
+        if vision["models"]:
+            out.append(
+                "  provider/model: "
+                + ", ".join(f"{k} {v}" for k, v in vision["models"].items())
+            )
+        if vision["reasons"]:
+            out.append("  why: " + ", ".join(f"{k} {v}" for k, v in vision["reasons"].items()))
+        if vision["profiles"]:
+            out.append(
+                "  prepared as: "
+                + ", ".join(f"{k} {v}" for k, v in vision["profiles"].items())
+            )
+        for label, group in (
+            ("frame age", vision["frame_age_ms"]),
+            ("content age", vision["content_age_ms"]),
+            ("waited for a fresh frame", vision["wait_ms"]),
+        ):
+            if group:
+                out.append(
+                    f"  {label}: p50 {_ms(group['p50'])}  p95 {_ms(group['p95'])}  "
+                    f"max {_ms(group['max'])} ms  (n={group['count']})"
+                )
+        if vision["image_bytes"]:
+            image = vision["image_bytes"]
+            out.append(
+                f"  image size: mean {_ms(image['mean'])}  max {_ms(image['max'])} bytes"
+            )
+        counters = vision["counters"]
+        if counters:
+            out.append(
+                "  frames: "
+                f"accepted {counters.get('accepted', 0)}, "
+                f"over budget {counters.get('dropped_budget', 0)}, "
+                f"duplicates avoided {counters.get('dropped_unchanged', 0)}, "
+                f"stale refused {counters.get('dropped_stale', 0)} "
+                f"(judged {vision['judged']} in total)"
+            )
+            out.append(
+                "  delivery: "
+                f"refused as expired {counters.get('dropped_expired', 0)}, "
+                f"refused as superseded {counters.get('dropped_superseded', 0)}, "
+                f"replaced while pending {vision['superseded_pending']}, "
+                f"most ever queued {vision['max_queued_video']}"
+            )
+        if vision["whys"]:
+            out.append("  refusals: " + ", ".join(f"{k} {v}" for k, v in vision["whys"].items()))
+        if vision["generation_mismatch"]:
+            out.append(
+                f"  stale results: {vision['generation_mismatch']} record(s) carried a "
+                "generation the screen had already left behind"
+            )
+        out.append("  images are counted by size, never logged by content")
 
     other = {name: count for name, count in summary["types"].items() if name != "latency"}
     if other:

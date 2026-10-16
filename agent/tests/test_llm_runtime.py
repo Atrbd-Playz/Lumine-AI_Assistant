@@ -188,5 +188,105 @@ class AgentInstructionsTests(unittest.TestCase):
         self.assertIn("at most one tool per reply", instructions)
 
 
+class VisionInstructionPushTests(IsolatedAsyncioTestCase):
+    """The one channel by which a sight state the model cannot observe reaches it.
+
+    A frame stream is not the answer: the model has no idea whether a picture in
+    its context is current, and an instruction that says "you are sharing" is
+    just as wrong an hour later. So the state is pushed as a *block*, deduped as
+    a whole string, and this class is what makes those two properties hold at
+    the seam where the worker meets the provider.
+    """
+
+    @staticmethod
+    def _lumine(visual):
+        try:
+            from agent.agent import Lumine
+        except Exception as exc:  # pragma: no cover - import-time environments
+            raise unittest.SkipTest(f"agent module unavailable: {exc}")
+        return Lumine(tools=[], visual=visual)
+
+    @staticmethod
+    def _visual():
+        from agent.runtime.visual_state import VisualState
+
+        visual = VisualState()
+        visual.note_capability(True)
+        return visual
+
+    async def test_the_sight_state_is_there_from_the_first_turn(self):
+        # The first request is built from `instructions` alone -- no tick has
+        # run yet -- so a block that only arrived on a later push would leave
+        # the opening reply of every session blind to its own sight state.
+        agent = self._lumine(self._visual())
+
+        self.assertIn("## Sight state", agent.instructions, "the pushed block, not the persona's own Sight section")
+        self.assertIn('"can_see": true', agent.instructions)
+        self.assertIn('"phase": "not_requested"', agent.instructions)
+        self.assertIn("Tool use", agent.instructions)
+
+    async def test_a_sight_state_that_never_changes_is_never_pushed_again(self):
+        # `update_instructions` re-sends the whole persona, so a push with no
+        # comparison is a per-tick tax on every conversation for a line that has
+        # not moved. The dedup is the entire cost model of this feature.
+        agent = self._lumine(self._visual())
+        before = agent.instructions
+
+        self.assertFalse(await agent.sync_vision_instructions())
+        self.assertEqual(agent.instructions, before)
+
+    async def test_a_transition_is_pushed_once_and_carries_the_whole_persona(self):
+        visual = self._visual()
+        agent = self._lumine(visual)
+        before = agent.instructions
+
+        visual.note_permission("denied")
+
+        self.assertTrue(await agent.sync_vision_instructions())
+        pushed = agent.instructions
+        self.assertNotEqual(pushed, before)
+        self.assertIn('"permission": "denied"', pushed)
+        # The persona rides along: a push that replaced the instructions with
+        # the block alone would delete everything else on the first transition.
+        self.assertIn("Tool use", pushed)
+        self.assertIn("## Sight state", pushed)
+
+        self.assertFalse(await agent.sync_vision_instructions())
+        self.assertEqual(agent.instructions, pushed, "the second call re-pushed a block that had not moved")
+
+    async def test_a_refused_push_is_tried_again_on_the_next_tick(self):
+        # Left unadvanced on purpose: a provider that fails this call once must
+        # not leave her describing a sight state that is wrong for the rest of
+        # the conversation, and a failure that never retries is a silent one.
+        visual = self._visual()
+        agent = self._lumine(visual)
+        visual.note_permission("denied")
+        before = agent.instructions
+
+        async def refuse(_instructions: str) -> None:
+            raise RuntimeError("provider refused")
+
+        agent.update_instructions = refuse
+        self.assertFalse(await agent.sync_vision_instructions())
+        self.assertEqual(agent.instructions, before, "a failed push must not half-apply")
+
+        del agent.update_instructions  # back to the real method
+        self.assertTrue(await agent.sync_vision_instructions())
+        self.assertIn('"permission": "denied"', agent.instructions)
+
+    async def test_a_session_with_no_state_to_report_does_not_try(self):
+        # The cascade pipeline has no frames to see and never subscribes, so
+        # there is nothing to say -- and saying it would be a push whose only
+        # content is that nothing is happening.
+        try:
+            from agent.agent import Lumine
+        except Exception as exc:  # pragma: no cover - import-time environments
+            self.skipTest(f"agent module unavailable: {exc}")
+        agent = Lumine(tools=[], visual=None)
+
+        self.assertFalse(await agent.sync_vision_instructions())
+        self.assertNotIn("[vision]", agent.instructions)
+
+
 if __name__ == "__main__":
     unittest.main()

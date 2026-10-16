@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Icon } from "./Icon";
+import { visionShareText, type VisionPhase } from "../../../lib/visualState";
 
 /**
  * The user's own picture, beside Lumine.
@@ -24,9 +25,22 @@ export type SelfViewProps = {
   source: "camera" | "screen";
   /** Whether this track is actually published to the room. */
   isPublished: boolean;
+  /**
+   * The worker's phase for this capture, or `null` before it reports one.
+   *
+   * It refines the badge rather than replacing it: `visionShareText` returns
+   * `null` for every phase this component's own wording already tells the
+   * truth about, so the fallback below is what renders in the common case. The
+   * three phases it does speak for are ones no local state can know — a frozen
+   * share, and a model with no image input at all — which is the whole reason
+   * to take a prop here. `isPublished` still decides the styling and still
+   * floors the text: this badge must never claim a share the track is not
+   * making.
+   */
+  phase?: VisionPhase | null;
 };
 
-export function SelfView({ stream, source, isPublished }: SelfViewProps) {
+export function SelfView({ stream, source, isPublished, phase }: SelfViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
   // The element has to be told about the stream after it exists, and the stream
@@ -53,7 +67,7 @@ export function SelfView({ stream, source, isPublished }: SelfViewProps) {
           {source === "camera" ? "Camera" : "Screen"}
         </span>
         <span className={"self-view-badge py-0.5 px-1.5 rounded-full text-faint bg-surface-muted text-[10px] tracking-[0.01em] whitespace-nowrap" + (isPublished ? " is-shared" : "")}>
-          {isPublished ? "Shared with Lumine" : "Only you can see this"}
+          {visionShareText(phase, isPublished, source) ?? (isPublished ? "Shared with Lumine" : "Only you can see this")}
         </span>
       </div>
     </aside>

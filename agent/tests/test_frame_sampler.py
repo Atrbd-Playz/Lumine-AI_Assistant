@@ -410,6 +410,15 @@ class ObservationTests(unittest.TestCase):
                 # is she still paying for a screen nobody is touching", which is
                 # the question a person actually has when a share is running.
                 "quiet_run", "interval_ms",
+                # Whether the picture she holds is still this screen, and if not,
+                # how old it was when the screen moved. The two generations are
+                # the comparison; the two ages are what a log line reports.
+                "generation", "picture_generation", "picture_current",
+                "picture_age_ms", "content_age_ms",
+                # Refused after the gate, which is the only place that can see
+                # how long an encode and a stalled loop actually took.
+                "dropped_expired", "dropped_superseded", "superseded",
+                "pending_request",
             },
         )
         self.assertEqual(stats["accepted"], 1)

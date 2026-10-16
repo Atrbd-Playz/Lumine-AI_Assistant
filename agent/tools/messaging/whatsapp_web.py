@@ -1818,7 +1818,13 @@ async def announce_sent(context: Any, who: str) -> str:
     session = _session_of(context)
     if session is None:
         return SILENT
-    # line = f"The message has been sent to {who}."
+    # Kept as code, not as a model instruction. On a profile with a synthesiser
+    # this is the one and only confirmation; on `gemini_live` it is `SILENT` and
+    # the model's own reply to the tool result is the confirmation. Commenting
+    # this line out does not remove the confirmation on either profile -- it only
+    # turns `line` into an unbound name, which the `except` below turns into
+    # `SILENT`. So it cannot have been what the duplicate was.
+    line = f"The message has been sent to {who}."
     try:
         channel = await speak_line(
             session, line, allow_interruptions=True, allow_model=False

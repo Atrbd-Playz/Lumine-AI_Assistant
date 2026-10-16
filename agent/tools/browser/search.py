@@ -53,11 +53,11 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
 # for exactly that. `engine` does not import this module, so there is no cycle.
 try:
     from . import locators, sites, state
-    from .actions import classify_key, hostname_of
+    from .actions import hostname_of
     from .engine import EngineAction
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from browser import locators, sites, state  # type: ignore[no-redef]
-    from browser.actions import classify_key, hostname_of  # type: ignore[no-redef]
+    from browser.actions import hostname_of  # type: ignore[no-redef]
     from browser.engine import EngineAction  # type: ignore[no-redef]
 
 logger = logging.getLogger("lumine")
@@ -79,6 +79,21 @@ MAX_QUERY_CHARS = 200
 #: sites so "step 3 of 3" cannot drift out of step with the number of steps
 #: actually published -- the same reason `whatsapp.SEND_STEPS` exists.
 SEARCH_STEPS = 3
+
+#: The class every search is charged at.
+#:
+#: ``act`` and never ``read``: the query does go to somebody's server, so this
+#: is not a pretence that nothing left the machine. ``act`` rather than
+#: ``sensitive`` because submitting a search form sends a query and nothing the
+#: user owns -- it is the same shape as the click that navigates a page, which
+#: this tool has always treated as an ordinary act.
+#:
+#: Named rather than derived from a control's facts, because *being* the search
+#: field is what :func:`find_search_field` just established: it is either the
+#: site's own hand-written selector or a control whose label says "search". Both
+#: are stronger evidence than any DOM fact gathered afterwards, and neither
+#: depends on whether we happen to recognise the host.
+SEARCH_ACTION_CLASS = "act"
 
 
 @dataclass
@@ -235,11 +250,16 @@ async def run_search(
     Order, and why each part is there:
 
     1. **Find the field.** The site's selector, then the semantic fallback.
-    2. **Ask.** The class comes from the *key* rather than the click, because the
-       submission in a search is the Enter: a search box inside a form is
-       ``sensitive`` exactly as an ``Enter`` in a form is, and classifying the
-       click instead would report an ordinary ``act`` for the one thing a search
-       actually does.
+    2. **Ask.** Nothing is asked, and that is the fix rather than an omission.
+       A search is :data:`SEARCH_ACTION_CLASS` because submitting a search form
+       sends a query rather than anything the user owns. It was previously
+       classified from the *key*, which made an Enter inside a ``<form>`` a
+       submission -- true of the mechanism, false of the intent -- and every
+       tabulated site wraps its search box in a form, so "search YouTube for X"
+       asked for permission to look something up. The one control on the page
+       where that classification still applies is a form that is *not* a search
+       form, and this verb never lands on one: :func:`find_search_field` only
+       returns a page's search field.
     3. **Type, then submit.** Two engine actions, because the field's value has to
        be committed before Enter means anything.
     4. **Check.** Typed-but-stayed-put is ``accepted`` with the address it stayed
@@ -274,12 +294,13 @@ async def run_search(
             url=snapshot.url[:90],
         )
 
-    # Classified by the *key*, not the click. A search is a fill followed by
-    # Enter, and the submission is the Enter: HTML's implicit submission sends the
-    # form whatever the field looks like, which `classify_key` already treats as
-    # `sensitive`. Classifying the click instead would report an ordinary `act`
-    # for the one thing a search actually does -- it submits.
-    action_class = classify_key("Enter", tag=found.tag, type_="", in_form=found.in_form)
+    # A search is an ordinary act. It used to be classified by the *key*, which
+    # asked whenever the field sat inside a `<form>` -- and it sat inside one on
+    # every tabulated site, so "search YouTube for X" interrupted the user to ask
+    # permission to look something up. The class is now the same on every site
+    # rather than depending on whether the host is in `sites.SITES`, which is what
+    # the site-selector branch's hard-coded `in_form=False` default used to decide.
+    action_class = SEARCH_ACTION_CLASS
 
     with progress_step(
         context,

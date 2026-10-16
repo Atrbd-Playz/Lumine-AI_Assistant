@@ -12,10 +12,6 @@ import type { NotesApi } from "../notes/useNotes";
  * the other behind it. The switches are therefore exclusive: opening notes closes
  * the transcript and the other way round, which is what a pair of toggles driving
  * one slot should do.
- *
- * This is not a second copy of the Focus page. It is the same `NotesSurface` at
- * a narrower width with the list folded away, and the timer is not here at all —
- * a countdown running in a panel nobody has open is a countdown nobody can stop.
  */
 export function NotesPanel({
   open,
@@ -26,7 +22,6 @@ export function NotesPanel({
   onCreate,
   onSave,
   onDelete,
-  onFocusPage,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -36,7 +31,6 @@ export function NotesPanel({
   onCreate: () => void;
   onSave: (id: string, body: string) => void;
   onDelete: (id: string) => void;
-  onFocusPage: () => void;
 }) {
   return (
     <aside
@@ -53,15 +47,6 @@ export function NotesPanel({
           </div>
         </div>
         <div className="conversation-head-actions flex items-center gap-0.5">
-          <button
-            type="button"
-            className="panel-icon"
-            onClick={onFocusPage}
-            aria-label="Open the Focus page"
-            title="Open the Focus page"
-          >
-            <Icon name="timer" size={16} />
-          </button>
           <button
             type="button"
             className="panel-icon"

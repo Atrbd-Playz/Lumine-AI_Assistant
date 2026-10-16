@@ -5,10 +5,18 @@ ticks. The exact-CRC test this replaces dropped 2 frames out of ~200 on a live
 session -- it was not deduplicating, it was paying a full-buffer CRC to conclude
 "something, somewhere, changed". These pin the test that does work, and pin the
 backoff, without needing a browser or a codec.
+
+They also pin the *shape* of the fake plane, which is not a detail. The first
+live run of the vision pipeline found every frame dying inside
+``luma_signature`` with ``NotImplementedError: memoryview: unsupported format
+<B`` -- the real exporter's format -- while these tests were green, because a
+``memoryview`` built over ``bytes`` is format ``"B"`` and indexes fine. The fake
+now fails the way the SDK does, so it can catch what it used to hide.
 """
 
 from __future__ import annotations
 
+import ctypes
 import unittest
 from unittest import mock
 
@@ -30,7 +38,11 @@ class FakeFrame:
         return self._data
 
     def get_plane(self, plane_nth: int = 0):
-        return memoryview(self._data)
+        # ``"<B"``, not ``"B"``: ctypes' uint8 array is the stdlib's only
+        # exporter of a byte-*ordered* memoryview format, which is the shape
+        # livekit-rtc really hands over -- and which CPython refuses to index.
+        # See the note on ``test_vision_scheduling.PixelFrame``.
+        return memoryview((ctypes.c_uint8 * len(self._data)).from_buffer_copy(self._data))
 
 
 def with_pixel(frame: FakeFrame, index: int, value: int) -> FakeFrame:
@@ -87,6 +99,22 @@ class SignatureTests(unittest.TestCase):
                 raise RuntimeError("no plane here")
 
         self.assertIsNone(fs.luma_signature(NoPlane()))
+
+    def test_the_fixture_plane_is_shaped_like_the_sdk(self):
+        """The fake has to be able to fail the way the SDK fails.
+
+        ``memoryview(bytes)`` is format ``"B"`` and indexes; ``livekit-rtc``'s
+        plane is format ``"<B"`` and raises ``NotImplementedError`` on the same
+        expression. A fake built the easy way therefore indexes fine, and every
+        regression in this module becomes invisible -- which is how the video
+        forward task stayed dead on every real frame behind a green suite.
+        """
+        plane = FakeFrame().get_plane(0)
+        self.assertEqual(plane.format, "<B")
+        with self.assertRaises(NotImplementedError):
+            int(plane[0])
+        # ... and the sampler reads it anyway, because that is the whole point.
+        self.assertIsNotNone(fs.luma_signature(FakeFrame()))
 
 
 class DeduplicationTests(unittest.TestCase):

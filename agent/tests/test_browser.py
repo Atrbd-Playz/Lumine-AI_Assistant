@@ -232,12 +232,112 @@ class ClassifyKeyTests(unittest.TestCase):
         # HTML's implicit submission: Enter on an ordinary text field sends
         # the form. Data moving toward someone else's server is the line
         # this tool holds, and it holds it before looking at the tag.
+        #
+        # `search=False` throughout, and it has to be named: a *search* field
+        # is the deliberate exception, and a test that left the flag at its
+        # default while asserting a bare text field would pass whether or not
+        # the exception existed.
         for tag, type_ in (("input", "text"), ("textarea", ""), ("input", "search")):
             with self.subTest(tag=tag, type=type_):
                 self.assertEqual(
-                    actions.classify_key("Enter", tag=tag, type_=type_, in_form=True),
+                    actions.classify_key(
+                        "Enter", tag=tag, type_=type_, in_form=True, search=False
+                    ),
                     "sensitive",
                 )
+
+
+class SearchControlTests(unittest.TestCase):
+    """The one fact that lowers a class, and the boundary around it."""
+
+    def test_a_search_form_is_recognised_by_the_form_own_role(self):
+        # YouTube, Google and Amazon all ship `<form role="search">`. This is
+        # the strongest signal because it describes the form rather than the
+        # field, so a page cannot get it by styling one input.
+        self.assertTrue(
+            actions.is_search_control(
+                tag="input", type_="", in_form=True, form_role="search"
+            )
+        )
+        self.assertTrue(
+            actions.is_search_control(tag="button", type_="", in_form=True, form_role="search")
+        )
+
+    def test_a_searchbox_role_is_recognised_on_its_own(self):
+        # `role` is the settled answer for the *control*, so it needs no
+        # corroboration from `soleField`.
+        self.assertTrue(
+            actions.is_search_control(tag="input", type_="", in_form=True, role="searchbox")
+        )
+        # A bare `type="search"` is not enough, and the reason is the third
+        # signal rather than a missing rule: `type=search` on one field of a
+        # larger form is a filter box, not a search form, and treating it as one
+        # would hand a page a way to make an ordinary submission ask-free.
+        # `roleOf` in `state` reports such a field as `searchbox` regardless,
+        # which is why the role above and the type below disagree on purpose.
+        self.assertFalse(actions.is_search_control(tag="input", type_="search", in_form=True))
+
+    def test_the_search_typed_field_needs_to_be_the_only_one(self):
+        # The sole-field half is what stops a page treating its comment box as
+        # a search: one search box *and* a comment box is a comment form.
+        self.assertTrue(
+            actions.is_search_control(
+                tag="input", type_="search", in_form=True, sole_field=True
+            )
+        )
+        self.assertFalse(
+            actions.is_search_control(
+                tag="input", type_="search", in_form=True, sole_field=False
+            ),
+            "a search-typed field that is not alone in its form is not a search form",
+        )
+
+    def test_an_ordinary_text_field_in_a_form_is_not_a_search(self):
+        # The negative case, and the one that matters: a comment box, a
+        # checkout, a sign-in form and a contact form all look exactly like
+        # this, and all of them still ask.
+        self.assertFalse(actions.is_search_control(tag="input", type_="text", in_form=True))
+        self.assertFalse(actions.is_search_control(tag="textarea", type_="", in_form=True))
+        self.assertFalse(
+            actions.is_search_control(tag="input", type_="text", in_form=True, sole_field=True),
+            "the sole-field signal only qualifies a search-typed field",
+        )
+        self.assertFalse(actions.is_search_control(tag="input", type_="", in_form=False))
+
+    def test_a_search_submit_is_an_act_and_not_a_read(self):
+        # `act`, never `read`: the query did go to somebody's server, so this
+        # is not a pretence that nothing left the machine.
+        self.assertEqual(
+            actions.classify_click(tag="input", type_="submit", in_form=True, search=True), "act"
+        )
+        self.assertEqual(
+            actions.classify_click(tag="button", type_="", in_form=True, search=True), "act"
+        )
+
+    def test_enter_in_a_search_form_does_not_ask(self):
+        # The reported fault: "search YouTube for X" and "press Enter on the
+        # YouTube search box" both interrupted the user. Both go through here.
+        self.assertEqual(
+            actions.classify_key("Enter", tag="input", type_="", in_form=True, search=True), "act"
+        )
+        self.assertEqual(
+            actions.classify_key("Enter", tag="input", type_="text", in_form=True, search=True),
+            "act",
+        )
+
+    def test_a_search_form_does_not_mute_the_other_forms_on_the_page(self):
+        # The class is per control, so a sign-in form beside a search box keeps
+        # asking. One form being a search form is not a licence for the page.
+        self.assertEqual(
+            actions.classify_key(
+                "Enter", tag="input", type_="password", in_form=True, search=False
+            ),
+            "sensitive",
+        )
+        self.assertEqual(
+            actions.classify_key("Enter", tag="textarea", type_="", in_form=True, search=False),
+            "sensitive",
+        )
 
     def test_enter_outside_a_form_is_an_ordinary_press(self):
         # No form, nothing to submit: pressing Enter on a control is an act.

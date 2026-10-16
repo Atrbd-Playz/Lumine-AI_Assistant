@@ -17,6 +17,7 @@ import type { ConversationAgentStatus, ConversationItem } from "../conversation/
 import type { ConversationBubbleVariant } from "../types";
 import type { LumineVoiceConnectionState } from "../../../features/voice/useLumineVoice";
 import type { LocalMedia } from "../../../features/voice/useLocalMedia";
+import { useVisualState, visionShareText } from "../../../lib/visualState";
 import type { LumineEmotionIntent } from "../../../components/avatar/avatarTypes";
 
 type MainSpaceProps = {
@@ -144,8 +145,6 @@ type MainSpaceProps = {
   onOpenPermissions: () => void;
   onEditNote: (id: string, body: string) => void;
   onDeleteNote: (id: string) => void;
-  /** Where the aside's "open the timer" button goes. */
-  onFocusPage: () => void;
 };
 
 const LIVE_STATES: LumineVoiceConnectionState[] = ["online", "connected", "listening", "thinking", "speaking"];
@@ -193,11 +192,19 @@ export function MainSpace({
   onOpenPermissions,
   onEditNote,
   onDeleteNote,
-  onFocusPage,
 }: MainSpaceProps) {
   const copy = STATE_COPY[state];
   const today = new Intl.DateTimeFormat(undefined, { weekday: "long", day: "2-digit", month: "long" }).format(new Date());
   const live = LIVE_STATES.includes(sessionStatus);
+  // The worker's own answer to "is a picture actually arriving", and it is the
+  // only answer available from this side of the pipe: a live share and a frozen
+  // one look identical to the process holding the track. `null` until the first
+  // `visual` record, which `visionShareText` treats as "say nothing new" rather
+  // than as a claim.
+  const vision = useVisualState();
+  const shareText =
+    visionShareText(vision?.phase, isVideoPublished, "screen") ??
+    (isVideoPublished ? "Lumine can see this screen" : "Only you can see this");
   // One source, because the room only ever uses one. `media.active` is already
   // exclusive, so the preview cannot be showing a different track from the one
   // Lumine is looking at.
@@ -344,9 +351,7 @@ export function MainSpace({
           <div className="share-strip" role="status">
             <span className="share-strip-pip" aria-hidden="true" />
             <span className="share-strip-label">Screen sharing</span>
-            <span className={`share-strip-state${isVideoPublished ? " is-shared" : ""}`}>
-              {isVideoPublished ? "Lumine can see this screen" : "Only you can see this"}
-            </span>
+            <span className={`share-strip-state${isVideoPublished ? " is-shared" : ""}`}>{shareText}</span>
           </div>
         )}
         {/*
@@ -368,7 +373,9 @@ export function MainSpace({
           first card for the `:has()` rules that keep it sized correctly.
         */}
         <DesktopPreview state={desktopState} />
-        {preview && <SelfView stream={preview.stream} source={preview.source} isPublished={isVideoPublished} />}
+        {preview && (
+          <SelfView stream={preview.stream} source={preview.source} isPublished={isVideoPublished} phase={vision?.phase} />
+        )}
 
         {/*
           The greeting, and only the greeting.
@@ -458,7 +465,6 @@ export function MainSpace({
         onCreate={onCreateNote}
         onSave={onEditNote}
         onDelete={onDeleteNote}
-        onFocusPage={onFocusPage}
       />
     </main>
   );

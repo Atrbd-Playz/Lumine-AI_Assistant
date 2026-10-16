@@ -66,6 +66,7 @@ try:
         classify_key,
         fill_deny_reason,
         hostname_of,
+        is_search_control,
         normalize_key,
         normalize_url,
     )
@@ -83,6 +84,7 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
         classify_key,
         fill_deny_reason,
         hostname_of,
+        is_search_control,
         normalize_key,
         normalize_url,
     )
@@ -894,16 +896,35 @@ def _classify(verb: str, chosen: locators.Candidate, *, text: str, key: str) -> 
     a submitter is a submission whichever way it was activated, and an ``Enter``
     inside a form is HTML's implicit submit. Facts only -- never the label,
     which is text the page chose.
+
+    ``type_`` reads ``detail["type"]`` and used to read ``detail["value"]``, which
+    is the element's *value* attribute: `<input type="submit" value="Go">` was
+    therefore classified an ordinary ``act`` and a form submission went through
+    without a question, while ``browse`` -- whose own facts script returns the
+    real attribute -- classified the same button ``sensitive``. Two tools, one
+    button, two answers, and the wrong one in the direction that never asks.
     """
     in_form = bool(chosen.detail.get("inForm"))
+    type_ = str(chosen.detail.get("type") or "")
+    search = is_search_control(
+        tag=chosen.tag,
+        type_=type_,
+        role=chosen.role,
+        in_form=in_form,
+        form_role=chosen.detail.get("formRole"),
+        sole_field=bool(chosen.detail.get("soleField")),
+    )
     if verb in ELEMENT_ACTIONS:
-        action_class = classify_click(tag=chosen.tag, type_=str(chosen.detail.get("value") or ""), in_form=in_form)
+        action_class = classify_click(
+            tag=chosen.tag, type_=type_, in_form=in_form, search=search
+        )
         if verb == "press":
             action_class = classify_key(
                 normalize_key(key) if key.strip() else "Enter",
                 tag=chosen.tag,
-                type_=str(chosen.detail.get("value") or ""),
+                type_=type_,
                 in_form=in_form,
+                search=search,
             )
         return action_class, verb
     if verb in ("fill", "type", "clear"):

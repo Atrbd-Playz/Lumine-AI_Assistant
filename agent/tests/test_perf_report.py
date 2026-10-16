@@ -272,6 +272,134 @@ class SummarizeTests(unittest.TestCase):
         self.assertEqual(summary["milestones"], [])
 
 
+def vision_request(**fields):
+    """A delivery record in the shape `runtime/vision_link.py` emits."""
+    record = {
+        "type": "vision_request",
+        "frame_sequence": 1,
+        "frame_age_ms": 40.0,
+        "content_age_ms": 900.0,
+        "dropped_stale": 0,
+        "dropped_unchanged": 0,
+        "accepted": 1,
+        "dropped_budget": 0,
+        "dropped_expired": 0,
+        "dropped_superseded": 0,
+        "request_reason": "turn",
+        "request_priority": "normal",
+        "provider": "google",
+        "model": "gemini-3.8-live",
+        "image_attached": True,
+        "image_bytes": 41200,
+        "request_duration_ms": 55.0,
+        "result_generation": 3,
+        "current_generation": 3,
+        "why": "",
+        "profile": "general",
+        "superseded_pending": 0,
+        "queued_video": 1,
+    }
+    record.update(fields)
+    return record
+
+
+class VisionRequestTests(unittest.TestCase):
+    """§17: captured, discarded or sent -- answerable from the capture alone."""
+
+    def test_one_section_answers_the_whole_measurement(self):
+        records = [
+            vision_request(),
+            vision_request(request_reason="question", profile="detail", image_bytes=88000),
+            vision_request(request_reason="action", image_attached=False, image_bytes=0, why="expired",
+                           frame_age_ms=2100.0),
+            vision_request(request_reason="action", image_attached=False, image_bytes=0, why="superseded",
+                           request_duration_ms=5.0),
+        ]
+        vision = summarize(records)["vision"]
+
+        self.assertEqual(vision["requests"], 4)
+        self.assertEqual(vision["attached"], 2)
+        self.assertEqual(vision["refused"], 2)
+        self.assertEqual(vision["reasons"], {"turn": 1, "question": 1, "action": 2})
+        self.assertEqual(vision["profiles"], {"general": 3, "detail": 1})
+        self.assertEqual(vision["whys"], {"expired": 1, "superseded": 1})
+        self.assertEqual(vision["models"], {"google/gemini-3.8-live": 4})
+        # Ages and sizes are distributions, because "is she looking at the
+        # screen or at last minute's screen" is a p95 question, not a mean one.
+        self.assertEqual(vision["frame_age_ms"]["count"], 4)
+        self.assertEqual(vision["frame_age_ms"]["max"], 2100.0)
+        self.assertEqual(vision["image_bytes"]["count"], 2, "a refused frame sends no bytes")
+        self.assertEqual(vision["image_bytes"]["max"], 88000.0)
+        self.assertEqual(vision["wait_ms"]["count"], 4)
+
+    def test_cumulative_counters_are_read_as_the_last_not_the_sum(self):
+        # Counting a refused frame once per later delivery would report more
+        # frames refused than arrived -- the same mistake the visual heartbeat
+        # already has a rule against, applied to the delivery side.
+        records = [
+            vision_request(dropped_unchanged=10, dropped_stale=1, accepted=3,
+                           dropped_budget=20, dropped_expired=0, frame_sequence=3),
+            vision_request(dropped_unchanged=14, dropped_stale=2, accepted=4,
+                           dropped_budget=27, dropped_expired=1, frame_sequence=4),
+        ]
+        vision = summarize(records)["vision"]
+
+        self.assertEqual(vision["counters"]["dropped_unchanged"], 14)
+        self.assertEqual(vision["counters"]["dropped_stale"], 2)
+        self.assertEqual(vision["counters"]["frame_sequence"], 4)
+        # Conservation: what the gate judged, split four ways, must add up.
+        self.assertEqual(vision["judged"], 4 + 2 + 14 + 27)
+
+    def test_a_stale_result_is_counted_not_inferred(self):
+        records = [
+            vision_request(),
+            vision_request(result_generation=10, current_generation=11),
+        ]
+        vision = summarize(records)["vision"]
+        self.assertEqual(vision["generation_mismatch"], 1)
+
+    def test_the_rate_is_never_printed_without_its_window(self):
+        records = [
+            vision_request(),
+            vision_request(),
+            vision_request(),
+            latency(stage="entrypoint", elapsed_ms=0),
+            latency(stage="entrypoint", elapsed_ms=120000),
+        ]
+        vision = summarize(records)["vision"]
+
+        self.assertEqual(vision["window_s"], 120.0)
+        self.assertEqual(vision["requests_per_minute"], 1.5)
+
+    def test_a_capture_with_no_delivery_records_reports_nothing_about_vision(self):
+        summary = summarize([latency(stage="entrypoint", elapsed_ms=0)])
+        vision = summary["vision"]
+
+        self.assertEqual(vision["requests"], 0)
+        self.assertIsNone(vision["frame_age_ms"])
+        self.assertIsNone(vision["requests_per_minute"])
+
+        text = render(summary, {"lines": 1, "records": 1, "ignored": 0})
+        self.assertNotIn("Vision requests", text)
+
+    def test_the_section_says_how_many_images_were_omitted_by_construction(self):
+        summary = summarize([vision_request(image_bytes=41200)])
+        text = render(summary, {"lines": 1, "records": 1, "ignored": 0})
+
+        self.assertIn("Vision requests", text)
+        self.assertIn("1 requests, 1 sent, 0 refused", text)
+        self.assertIn("duplicates avoided 0", text)
+        # The bytes are *counted*; nothing that could be an image is printed.
+        self.assertIn("41,200", text)
+        self.assertIn("counted by size, never logged by content", text)
+        self.assertNotIn("base64", text.lower())
+
+    def test_every_report_line_is_free_of_trailing_whitespace(self):
+        summary = summarize([vision_request(why="expired", image_attached=False)])
+        for line in render(summary, {"lines": 1, "records": 1, "ignored": 0}).splitlines():
+            self.assertEqual(line, line.rstrip())
+
+
 class RenderTests(unittest.TestCase):
     RECORDS = [
         latency(session_id="s", stage="entrypoint", elapsed_ms=12),

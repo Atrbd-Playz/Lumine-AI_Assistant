@@ -67,9 +67,11 @@ from typing import Any
 
 try:
     from ...runtime import progress, verification
+    from ...runtime.frame_sampler import need_picture
     from ...runtime.permission_gate import require_approval
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from runtime import progress, verification  # type: ignore[no-redef]
+    from runtime.frame_sampler import need_picture  # type: ignore[no-redef]
     from runtime.permission_gate import require_approval  # type: ignore[no-redef]
 
 try:
@@ -447,6 +449,45 @@ def _after_click_evidence(before: capture.Observation, hwnd: int) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _fresh_before_act(context: RunContext, verb: str) -> dict[str, Any]:
+    """Ask for a picture that is still *this* screen before anything is aimed.
+
+    ## What it is not
+
+    It does not wait. A screenshot the model has not received yet cannot slow
+    this call down, and the tool's safety was never going to come from one:
+    :func:`capture.confirm_target` re-walks the accessibility tree and re-finds
+    the target by role and name immediately before anything irreversible, and
+    that *refuses*. This is a second, weaker, different guarantee -- that the
+    model's own reasoning is not seconds behind the pixels, and that "the
+    picture was 900ms old when she chose that" is a number in a log rather than
+    a thing nobody noticed.
+
+    ## Why it is asked here
+
+    An act is the one place freshness has a hard threshold rather than a
+    preference: reading a stale screenshot is a bad answer, clicking one is a
+    wrong action. So the age limit is :data:`ACTION_MAX_AGE` (0.5s) rather than
+    the two seconds a queued frame gets, and it is applied to the picture Lumine
+    is *holding*, not to the frame the gate is about to sample.
+
+    ## Why `observe` does not ask
+
+    A read observes the tree directly, and it observes it *now* -- fresher than
+    any frame could be, and without spending a token on a picture the answer
+    does not use. The whole point of a stable screen becoming cheap is that
+    nothing asks for an image it was not going to use, and a look is exactly
+    such a request.
+
+    Never raises, and returns the sampler's own report so a test can tell "no
+    sharing is running" from "the picture was too old and a fresh one was
+    asked for".
+    """
+    if verb == "observe":
+        return {}
+    return need_picture(context, reason="action")
+
+
 @function_tool()
 async def desktop_control(
     context: RunContext,
@@ -500,6 +541,12 @@ async def desktop_control(
         raise ToolError(MSG_BAD_VERB)
 
     desktop().preflight()
+
+    # Before the interruption latch, before any target is resolved: the picture
+    # Lumine is holding is checked against *this* screen, and a fresh one is
+    # asked for if it is not. Deliberately not awaited -- see
+    # `_fresh_before_act` for why waiting would not be the safety property.
+    _fresh_before_act(context, verb)
 
     # Interruption is latched once something is going to move the user's
     # pointer, and not before: a read is safe to interrupt, a keystroke is not.

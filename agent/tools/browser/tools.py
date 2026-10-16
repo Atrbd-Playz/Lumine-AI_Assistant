@@ -28,6 +28,8 @@ them would be the one with the click in it.
 
 from __future__ import annotations
 
+from typing import Any
+
 try:
     from ...runtime.permission_gate import require_approval
 except ImportError:  # running as a top-level script with agent/ on sys.path
@@ -42,6 +44,7 @@ try:
         classify_key,
         fill_deny_reason,
         hostname_of,
+        is_search_control,
         normalize_key,
         normalize_scroll,
         normalize_url,
@@ -85,6 +88,7 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
         classify_key,
         fill_deny_reason,
         hostname_of,
+        is_search_control,
         normalize_key,
         normalize_scroll,
         normalize_url,
@@ -266,6 +270,28 @@ def _click_report(label: str, on_host: str, outcome: dict) -> str:
         f"Clicked {label}{on_host}, but the page stayed on "
         f"{clip(landed, URL_CHARS)}. The click was delivered; read the page again "
         f"before you rely on it."
+    )
+
+
+#: ``_CLICK_FAILURES`` etc. read a reason from the page; the reason a key was
+#: classified ``sensitive`` is a DOM fact, and this is the one place it is
+#: resolved for both element actions.
+def _is_search(info: Any) -> bool:
+    """Whether ``inspect_ref``'s facts say this control is a search box.
+
+    A thin reader over :func:`actions.is_search_control`, so the two browser
+    tools agree by construction rather than by two copies of the same rule. The
+    facts come from ``session._JS_FACTS``, which reads ``role``, ``formRole``
+    and ``soleField`` alongside the ``tag``/``type``/``inForm`` the freshness
+    signature already covered.
+    """
+    return is_search_control(
+        tag=info.get("tag"),
+        type_=info.get("type"),
+        role=info.get("role"),
+        in_form=bool(info.get("inForm")),
+        form_role=info.get("formRole"),
+        sole_field=bool(info.get("soleField")),
     )
 
 
@@ -665,11 +691,17 @@ async def browse(
 
     if which is not None:
         # -- act: press a key on it ----------------------------------------
-        # Enter in a form is a submission and says so; a key that activates
-        # the control is classified as the click it is; everything else only
-        # moves focus or the caret.
+        # Enter in a form is a submission and says so, except in a search form,
+        # where submitting is searching; a key that activates the control is
+        # classified as the click it is; everything else only moves focus or
+        # the caret. `is_search_control` and `web_control._classify` compute
+        # this from the same facts, so one search cannot be priced two ways.
         action_class = classify_key(
-            which, tag=info.get("tag"), type_=info.get("type"), in_form=bool(info.get("inForm"))
+            which,
+            tag=info.get("tag"),
+            type_=info.get("type"),
+            in_form=bool(info.get("inForm")),
+            search=_is_search(info),
         )
         shown = "Space" if which == " " else which
         await require_approval(
@@ -731,7 +763,10 @@ async def browse(
 
     # -- act: click it ------------------------------------------------------
     action_class = classify_click(
-        tag=info.get("tag"), type_=info.get("type"), in_form=bool(info.get("inForm"))
+        tag=info.get("tag"),
+        type_=info.get("type"),
+        in_form=bool(info.get("inForm")),
+        search=_is_search(info),
     )
     await require_approval(
         context,

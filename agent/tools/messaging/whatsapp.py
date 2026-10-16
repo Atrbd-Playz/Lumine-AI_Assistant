@@ -242,9 +242,39 @@ MSG_RETRY_UNCERTAIN = (
     "My last attempt at this exact message could not be confirmed, so I will not "
     "risk sending it twice. Check WhatsApp first. Nothing new was sent."
 )
-MSG_ALREADY_SENT = (
-    "I already sent that exact message a moment ago -- not sending it twice. "
-    "Nothing new was sent."
+#: A duplicate send is refused the same way as before and **said nothing**.
+#:
+#: This is the reported "she confirms the send twice", and the sentence being
+#: removed is not the confirmation -- it is the *safety net* that stopped a second
+#: send. A realtime model re-issues a function call it has already had answered
+#: (nothing here re-invokes the tool: there is no retry wrapper, and the ledger
+#: marker is written only after the send), so `send_whatsapp` is reached twice for
+#: one request. The first call confirms the send; the second is refused and, being
+#: a normal non-empty return, is answered in voice. Two statements about one send,
+#: on the channel that cannot be scrolled past.
+#:
+#: The refusal has to stay, and it has to be silent, because the confirmed hold is
+#: :data:`DEFAULT_DEDUP_SECONDS` -- ten seconds. Nobody asks twice, is transcribed,
+#: resolved, drafted and re-called inside ten seconds; that window exists to catch
+#: exactly this replay. And a `sent` marker is only ever written *after* delivery
+#: was observed and the confirmation was already given, so the user has heard this
+#: send confirmed and there is nothing left to tell them.
+#:
+#: Deliberately not raised as a `ToolError`. An exception is a failure the model
+#: must report; this is not a failure, it is the tool correctly doing its job a
+#: second time.
+#:
+#: Worded for two readers, because a tool result has both. The model's reply is
+#: the voice -- "nothing further to say" is what stops a second confirmation. The
+#: same string is the toast (`features/toast/toolToast.ts` renders a plain
+#: sentence as-is), so it also has to read as a finished piece of work rather than
+#: as leaked scaffolding. The pre-existing `"Say this once, in your own words."`
+#: on the success result does not manage that, which is a separate wart and not one
+#: to widen here.
+MSG_ALREADY_SENT_QUIET = (
+    "That exact message was already sent to WhatsApp a moment ago and the user "
+    "has already been told it went. Nothing further was sent, and there is "
+    "nothing further to say."
 )
 MSG_ALREADY_PREPARED = (
     "I already opened that message for you a moment ago -- it should be waiting in "
@@ -1343,7 +1373,10 @@ async def send_whatsapp(
         # gave last time is not an approval to gamble again.
         raise ToolError(MSG_RETRY_UNCERTAIN)
     if previous == "sent":
-        return MSG_ALREADY_SENT
+        # Silent, and the reasoning is on the constant: a duplicate inside a ten
+        # second confirmed hold is this turn replayed, not a person asking again,
+        # and the user already heard the first confirmation.
+        return MSG_ALREADY_SENT_QUIET
 
     # -- open the chat and confirm it is the right one ------------------------
     with progress_step(

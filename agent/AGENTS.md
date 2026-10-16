@@ -1,5 +1,32 @@
 # Lumine Python Agent Architecture
 
+## The worker's place in the companion
+
+The worker's long-term shape is set by the product vision, not only by LiveKit's
+API. Read [`../VISION.md`](../VISION.md) and [`../ARCHITECTURE.md`](../ARCHITECTURE.md)
+before changing anything about how the worker starts, stops, or reports itself.
+
+The load-bearing consequences for this directory:
+
+- **The worker stays a separate process, and its lifecycle is not the product's
+  lifecycle.** The app currently starts and stops it, and Phase 1 inverts that:
+  a resident runtime will own the wake listener and start the worker only when
+  someone addresses Lumine. The persistent-server design here is correct for that
+  and must not be replaced by a per-room process.
+- **The worker is never the wake detector.** Wake is local, continuous and lives
+  outside this process ([ADR-0003](../docs/decisions/0003-wake-layer-separation.md)).
+  Nothing in `agent/` may import or configure a wake engine, and the microphone is
+  *not* opened here — audio arrives over the room.
+- **The greeting becomes conditional.** `generate_reply` on every session start is
+  correct for a room the user opened, and wrong for a wake that carried a request
+  ([ADR-0013](../docs/decisions/0013-greeting-conditional.md)).
+- **The agent publishes a companion lifecycle**, it does not infer one. One record,
+  one authority, every surface rendering the same thing
+  ([ADR-0005](../docs/decisions/0005-single-lifecycle-authority.md)).
+- **The product speaks, not the model.** A line from `runtime/voice_line.py` is
+  Lumine speaking and must read like her; the WhatsApp send confirmation is the
+  existing example of a fact the product states once.
+
 ## How does Lumine think, listen, and speak?
 
 The Python backend is a LiveKit agent worker. A **persistent** `AgentServer` registers

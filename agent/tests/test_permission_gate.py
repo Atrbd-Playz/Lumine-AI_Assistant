@@ -1142,6 +1142,36 @@ class VoiceApprovalAnnouncementTests(unittest.TestCase):
         self.assertTrue(session.options)
         self.assertFalse(session.options[0]["allow_interruptions"])
 
+    def test_one_approval_speaks_one_question_and_the_card_agrees(self):
+        # The reported "duplicate confirmation ask voice", pinned from the side
+        # that could not be the cause.
+        #
+        # The cause was not this module. A search reached the gate **twice** --
+        # once for `run_search` and again for the Enter press, which
+        # `classify_key` had classed `sensitive` -- and two requests are two
+        # spoken questions however well each is delivered. That is fixed at the
+        # source in `browser.actions.is_search_control`, and pinned there by
+        # `test_browser.SearchControlTests` and
+        # `test_browser_search.ApprovalTests`.
+        #
+        # What this pins is the property that made the model escalation
+        # necessary, so that nobody "fixes" a future duplicate by muting the
+        # question instead: on a profile whose `say()` raises -- which is the
+        # default `gemini_live` -- refusing the fallback would mean the
+        # question is never spoken at all, and silence is a refusal.
+        session = self.Session()
+        gate = self._gate(session)
+        request = self._request(gate)
+
+        asyncio.run(gate._announce(request))
+
+        self.assertEqual(len(session.spoken), 1, "one approval spoke more than one question")
+        self.assertEqual(session.spoken[0], gate.spoken_question(request))
+        # The same sentence the card carries, because a card that paraphrased
+        # the action differently would let someone answer "yes" to one and
+        # believe they had agreed to the other.
+        self.assertEqual(gate._ui_record(request)["question"], session.spoken[0])
+
     def test_a_realtime_profile_still_asks_out_loud(self):
         # The regression, and the reason `runtime.voice_line` exists.
 

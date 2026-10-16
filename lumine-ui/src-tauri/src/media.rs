@@ -20,7 +20,7 @@
 //! scanner the tool plays from. A count computed here in Rust would be a count of
 //! a different thing, and the screen would say 40 when Lumine can find 3.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use tauri_plugin_dialog::DialogExt;
@@ -31,7 +31,7 @@ use tauri_plugin_dialog::DialogExt;
 pub struct MusicFolder {
     /// The full path, stored in the document and never spoken.
     pub path: String,
-    /// The folder's own name — what the screen leads with.
+    /// The folder's own name â€” what the screen leads with.
     pub name: String,
     pub track_count: usize,
     pub folder_count: usize,
@@ -39,7 +39,7 @@ pub struct MusicFolder {
     /// with a number on it is a thing a person can choose.
     pub folders: Vec<MusicPlaylist>,
     /// Extension to count, so the screen can say "mp3 and m4a" rather than "3
-    /// formats" — and so an unexpected one is visible.
+    /// formats" â€” and so an unexpected one is visible.
     pub formats: Vec<(String, usize)>,
     pub allowed: Vec<String>,
     /// False when the folder was read but holds nothing playable. Still a
@@ -71,7 +71,7 @@ pub struct MusicQueue {
     pub ok: bool,
     /// How many tracks are in the queue. The one number worth having.
     pub queued: usize,
-    /// Which folder it was built from — the requested subfolder, or the library's
+    /// Which folder it was built from â€” the requested subfolder, or the library's
     /// own name.
     pub folder: String,
     /// The first track, as a name. Never the whole queue: a list is not a summary.
@@ -197,7 +197,7 @@ pub async fn inspect_music_folder(path: String, recursive: Option<bool>) -> Resu
 /// file, so the previous shape started nine and the user got nine players on top
 /// of each other. `agent/media_queue.py` writes one `.m3u8` from already-validated
 /// paths and opens **that**, and from then on the player's own window owns the
-/// order — which is also where skip and stop live.
+/// order â€” which is also where skip and stop live.
 ///
 /// It is a separate script from the tool on purpose: this button runs in the app
 /// process, the `play_media` tool runs in the worker, and neither can call the
@@ -207,7 +207,7 @@ pub async fn inspect_music_folder(path: String, recursive: Option<bool>) -> Resu
 /// that ranked differently from the matcher.
 ///
 /// No permission gate, on purpose: the gate's question is "may Lumine do this",
-/// and the person clicking is answering a different one — "may *I* play this".
+/// and the person clicking is answering a different one â€” "may *I* play this".
 ///
 /// The webview only ever supplies a **subfolder name**. It cannot supply a path:
 /// the script resolves the library root from the saved document itself, and
@@ -251,101 +251,6 @@ fn judge_queue(stdout: &[u8]) -> Result<MusicQueue, String> {
         note: raw.note,
         error: error_of(raw.ok, raw.error),
     })
-}
-
-/// Resolve a configured library root to a canonical path.
-///
-/// Split out of [`validate_against_library`] because the Focus Workspace's
-/// in-app player needs the *root* on its own, not a track checked against one: it
-/// grants the Tauri asset protocol exactly this directory and nothing else, and
-/// granting an uncanonicalised string is how a scope ends up one directory wider
-/// than the person chose.
-///
-/// The refusals are deliberately the same two the track path uses, so switching
-/// folder cannot report a problem the track path would have accepted.
-pub(crate) fn canonical_library_root(library: &str) -> Result<PathBuf, String> {
-    let root = library.trim().trim_matches('"');
-    if root.is_empty() {
-        return Err("Choose a music folder in Settings first.".to_string());
-    }
-    let lowered = root.to_ascii_lowercase();
-    for scheme in ["http://", "https://", "ftp://", "file://"] {
-        if lowered.starts_with(scheme) {
-            return Err("A music folder is a place on this computer, not a web address.".to_string());
-        }
-    }
-    std::fs::canonicalize(root).map_err(|_| "That music folder could not be read.".to_string())
-}
-
-/// Audio extensions the in-app player will hand to an `<audio>` element.
-///
-/// **A narrower list than `agent/tools/media/library.py::ALLOWED_SUFFIXES`, and
-/// the narrowing is the point.** That constant also admits video, because
-/// `play_media` may open a video in the system player where a container can be
-/// anything. A webview's `<audio>` cannot decode `.mkv` or `.wmv`, so offering
-/// them produces a player that silently does nothing — and a player that fails
-/// quietly is worse than one that refuses. `.mp4`/`.m4a` are kept because the
-/// webview decodes AAC/MP4 audio without trouble.
-///
-/// Duplicated rather than shelled out for the same reason
-/// [`validate_against_library`] is: a 400 ms interpreter start between a click
-/// and a sound. The Python list stays the authority for the *voice* path; this one
-/// is the authority for *in-app* playback, and the two answers are allowed to
-/// differ because they are answering different questions.
-pub(crate) const IN_APP_AUDIO_SUFFIXES: [&str; 8] = [
-    "mp3", "m4a", "aac", "flac", "wav", "ogg", "opus", "weba",
-];
-
-/// Whether a path is something the in-app player can actually decode.
-///
-/// Case-insensitive on purpose: `SONG.MP3` is the same file as `song.mp3` on
-/// Windows and macOS, and refusing it because of its capital letters would be a
-/// bug that only shows up on somebody's own library.
-pub(crate) fn is_in_app_audio(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            IN_APP_AUDIO_SUFFIXES
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(ext))
-        })
-        .unwrap_or(false)
-}
-
-/// The library boundary, in Rust.
-///
-/// **Deliberately duplicated from `agent/tools/media/library.py`.** The rule is
-/// small — resolve both sides, then check containment — and the alternative was
-/// shelling out to Python for one `starts_with`, which would put a 400 ms
-/// interpreter start between a click and a sound.
-///
-/// `canonicalize` resolves symlinks and `..` on every platform, which is why it is
-/// used rather than string surgery. The duplication is the risk, and it is bounded
-/// by the tests at the bottom of this file, which pin the cases that have actually
-/// caused bugs.
-///
-/// What this does **not** do is validate the extension — that half is Python's,
-/// and the opener only ever sees a path that has been through
-/// `play_media` *or* through this, so the allowlist lives in one place per process.
-pub(crate) fn validate_against_library(path: &str, library: &str) -> Result<PathBuf, String> {
-    let raw = path.trim().trim_matches('"');
-    if raw.is_empty() {
-        return Err("That track could not be found.".to_string());
-    }
-    let lowered = raw.to_ascii_lowercase();
-    for scheme in ["http://", "https://", "ftp://", "file://"] {
-        if lowered.starts_with(scheme) {
-            return Err("That is a web address, not a file on this computer.".to_string());
-        }
-    }
-    let resolved_root = canonical_library_root(library)?;
-    // Both sides resolved. Comparing an unresolved root against a resolved child is
-    // how every track in a good library came to be reported as outside it.
-    let target = std::fs::canonicalize(raw).map_err(|_| "That track could not be found.".to_string())?;
-    if !target.starts_with(&resolved_root) {
-        return Err("I can only play things inside your music folder.".to_string());
-    }
-    Ok(target)
 }
 
 /// Run a helper and turn its envelope into the screen's shape.
@@ -547,7 +452,7 @@ mod tests {
 
     #[test]
     fn the_folder_name_falls_back_to_the_tail_of_the_path() {
-        // A path with no final component — the root, or something the OS reported
+        // A path with no final component â€” the root, or something the OS reported
         // unusually. An empty name renders as a blank heading.
         let report = judge(
             br#"{"ok":true,"path":"/","trackCount":0}"#,
@@ -566,12 +471,12 @@ mod tests {
 
     /// The exact bytes `agent/media_queue.py` writes on a good queue.
     const GOOD_QUEUE: &str = r#"{"ok":true,"queued":9,"folder":"Lumine Media Folder",
-        "first":"Akhon Ami এখন আমি Vocal song.mp3",
+        "first":"Akhon Ami à¦à¦–à¦¨ à¦†à¦®à¦¿ Vocal song.mp3",
         "note":"Queued in order in your media player. Skip and stop are in that window."}"#;
 
     #[test]
     fn a_queue_reports_a_count_and_where_it_went() {
-        // The widget's whole answer. A count and a sentence, and **no list** — the
+        // The widget's whole answer. A count and a sentence, and **no list** â€” the
         // queue lives in the player's window, and a widget that drew the filenames
         // would be a second library browser that knows nothing about playback.
         let queued = judge_queue(GOOD_QUEUE.as_bytes()).expect("a queue");
@@ -612,7 +517,7 @@ mod tests {
     #[test]
     fn formats_come_back_sorted_by_extension() {
         // The script hands over a BTreeMap, so this is guaranteed there rather
-        // than by a sort here — the assertion pins the guarantee rather than
+        // than by a sort here â€” the assertion pins the guarantee rather than
         // re-implementing it.
         let report = judge(
             br#"{"ok":true,"path":"C:/M","name":"M","trackCount":3,

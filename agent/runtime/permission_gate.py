@@ -887,12 +887,30 @@ class PermissionGate:
         self.last_announce_channel = SILENT
         if not self.voice_approval_enabled():
             return
+        # `allow_interruptions=False`, because an approval cut off mid-sentence
+        # is an approval that is sometimes never heard -- and silence refuses.
         channel = await speak_line(
             self.session,
             self.spoken_question(request),
-            # An approval question that can be cut off mid-sentence is an approval
-            # that is sometimes never heard, and silence refuses.
             allow_interruptions=False,
+            # The escalation to the realtime model is **kept**, and this argument
+            # is the whole reason it is kept. It was the fix for "she says it
+            # twice" everywhere else -- `whatsapp_web.announce_sent` passes it --
+            # and applying it here would have been the wrong repair: on the
+            # default `gemini_live` profile `say()` raises, so refusing the
+            # fallback means the question is never spoken at all. A card in the
+            # corner of a window with no voice is an approval the user cannot
+            # hear is being asked for, and 60 seconds of silence counts as a
+            # *refusal*.
+            #
+            # The duplicate this module *did* have was not here. It was that the
+            # gate was reached **twice for one search** -- once by `run_search`'s
+            # own approval and again by the Enter press, which `classify_key` had
+            # classed `sensitive` -- and two requests are two spoken questions
+            # however carefully each one is delivered. That is fixed at the
+            # source, in `browser.actions.is_search_control`, and both requests
+            # are now `act`s that never reach this function at all.
+            allow_model=True,
         )
         self.last_announce_channel = channel
         self._publish_announce_channel(request, channel)

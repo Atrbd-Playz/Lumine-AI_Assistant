@@ -17,7 +17,8 @@
 
 Talk to it. It hears you, thinks, and answers out loud — and when a request needs
 hands, it reaches for them: a browser it drives, a program it opens, a message it
-drafts for your approval.
+drafts for your approval. When a request has more than one step, it plans the
+steps, checks each one actually happened, and tells you what is still uncertain.
 
 Everything runs on your own machine. The desktop app is a Tauri shell over a
 persistent Python LiveKit worker. There is no cloud backend of Lumine's own, and
@@ -30,15 +31,19 @@ anything.
 ## Contents
 
 - [What Lumine Is](#what-lumine-is)
+- [The North Star](#the-north-star)
+- [What She Can Do](#what-she-can-do)
 - [Screenshots](#screenshots)
 - [Features](#features)
 - [Architecture](#architecture)
+- [The Agent Runtime](#the-agent-runtime)
 - [The Tool Registry](#the-tool-registry)
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
 - [Testing](#testing)
 - [Documentation](#documentation)
 - [Project Status](#project-status)
+- [Known Issues](#known-issues)
 - [Contributing](#contributing)
 - [License](#license)
 - [Author](#author)
@@ -50,13 +55,93 @@ Lumine is three processes and one conversation.
 A **Tauri** desktop shell in **Rust** owns the window, the OS keyring and the
 lifecycle of a **Python** worker. That worker is a persistent LiveKit
 `AgentServer`; each conversation is a fresh room with its own `AgentSession`
-built from the profile you configured. The **React** webview never talks to
-LiveKit's secrets — it asks Rust for a token and consumes high-level state
-events, so the UI holds no provider knowledge at all.
+built from the profile you configured. Between them sits the **runtime** — the
+layer that decides whether a request needs one step or five, plans it, checks
+permission, executes it, reads the screen afterwards, and reports what is true
+rather than what went well. The **React** webview never talks to LiveKit's
+secrets — it asks Rust for a token and consumes high-level state events, so the
+UI holds no provider knowledge at all.
 
 The default voice path is a single native-audio **Gemini Live** realtime model
 that hears, thinks and speaks in one turn. A Groq + Silero + Cartesia cascade is
 preserved and still selectable.
+
+## The North Star
+
+> **Lumine should feel like a companion living quietly on the computer, not an
+> application the user has to open.**
+>
+> She should sleep when not needed, hear when called, appear when addressed,
+> understand the complete request, act when authorized, communicate naturally, and
+> disappear again when the interaction is over. **The full UI is her home, not her
+> existence.**
+
+The intended experience is closer to **Jarvis / Siri / Alexa, plus an anime-style
+desktop companion, plus an autonomous computer-use agent** than to **ChatGPT in a
+desktop window**:
+
+- **Always available, not always visible.** A resident runtime starts with Windows
+  and stays hidden. The full UI opens only when asked for.
+- **One-shot commands.** "Hey Lumine, what's the weather?" is one interaction, not
+  three turns.
+- **A transient island**, not a window. A small top-centre surface appears on wake
+  and retracts when the conversation is over.
+- **IDLE is not SLEEPING.** A follow-up sentence needs no wake phrase; an idle
+  session eventually closes and leaves only the wake listener running.
+- **Wake is local.** Nothing streams microphone audio to a provider to decide
+  whether you said her name.
+
+How far the code is from that, honestly and in detail, is in
+[`docs/gap-audit.md`](docs/gap-audit.md). The target design is in
+[`ARCHITECTURE.md`](ARCHITECTURE.md), the companion phases in
+[`ROADMAP.md`](ROADMAP.md), and the internal runtime phases in
+[`docs/agent-runtime/`](docs/agent-runtime/README.md).
+
+## What She Can Do
+
+### Today
+
+| You say | What happens |
+|---|---|
+| "What's the weather in Dhaka?" | One lookup, one answer. No task, no ceremony |
+| "Open Notepad." | Resolves the name to one target, launches it, **waits for the window**, reports it opened |
+| "Open Chrome, search YouTube for *X*, play it, then start a 25-minute timer." | A **task**: routed, planned, executed step by step, each step observed afterwards, the whole thing cancelable |
+| "Send this WhatsApp message to Afia." | Resolves the contact, opens the chat, **types the text and reads it back out of the composer**, asks, sends, then confirms delivery from the message bubble |
+| "Has anyone replied in the Afia chat?" | Reads the chat — and asks once, out loud, because that grant lasts the rest of the conversation |
+| "Play my vocal songs." | Matches the words you *said* against a real library, then opens **one ordered queue** rather than nine simultaneous launches |
+| "Click the save button." | Looks at the screen first, acts on a control it actually found, and re-reads before anything irreversible |
+| "Delete this file." | **Refused** — she has no verb that deletes a file. This is a decision, not a gap |
+
+### And the habits that matter more than the verbs
+
+- **She never reports success she did not observe.** Every side-effecting action
+  reports one of seven honest states, and *"Windows took the input but I did not
+  read the application afterwards"* is a sentence she can actually say.
+- **An approval is one action, once.** It is spoken *and* shown as a card carrying
+  the same sentence, expires in 60 seconds, and a bare "yes" answers it. Silence is
+  a refusal, not a maybe.
+- **A tool result is small on purpose.** It is compressed, structured, and capped,
+  because it is re-sent on every later turn in the conversation.
+- **Retrieved text is data, never instruction.** A web page or a message that says
+  "ignore previous instructions" is wrapped so it cannot become a command.
+
+### On the way
+
+Each row names the phase that delivers it.
+
+| Situation | Track |
+|---|---|
+| "Hey Lumine, what's the weather?" — one interaction, no window ever opens | companion Phase 1 |
+| A task survives the worker restarting underneath it | runtime Phase 3 |
+| A browser failure re-observes and recovers instead of claiming it worked | runtime Phase 4 |
+| "Read the notes file I keep in Documents." | runtime Phase 6 |
+| "Continue where we left off." — task and preference context, loaded selectively | runtime Phase 7 |
+| "Find something on my PC I half-remember." | runtime Phase 8 |
+| "Research this and tell me when you're done." | runtime Phase 9 |
+| She says something first, when it is worth saying | companion Phase 9 |
+
+Full goals and the definition of done:
+[`docs/agent-runtime/README.md`](docs/agent-runtime/README.md).
 
 ## Screenshots
 
@@ -149,6 +234,13 @@ with its own design: a sage-green light theme and its dark counterpart.
 - Camera and screen input for models that declare those modalities, and a refusal with the real reason when the platform cannot.
 - An SVG avatar with a canonical 27-emotion vocabulary plus an `idle` state, an activity layer, cursor gaze, and barge-in.
 
+**A runtime, not a tool bag**
+- A **task** for anything with two or more dependent steps: routed to the right environment, planned, executed step by step, and cancelled as a whole.
+- **Seven honest outcome states** for every side-effecting action, from *"we decided to"* to *"we read it afterwards and it changed."* Nothing implies success.
+- **Dependencies gate rather than order**, so a step runs when its prerequisites are real, and a blocked step is *skipped* rather than *failed* — "we never tried" is a different fact from "we tried and it did not work."
+- **Uncertain is a decision, not an accident.** When an outcome is genuinely unknown, a retry becomes something Lumine asks about rather than something she does.
+- No retry loop, deliberately: a session that keeps trying a rate limit spends the quota it has left.
+
 **Seventeen tools, five categories**
 - *Web* — weather, news, search, plus two page drivers: one addressed by reference, one by what controls are called.
 - *Internal* — her own guidance, read on demand rather than preloaded into every turn.
@@ -159,10 +251,12 @@ with its own design: a sage-green light theme and its dark counterpart.
 **Desktop control**
 - Mouse and keyboard for any application without a dedicated tool, through Windows UI Automation. Ships **off**; the Tools page card is the switch.
 - It refuses exactly two things: Lumine's own window, and password fields. Everything else runs.
+- "The screen" is never assumed to be the foreground window — while you are talking to her, the foreground window *is Lumine*.
 
 **Messaging that asks first**
 - A send types the text into the chat and reads it back out of the composer *before* the approval question, so what you approve is on your own screen.
 - Reading someone's messages is a separate tool that asks once per conversation and says out loud that the grant lasts the rest of it.
+- An uncertain send is never retried. A duplicate in someone's name is worse than a missing message.
 
 **Boundaries rather than warnings**
 - A model-supplied path is resolved first and compared second, so `..`, an absolute path and a symlink out all land in the same refusal.
@@ -175,20 +269,20 @@ with its own design: a sage-green light theme and its dark counterpart.
 React 19 + Vite  (webview)
   │   Tauri commands + events — no LiveKit secret ever crosses this line
   ▼
-Rust  (src-tauri)   agent_manager · credentials · settings_store · media · focus
+Rust  (src-tauri)   agent_manager ─ credentials ─ settings_store ─ media
   │   spawns the worker, injects keyring values one variable per slot,
   │   re-emits its LUMINE_EVENT stdout stream as Tauri events
   ▼
-Python  (agent/)   persistent AgentServer "lumine" · one AgentSession per room
+Python  (agent/)   persistent AgentServer "lumine" ─ one AgentSession per room
   │
-  ▼
-Gemini Live realtime      —or—      Groq + Silero + Cartesia
+  ├── runtime/      router · task_model · task_engine · verification · permission_gate
+  └── tools/        17 gated tools across five categories
 ```
 
 | | Tauri shell | Python worker |
 |---|---|---|
 | Language | Rust | Python 3.10+ |
-| Owns | window, keyring, worker lifecycle, settings document | the voice session, the tools, the browser |
+| Owns | window, keyring, worker lifecycle, settings document | the voice session, the runtime, the tools, the browser |
 | Lifetime | as long as the app | outlives the app's conversations |
 | Talks to | the OS, the webview, the worker | LiveKit, providers, the user's machine |
 | Knows nothing about | Groq, Cartesia, VAD | React, the window, the theme |
@@ -201,6 +295,52 @@ listening" — the UI reports those separately.
 **Stack:** Tauri 2 · React 19 · TypeScript 5.8 · Vite 7 · Tailwind CSS 4 ·
 Rust 2021 · Python 3.10–3.14 · LiveKit Agents 1.8 (Google, Groq, OpenAI, Silero,
 Cartesia plugins) · Playwright · UI Automation.
+
+That is the architecture **today**. The companion runtime the vision describes —
+a resident process, a local wake listener, and a transient island in front of this
+UI — is designed in [`ARCHITECTURE.md`](ARCHITECTURE.md) and built in the phases
+of [`ROADMAP.md`](ROADMAP.md). This diagram will keep working when it lands: the
+worker's process separation, the keyring boundary and the event stream are all
+load-bearing under the target design, not scaffolding to be replaced.
+
+## The Agent Runtime
+
+The layer between "she understood the request" and "here is what actually
+happened." It is invisible to the user, which is the point.
+
+```text
+request ──▶ router ──▶ plan ──▶ permission ──▶ execute ──▶ observe ──▶ verify
+             pure      validated   one gate     one step     read it    report
+             routing   no cycles    per verb     at a time    again      honestly
+```
+
+| Module | Owns |
+|---|---|
+| `runtime/router.py` | Which environment a request belongs in — pure, over a request plus facts about the machine |
+| `runtime/task_model.py` | `Task` and `Step`: dependencies, retry policy, cancellation |
+| `runtime/task_engine.py` | Deterministic progression, checkpoints, bounded concurrency |
+| `runtime/verification.py` | The seven-value vocabulary every side effect reports in |
+| `runtime/permission_gate.py` | One gate for all 17 tools: voice and UI consent, expiry, audit |
+| `runtime/progress.py` | A tool narrating its own steps, so silence is brief |
+| `runtime/failure_gate.py` | Three consecutive failures opens a circuit and she apologises once |
+| `tools/task_runner.py` | The `run_task` / `cancel_task` tool, where the three meet |
+
+Three properties that took measurement to arrive at, and that the code is written
+around:
+
+- **The planner is a deterministic scenario table, not a model call.** A model
+  asked to "keep calling tools until this is done" re-plans after every call, and
+  every re-plan is a chance to change its mind mid-sequence — which is how a
+  browser opens twice.
+- **Freshness is a second reading, never a token.** "Click 7" only means something
+  relative to a picture of the screen. A reference is refused when the screen has
+  moved on.
+- **A broken selector degrades to a refusal**, never to a plausible wrong action.
+  "I couldn't find the send button" is a useful answer; a send that went to
+  somebody else is not.
+
+[`docs/agent-runtime/`](docs/agent-runtime/README.md) carries the goals, the
+phases, and the definition of done for finishing this layer properly.
 
 ## The Tool Registry
 
@@ -228,6 +368,15 @@ or `destructive` — that the saved config can only raise, never lower.
 | `run_task` | Desktop | A multi-step request end to end, checking each step worked | ask |
 | `cancel_task` | Desktop | Stops the current task, including steps not yet started | auto |
 
+**The function tools stay as they are.** The approved direction is a canonical
+dotted capability namespace — `computer.click`, `browser.page.open`,
+`communication.send_message` — as the *authority* for policy keys and the Tools
+page, while these verb-parameterised tools stay the efficient *interface* the
+model is shown. The measured reason is in
+[ADR-0014](docs/decisions/0014-canonical-capability-namespace.md): the tool
+schemas already cost ~4.7k tokens on every completion, and Gemini Live offers no
+`parallel_tool_calls` backstop.
+
 ## Getting Started
 
 ### Prerequisites
@@ -236,7 +385,7 @@ or `destructive` — that the saved config can only raise, never lower.
 | --- | --- |
 | **OS** | Windows (verified). The code avoids Windows-only assumptions, but no other platform has been exercised. |
 | **Python** | 3.10 – 3.14. This is `livekit-agents` 1.8.3's own supported range, not a preference. |
-| **Node** | 20 or newer, for Vite 7 and the Tauri CLI. |
+| **Node** | `20.19+` or `22.12+`, which is what Vite 7 asks for. |
 | **Rust** | Stable toolchain. On Windows, Visual Studio Build Tools with the C++ workload. |
 | **Accounts** | A LiveKit project (cloud or self-hosted) and a Google AI Studio API key. |
 
@@ -286,10 +435,10 @@ Copy-Item lumine-ui\.env.example lumine-ui\.env
 `agent/.env.example` ships with **every credential line empty**, and that is
 deliberate rather than tidiness. Every credential check in the product treats "the
 variable holds a non-empty string" as "you have this key", because telling a
-placeholder from a real key would cost a billable request. A shipped
-`your-…` placeholder therefore reads as a working credential: the setup gate says
-you are ready and the first turn is a `401`. An empty value is a real absence, and
-it leaves the line there to paste into.
+placeholder from a real key would cost a billable request. A shipped `your-…`
+placeholder therefore reads as a working credential: the setup gate says you are
+ready and the first turn is a `401`. An empty value is a real absence, and it
+leaves the line there to paste into.
 
 ### 4. Run it
 
@@ -311,10 +460,11 @@ depend on a process you remembered to start.
 .\.venv\Scripts\python.exe agent\validate_config.py --describe
 ```
 
-- **Vite is on port 5173, strictly.** That is not the Tauri-conventional `1420`
-  because Hyper-V and WSL reserve `1351–1450` on Windows, and binding an excluded
-  port fails with `EACCES` rather than `EADDRINUSE`. Do not start a second Vite
-  server there.
+- **Vite is on port 15173, strictly.** That is neither the Tauri-conventional
+  `1420` nor Vite's own `5173`: Hyper-V and WSL redraw 100-port exclusion blocks
+  inside the Windows dynamic port range on every boot (`1420` fell to
+  `1351–1450`, `5173` to `5156–5255`), and binding an excluded port fails with
+  `EACCES` rather than `EADDRINUSE`. Do not start a second Vite server there.
 - **Stop any standalone worker before testing settings changes.** LiveKit
   dispatches a room to exactly one agent, so a worker left registered as `lumine`
   absorbs the next dispatch — which looks precisely like a broken worker. For
@@ -338,6 +488,7 @@ The settings that change what Lumine can do:
 | `media.enabled` | `on` | The music library capability |
 | `media.library` | — | The one folder she may read |
 | `desktop.browsers` | asks | Whether "open a website" means your browser or hers |
+| `capabilities.<dotted>` | — | *Runtime Phase 1.* Canonical capability overrides, resolving before the legacy keys |
 
 Two of those fail in **opposite** directions on purpose. `tools.<id>` only ever
 reduces authority, so an unrecognised value reads as `on`. `desktop.input` and
@@ -354,7 +505,7 @@ Gemini.
 ## Testing
 
 ```powershell
-# Python — 66 test modules
+# Python — 66 test modules, 2232 tests
 .\.venv\Scripts\python.exe -m unittest discover -s agent\tests -p "test_*.py"
 
 # A single test
@@ -363,7 +514,7 @@ Gemini.
 # Frontend typecheck and build
 Push-Location lumine-ui; npm run build; Pop-Location
 
-# Frontend contract checks
+# Frontend contract checks — twelve of them
 Push-Location lumine-ui; npm run check; Pop-Location
 
 # Rust
@@ -386,43 +537,105 @@ Live probes, for when you need to look at the real thing:
 
 ## Documentation
 
+### The product
+
 | Document | What is in it |
 | --- | --- |
+| [`VISION.md`](VISION.md) | The product vision and the North Star — what Lumine is, what she is not, and the success criteria |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | The target runtime: nine layers, process model, lifecycle state machine, IPC, wake, island |
+| [`ROADMAP.md`](ROADMAP.md) | **Companion** phases 0–9 with observable exit criteria, and what each phase deliberately does not build |
+| [`docs/decisions/`](docs/decisions/) | Fourteen decision records — the choices, the alternatives refused, and what would reverse them |
+
+### The runtime
+
+| Document | What is in it |
+| --- | --- |
+| [`docs/agent-runtime/`](docs/agent-runtime/README.md) | **Runtime** track: goals, phases 0–10, and the definition of done |
+| [`docs/agent-runtime/00-architecture-audit.md`](docs/agent-runtime/00-architecture-audit.md) | What already exists, what is genuinely missing, and the three class-resolution models |
+| [`docs/agent-runtime/01-capability-registry.md`](docs/agent-runtime/01-capability-registry.md) | **Phase 1, approved and ready to build** |
+| [`docs/decisions/0014`](docs/decisions/0014-canonical-capability-namespace.md) | Why dotted capability ids do not split the model-facing tools |
+
+### Reference
+
+| Document | What is in it |
+| --- | --- |
+| [`docs/gap-audit.md`](docs/gap-audit.md) | The vision measured against the current code: gaps, conflicts, risks, open questions |
+| [`docs/plans/wave-1-always-on-runtime.md`](docs/plans/wave-1-always-on-runtime.md) | The detailed companion Phase 1 plan |
 | [`docs/ai-control-center.md`](docs/ai-control-center.md) | The AI Control Center decision record — credential slots, the catalog, why they are shaped that way |
 | [`docs/voice-architecture.md`](docs/voice-architecture.md) | The process model and the full session lifecycle |
 | [`docs/livekit-integration.md`](docs/livekit-integration.md) | LiveKit specifics and the pieces that surprised us |
 | [`docs/desktop-control-testing.md`](docs/desktop-control-testing.md) | How to test desktop control, and how to read a failure rather than only that one happened |
-| [`docs/focus-workspace.md`](docs/focus-workspace.md) | The Focus workspace data layer and its security boundaries |
 | [`AGENTS.md`](AGENTS.md) | Repository instructions and the load-bearing invariants |
 | [`agent/AGENTS.md`](agent/AGENTS.md) · [`lumine-ui/AGENTS.md`](lumine-ui/AGENTS.md) | Area-specific background for each half |
 
 ## Project Status
 
-**Alpha, and honest about it.** Built and working:
+**Alpha, and honest about it.**
+
+### Built and working
 
 - [x] Persistent LiveKit worker with a per-room session, and a readiness gate that blocks until it registers
+- [x] **A real agent runtime**: pure routing, a validated task model, a deterministic executor, and a seven-value verification ladder
+- [x] **One permission gate** for every tool — voice and UI consent, 60-second expiry, session binding, SHA-256-digested audit
 - [x] Seventeen gated tools across five categories
-- [x] Two page drivers, WhatsApp read / manage / send, desktop control, and a music library that queues
+- [x] Two page drivers with real tab support, WhatsApp read / manage / send, desktop control through UI Automation, and a music library that queues a folder as one ordered list
+- [x] observe → act → observe → verify enforced on desktop, with a stale reference refused rather than followed
 - [x] AI Control Center: provider catalog, per-variable keyring slots, live probes, fail-closed setup gate
 - [x] An activity feed that survives a reload, and an appearance system with importable palettes
-- [x] 66 Python test modules and six frontend contract checks
+- [x] 66 Python test modules (2232 tests) and twelve frontend contract checks
 
-Not built:
+### Planned and documented
+
+- [x] [`docs/agent-runtime/`](docs/agent-runtime/README.md) — the runtime track's goals and all eleven phases
+- [x] Phase 0 architecture audit, complete
+- [x] **Phase 1 approved and ready to build** — the canonical capability registry
+- [ ] Phases 2–10 of the runtime track, and phases 1–9 of the companion track
+
+### Not built
 
 - [ ] **There is no installer.** `bundle.active` is `false`, so `npm run tauri build`
       writes `src-tauri/target/release/lumine.exe` and stops there.
 - [ ] **The worker is not packaged as a sidecar.** A working install needs Python
       on the machine. That is the single biggest thing between this and a
       download.
-- [ ] **No tray, no minimize-to-tray, no wake word.** No typed sleep/wake command
-      either; LiveKit dispatch metadata plus the event stream are the seam.
+- [ ] **No resident runtime, no tray, no minimize-to-tray, no autostart.** The app is
+      only correct while its window is open: `ExitRequested` stops the worker, and
+      nothing but a button press starts it.
+- [ ] **No wake word and no island.** No local microphone path outside a LiveKit
+      session, so nothing can hear her name while she is "asleep". No second window,
+      and the frontend imports no Tauri window API at all.
+- [ ] **No lifecycle state machine.** Three state vocabularies exist and none is
+      authoritative; `AgentState::Sleeping` means "no worker process", which is the
+      opposite of what the vision means by it.
+- [ ] **No idle timeout**, so a session ends only when the last participant leaves.
 - [ ] **No crash recovery or auto-restart.**
+- [ ] **Tasks do not survive a restart.** `Task` is in memory; a worker restart loses
+      an in-flight task silently. [Runtime Phase 3](docs/agent-runtime/03-persistent-task-store.md)
+- [ ] **No persistent memory or project context**, and by decision the GSD-style
+      `.lumine/projects/` layout was **rejected** — those describe a repo, not a
+      person's work. [Runtime Phase 7](docs/agent-runtime/05-capabilities-and-context.md#phase-7--selective-context-retrieval)
+- [ ] **No filesystem tools at all.** Read-only comes in
+      [runtime Phase 6](docs/agent-runtime/05-capabilities-and-context.md#phase-6--read-only-filesystem);
+      write and delete are not planned.
 - [ ] **Windows only in practice.** Cross-platform by intent, unverified anywhere else.
-- [ ] **The Focus workspace is a work in progress.**
 - [ ] **No video output.** Lumine does not send frames back; the SVG avatar is the answer for now.
+
+Every one of those is a numbered phase in [`ROADMAP.md`](ROADMAP.md) or
+[`docs/agent-runtime/`](docs/agent-runtime/README.md), and the measurement behind
+each is in [`docs/gap-audit.md`](docs/gap-audit.md).
 
 There is no CI workflow yet, which is why the badges above say nothing about
 build status. Run the checks locally before opening a pull request.
+
+## Known Issues
+
+Bugs found and named, so nobody rediscovers them as a mystery:
+
+| Issue | Where | Notes |
+|---|---|---|
+| `play_media`'s tool card advertises **four** verbs while the tool implements **seven** (`search`, `next`, `previous` are missing from the card) | `agent/tools/tools_registry.py` `TOOL_CARDS` | The model reads the docstring, not the card, so this is a UI and settings-screen defect rather than a functional one. It is exactly the class of drift the Phase 1 registry exists to prevent. **Not yet fixed.** |
+| `AgentState::Sleeping` means "no worker process" | `agent_manager.rs` | The opposite of the vision's meaning. [ADR-0012](docs/decisions/0012-process-vs-companion-state.md) |
+| The session greeting is unconditional | `agent.py` | Fights the one-shot requirement. [ADR-0013](docs/decisions/0013-greeting-conditional.md) |
 
 ## Contributing
 
@@ -439,11 +652,17 @@ measured first. A few invariants that fail quietly when broken:
   small; the budget is applied to the structure, not to a rendered string.
 - **Resolve a model-supplied path before comparing it** to an allowlist, or `..`
   and a symlink out walk straight through.
+- **A click inside a page is not a click.** An untrusted `element.click()` runs the
+  page's own listeners and none of the browser's defaults — it reported success and
+  did nothing, twelve times, before it was found.
 - **A `useSyncExternalStore` `getSnapshot` must return a cached value.** A selector
   that derives a new object or array will re-render forever and take the page
   down with it.
 - **A broken selector must degrade to a refusal**, never to a plausible wrong
   action.
+- **Never let a telemetry write raise.** A dead pipe once killed every session on
+  its first line.
+- **A card that disagrees with the behaviour is a security bug, not a typo.**
 
 ## License
 

@@ -23,6 +23,14 @@
   --color-border: #3a3733;
 
   --color-accent: #e86f3d;
+  /* The accent as *text*, which is a different job from the accent as a fill. `--color-accent`
+     is tuned for borders, pills and the call button, where 3:1 is the bar; as small type it
+     owes 4.5:1 against the card it sits in -- and Focus tints that card with 15-16% of the
+     accent itself, so the text ends up on a darker version of its own colour. Measured: the
+     accent only reaches 4.29:1 on the active plan chip, so this is a shade of the same hue
+     that clears 4.5:1 there. It recolours nothing by itself -- it is read only where a rule
+     names it, and `--color-accent` and the AppearancePreset are untouched. */
+  --color-accent-ink: #f07a48;
   --color-accent-soft: #4a2a1f;
   --color-icon: #aaa39b;
 
@@ -171,6 +179,13 @@
      #fbfaf8 surface is 1.9:1 and #68ae82 is 2.3:1, against a 4.5:1 bar. */
   --color-ok: #2f7d52;
   --color-warn: #8a5f13;
+  /* And the light sibling of the accent, which is the same fix for the same reason. The
+     accent here is the preset's own #c85c31 (written inline by `useDocumentTheme`, which is
+     why the `:root` value never wins in light mode), and as text on its own 15% tint it
+     measures 3.3:1 -- below the bar, and below the 4.0:1 it reaches on the bare surface.
+     Darkened until it clears 4.5:1 on the tinted plan chip, the count pill and the active
+     ambience tile, which are the three places Focus uses the accent as small type. */
+  --color-accent-ink: #a0441e;
   /* Light mode needs a softer shadow: the same alpha that reads as a gentle
      lift on a dark canvas reads as a smudge on a light one. */
   --elevation-1: 0 1px 2px -1px rgb(0 0 0 / 0.10), 0 0 0 1px rgb(0 0 0 / 0.06);
@@ -428,10 +443,50 @@ input {
 }
 
 .sidebar-brand .logo-button {
+  position: relative;
   width: 30px;
   height: 30px;
   margin: 0;
   flex: 0 0 auto;
+}
+
+/* The mark and the chevron are two children stacked in one 30px cell, and only one
+   of them is ever visible. They cross-fade with a small scale rather than swapping
+   outright: a hard swap reads as two different controls appearing in the same place
+   at different moments, and the scale is what tells you it is the *same* button
+   changing what it does.
+
+   `:focus-visible` gets the same treatment as `:hover` — the whole point of putting
+   the fold here is that it is where you reach for it, and a keyboard user tabbing
+   onto the mark would otherwise be looking at something that does not mean "press
+   me" while the button is in fact the only control on the rail that folds it. */
+.logo-mark,
+.logo-chevron {
+  grid-area: 1 / 1;
+  display: grid;
+  place-items: center;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.logo-chevron {
+  opacity: 0;
+  transform: scale(0.75);
+}
+
+.sidebar-brand:hover .logo-mark,
+.logo-button:focus-visible .logo-mark {
+  opacity: 0;
+  transform: scale(0.75);
+}
+
+.sidebar-brand:hover .logo-chevron,
+.logo-button:focus-visible .logo-chevron {
+  opacity: 1;
+  transform: none;
+}
+
+.sidebar-brand .logo-button:hover {
+  background: var(--color-surface-muted);
 }
 
 /* --------------------------------------------------------------------------
@@ -440,15 +495,19 @@ input {
 
 /* The label goes, the row goes centre, and the marker moves from a left edge to a
    bottom rule — because an inset 2px on the left of a 42px square is a 2px mark
-   beside nothing to align it to once the text is gone. */
+   beside nothing to align it to once the text is gone.
+
+   `.sidebar-brand > span` and not `.sidebar-brand span`, and the `>` is the whole
+   fix. The brand button holds two spans of its own — the mark and the chevron it
+   becomes — and the descendant selector would have hidden both of them, so folding
+   the rail left a 30px hole where the mark used to be and no way to unfold it. */
 .sidebar.is-collapsed .sidebar-brand {
   justify-content: center;
   padding: 0;
 }
 
-.sidebar.is-collapsed .sidebar-brand span,
-.sidebar.is-collapsed .nav-button span,
-.sidebar.is-collapsed .sidebar-collapse span {
+.sidebar.is-collapsed .sidebar-brand > span,
+.sidebar.is-collapsed .nav-button span {
   display: none;
 }
 
@@ -465,48 +524,6 @@ input {
 
 .sidebar.is-collapsed .nav-button.is-active {
   box-shadow: inset 0 -2px 0 var(--color-accent);
-}
-
-.sidebar.is-collapsed .sidebar-foot {
-  display: flex;
-  justify-content: center;
-}
-
-.sidebar-collapse {
-  width: calc(100% - 24px);
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
-  padding: 0 13px;
-  margin: 0 12px;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  color: var(--color-control-icon);
-  cursor: pointer;
-  font: 500 12px var(--font-ui);
-  text-align: left;
-}
-
-.sidebar-collapse:hover {
-  background: var(--color-surface-muted);
-  color: var(--color-text);
-}
-
-.sidebar.is-collapsed .sidebar-collapse {
-  width: 44px;
-  padding: 0;
-  justify-content: center;
-}
-
-/* The fold is available however the rail is shaped, so it is hidden with the rail
-   it acts on rather than kept as a button that changes something not on screen. */
-@media (max-width: 780px) {
-  .sidebar-foot {
-    display: none;
-  }
 }
 
 .sidebar .nav-button {
@@ -539,6 +556,14 @@ input {
   background: color-mix(in srgb, var(--color-accent) 16%, transparent);
 }
 
+/* Settings stays at the bottom of the rail, and the fold moved to the brand so that
+   this could stay true without two controls fighting over the corner.
+
+   `margin-top: auto` inside the nav — which is `flex: 1` — is what pins it, and it
+   pins it in *both* shapes: `.sidebar.is-collapsed .nav-button` sets `margin: 0`, but
+   that is a shorthand and comes earlier, so the `margin-top` declared here still wins
+   on the longhand and the row does not float up beside the others when the labels
+   disappear. The rail's own `padding-bottom` keeps it off the edge. */
 .sidebar .settings-nav-button {
   margin-top: auto;
 }

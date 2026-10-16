@@ -64,11 +64,26 @@ export type ActiveMedia = {
  * same way: the first means take the track out of the room, the second means
  * leave the current capture alone and let the error field say what happened.
  * Collapsing them would stop a camera the user never asked to stop.
+ *
+ * `failed` carries the reason *with* the verdict, which is why the third case
+ * is a shape rather than a bare marker. The same sentence is also written into
+ * `cameraError` / `screenError` for the toast — but React state is not readable
+ * in the tick it is set, so a caller that read it back after `await toggle()`
+ * would get the *previous* failure and report yesterday's refusal as today's.
+ * The relay to the worker takes it from here, where it is known at the moment
+ * it happened.
+ *
+ * `message` is absent when nothing was attempted: a second click while a
+ * permission prompt is already up is a no-op, not a failure, and reporting it
+ * as one would tell the worker a capture it never saw was refused.
  */
 export type MediaToggle =
   | { kind: "started"; media: ActiveMedia }
   | { kind: "stopped" }
-  | { kind: "failed" };
+  | { kind: "failed"; message?: string; denied?: boolean };
+
+/** Either a capture, or the reason there is not one. Never both, never neither. */
+type StartOutcome = { media: ActiveMedia } | { failure: CaptureFailure };
 
 export type LocalMedia = {
   /** The live source, or null. Never both. */
@@ -97,23 +112,40 @@ export type LocalMedia = {
   stopAll: () => void;
 };
 
+/** What went wrong, and whether it was the operating system that said no. */
+type CaptureFailure = {
+  message: string;
+  denied: boolean;
+};
+
 /** The browser names these in a way no user has ever been helped by. */
-function explain(source: LocalMediaSource, error: unknown): string {
+function explain(source: LocalMediaSource, error: unknown): CaptureFailure {
   const name = (error as { name?: string } | null)?.name;
   if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-    return source === "camera"
-      ? "Camera permission was refused. Allow it in your system settings, then try again."
-      : "Screen capture was refused.";
+    return {
+      denied: true,
+      message:
+        source === "camera"
+          ? "Camera permission was refused. Allow it in your system settings, then try again."
+          : "Screen capture was refused.",
+    };
   }
   if (name === "NotFoundError" || name === "DevicesNotFoundError") {
-    return source === "camera" ? "No camera was found on this machine." : "No screen was available to share.";
+    return {
+      denied: false,
+      message: source === "camera" ? "No camera was found on this machine." : "No screen was available to share.",
+    };
   }
   if (name === "NotReadableError" || name === "TrackStartError") {
-    return source === "camera"
-      ? "Another application is using the camera."
-      : "The screen could not be captured.";
+    return {
+      denied: false,
+      message: source === "camera" ? "Another application is using the camera." : "The screen could not be captured.",
+    };
   }
-  return source === "camera" ? "The camera could not be started." : "The screen could not be shared.";
+  return {
+    denied: false,
+    message: source === "camera" ? "The camera could not be started." : "The screen could not be shared.",
+  };
 }
 
 function stopTracks(stream: MediaStream | null) {
@@ -183,14 +215,22 @@ export function useLocalMedia({ enabled }: { enabled: boolean }): LocalMedia {
     if (activeRef.current) release();
   }, [release]);
 
+  /**
+   * Capture one source, or say why it could not be captured.
+   *
+   * The failure comes back rather than being written into the error state
+   * here: state set inside this function is not readable in the same tick, so
+   * the caller would read the *previous* failure and report it as this one's.
+   * One write site — `toggle` — owns both the toast and the report, from the
+   * same sentence.
+   */
   const start = useCallback(
-    async (source: LocalMediaSource): Promise<ActiveMedia | null> => {
+    async (source: LocalMediaSource): Promise<StartOutcome> => {
       busyRef.current = true;
       try {
         if (source === "camera") {
           if (!supportsCamera()) {
-            setCameraError("This machine did not offer a camera to the app.");
-            return null;
+            return { failure: { denied: false, message: "This machine did not offer a camera to the app." } };
           }
           const stream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 1280 }, height: { ideal: 720 } },
@@ -201,12 +241,11 @@ export function useLocalMedia({ enabled }: { enabled: boolean }): LocalMedia {
           const started: ActiveMedia = { source: "camera", stream };
           activeRef.current = started;
           setActive(started);
-          return started;
+          return { media: started };
         }
 
         if (!supportsScreenShare()) {
-          setScreenError("This operating system cannot share a screen to an app.");
-          return null;
+          return { failure: { denied: false, message: "This operating system cannot share a screen to an app." } };
         }
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: { frameRate: { ideal: 15 } },
@@ -219,11 +258,9 @@ export function useLocalMedia({ enabled }: { enabled: boolean }): LocalMedia {
         const started: ActiveMedia = { source: "screen", stream };
         activeRef.current = started;
         setActive(started);
-        return started;
+        return { media: started };
       } catch (error) {
-        if (source === "camera") setCameraError(explain("camera", error));
-        else setScreenError(explain("screen", error));
-        return null;
+        return { failure: explain(source, error) };
       } finally {
         busyRef.current = false;
       }
@@ -240,8 +277,13 @@ export function useLocalMedia({ enabled }: { enabled: boolean }): LocalMedia {
       }
       if (source === "camera") setCameraError(null);
       else setScreenError(null);
-      const started = await start(source);
-      return started ? { kind: "started", media: started } : { kind: "failed" };
+      const outcome = await start(source);
+      if ("failure" in outcome) {
+        if (source === "camera") setCameraError(outcome.failure.message);
+        else setScreenError(outcome.failure.message);
+        return { kind: "failed", message: outcome.failure.message, denied: outcome.failure.denied };
+      }
+      return { kind: "started", media: outcome.media };
     },
     [release, start],
   );

@@ -1555,6 +1555,75 @@ class OneConfirmationTests(_SendHarness):
         )
 
 
+class DuplicateSendIsSilentTests(_SendHarness):
+    """A second call for one send is refused, and says nothing.
+
+    The report was two confirmations of one send, in voice:
+
+        LUMINE  I have sent that message to Dipto for you.
+        LUMINE  I already sent that exact message a moment ago, so I'm not
+                sending it again.
+
+    The second sentence is not a second confirmation -- it is the **dedup ledger**
+    refusing, which means `send_whatsapp` was reached twice for one request. The
+    first call confirms; the second is a normal non-empty return, so the model
+    answers it out loud. Two statements about one send, on the channel that
+    cannot be scrolled past.
+
+    Nothing in this repository re-invokes the tool: there is no retry wrapper
+    around a gated call, and the `sent` marker is written only after delivery was
+    observed. So the second call is the realtime model re-issuing a function call
+    it has already had answered, and the safety net is what has to be silent.
+
+    Both halves are load-bearing. Drop the refusal and the message really is sent
+    twice; let the refusal speak and the user hears about one send twice.
+    """
+
+    def test_the_refusal_never_reaches_the_voice(self):
+        first = run_tool("Alice", "hello")
+        self.assertIn("Sent to Alice", first)
+        second = run_tool("Alice", "hello")
+        # No confirmation, and nothing that invites the model to speak about the
+        # send a second time. Asserted on the two things that would make it talk,
+        # rather than on the absence of a word -- the string still explains itself,
+        # because it is also the toast a person reads.
+        self.assertNotIn("Sent to Alice", second)
+        self.assertNotIn("Say this once", second)
+        self.assertIn("nothing further to say", second)
+
+    def test_the_refusal_is_still_a_refusal(self):
+        # Silence is a property of the *announcement*, not a relaxation of the
+        # guard. If the second call ever reached the path, `press_send` would
+        # appear twice in the order and Alice would get the message twice.
+        run_tool("Alice", "hello")
+        run_tool("Alice", "hello")
+        self.assertEqual(self.order.count("send"), 1, "the message went out twice")
+        self.assertEqual(len(self.sends_asked_for()), 1, "the user was asked twice")
+
+    def test_a_genuinely_different_message_is_still_answered(self):
+        # The window is a guard on *this* send, not a mute. A different message is
+        # not a duplicate, so it is confirmed in the ordinary way -- otherwise the
+        # fix would cost a real user their confirmation.
+        run_tool("Alice", "hello")
+        second = run_tool("Alice", "something else")
+        self.assertIn("Sent to Alice", second)
+        self.assertEqual(self.order.count("send"), 2)
+
+    def test_an_uncertain_send_still_speaks(self):
+        # The one duplicate that must NOT be silent. "I could not confirm it went"
+        # is a safety warning about a message that may or may not exist in the
+        # other person's chat, and swallowing it is the failure this class exists
+        # to prevent.
+        self.use_backend(
+            delivery_seen=lambda text: _answer(False)
+        )
+        with self.assertRaises(ToolError):
+            run_tool("Alice", "hello")
+        with self.assertRaises(ToolError) as second:
+            run_tool("Alice", "hello")
+        self.assertIn("could not be confirmed", str(second.exception))
+
+
 class AnnounceSentTests(unittest.TestCase):
     """The send confirmation is never spoken by way of the model.
 

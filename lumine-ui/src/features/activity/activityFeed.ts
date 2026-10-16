@@ -450,6 +450,46 @@ export function classifyActivity(event: AgentRuntimeEvent): ActivityEntry | null
         ? { ...base, kind: "note", tone: "neutral", title: "Reply cut short", detail: text(event, "speech_id") }
         : null;
 
+    // --- sight ---------------------------------------------------------------
+    // The worker's own account of what it is receiving, and only the rows a
+    // person could not have seen for themselves. Two reasons keep most of them
+    // out: `frame` is a heartbeat published every few seconds while sharing, and
+    // `idle` is the session baseline — a timeline that ticks on its own is a
+    // timeline that gets read as noise, which is the same argument the file
+    // header makes for filtering the other twenty record types.
+    case "visual": {
+      const reason = text(event, "reason");
+      const source = text(event, "source");
+      const label = source === "camera" ? "the camera" : source === "screen" ? "the screen" : "a screen";
+
+      if (reason === "capability") {
+        // `can_see: true` is the normal case, once per session, and it is not
+        // news. `false` is the whole of a silent failure: every frame is
+        // discarded by the provider with no error, so nothing else in this
+        // system would ever say so.
+        return event.can_see === false
+          ? { ...base, kind: "note", tone: "warn", title: "This model cannot read frames" }
+          : null;
+      }
+      if (reason === "error") {
+        // A withdrawal also publishes under this reason, with nothing in it.
+        // "Capture failed" for a failure that just cleared would be a row
+        // asserting something that stopped being true.
+        const message = text(event, "error");
+        return message ? { ...base, kind: "failure", tone: "bad", title: "Capture failed", detail: message } : null;
+      }
+      if (reason === "permission") {
+        const state = text(event, "permission");
+        if (state === "denied") return { ...base, kind: "failure", tone: "bad", title: "Capture permission refused" };
+        if (state === "enabled") return { ...base, kind: "note", tone: "good", title: "Capture permission granted" };
+        return null;
+      }
+      if (reason === "started") return { ...base, kind: "session", tone: "good", title: "Sharing started", detail: label };
+      if (reason === "source") return { ...base, kind: "session", tone: "good", title: `Now sharing ${label}` };
+      if (reason === "stopped") return { ...base, kind: "session", tone: "neutral", title: "Sharing stopped" };
+      return null;
+    }
+
     // --- deliberately not rendered -----------------------------------------
     // `conversation`, `user_state`, `speech_created`, `worker_registered`,
     // `emotion`, `plugin_registered` and the rest: already on screen elsewhere,

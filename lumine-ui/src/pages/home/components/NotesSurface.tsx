@@ -5,8 +5,9 @@ import type { Note, NotesApi } from "../notes/useNotes";
 /**
  * The notes surface: a list, and the text of whichever note is picked.
  *
- * It is one component on two screens — the right-hand aside beside the stage, and
- * the Focus page — because they are the same two panes at different widths. Two
+ * It is one component — the right-hand aside beside the stage; it used also to
+ * serve the Focus page, since removed with the workspace — because the two were
+ * the same two panes at different widths. Two
  * implementations would be two places to fix the "saving into a note that was
  * deleted underneath the editor" case, and one of them would be fixed later.
  *

@@ -267,6 +267,23 @@ _JS_COLLECT = """
     // affected -- its `_JS_FACTS` script computed it independently -- which is
     // exactly why two tools could disagree about the same button.
     if (node.closest('form')) detail.inForm = true;
+    // The *form's* own role, which is the one signal that separates a search
+    // form from a comment box: YouTube, Google and Amazon all ship
+    // <form role="search">, and no checkout or sign-in form does. Read here
+    // with `inForm` because it answers the same question -- "does submitting
+    // this send the user anything?" -- and it has to be a DOM fact rather than
+    // something derived later from a field we did not collect.
+    if (detail.inForm) {
+      const form = node.closest('form');
+      const formRole = form && (form.getAttribute('role') || '').trim().toLowerCase();
+      if (formRole) detail.formRole = formRole;
+    }
+    // The element's `type`, kept under its own name. It used to reach the
+    // permission classifiers as `detail["value"]` -- the *value* attribute --
+    // which meant `<input type="submit" value="Go">` was classified as an
+    // ordinary act and a form submission never asked. A fact that decides
+    // whether to interrupt the user cannot be read off the wrong attribute.
+    if (type) detail.type = type;
     out.push({
       index: index,
       ref: ref,

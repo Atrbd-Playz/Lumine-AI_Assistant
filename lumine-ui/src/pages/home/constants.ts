@@ -101,7 +101,6 @@ export const STATE_COPY: Record<LumineState, { eyebrow: string; title: string; d
  */
 export const NAV_ITEMS = [
   ["home", "home", "Home"],
-  ["focus", "timer", "Focus"],
   ["avatar", "avatar", "Avatar Lab"],
   ["tools", "tools", "Tools"],
   ["memory", "memory", "Memory"],
@@ -111,13 +110,13 @@ export const NAV_ITEMS = [
 /**
  * The destinations that stay on a phone, and the rest go behind a menu.
  *
- * Six labelled rows do not fit in a 64px thumb bar at any font size that can be
- * read — they fit as six 9px glyphs, which is a different, worse interface. Three
- * carry the app (home, the timer and notes, what the worker reported) and the
- * fourth control opens the remainder, so nothing is unreachable and the bar stops
+ * Five labelled rows do not fit in a 64px thumb bar at any font size that can be
+ * read — they fit as five 9px glyphs, which is a different, worse interface. Two
+ * carry the app (home, what the worker reported) and the
+ * third control opens the remainder, so nothing is unreachable and the bar stops
  * reflowing its own text on every rotation.
  */
-export const PRIMARY_NAV_IDS = ["home", "focus", "activity"] as const satisfies readonly NavId[];
+export const PRIMARY_NAV_IDS = ["home", "activity"] as const satisfies readonly NavId[];
 
 export type NavId = (typeof NAV_ITEMS)[number][0];
 

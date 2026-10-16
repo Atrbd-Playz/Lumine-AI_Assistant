@@ -20,10 +20,15 @@ export default defineConfig(async () => ({
   clearScreen: false,
 
   server: {
-    // 5173/5174 rather than the Tauri-conventional 1420/1421: Hyper-V/WSL
-    // reserves 1351-1450 on Windows, and an excluded port fails to bind with
-    // EACCES rather than EADDRINUSE. Must match build.devUrl in tauri.conf.json.
-    port: 5173,
+    // 15173/15174 rather than the Tauri-conventional 1420/1421 or Vite's own
+    // 5173. Hyper-V/WSL redraws three 100-port exclusion blocks inside the
+    // Windows dynamic port range (1024-15000 here) on every boot, and an
+    // excluded port fails to bind with EACCES rather than EADDRINUSE: 1420 fell
+    // to 1351-1450, 5173 to 5156-5255. Every observed block has landed inside
+    // that range, so a port above it survives the redraw; 15173 also stays
+    // below the Windows default 49152, so it holds either way round.
+    // Must match build.devUrl in tauri.conf.json.
+    port: 15173,
     strictPort: true,
     host: host || false,
 
@@ -31,7 +36,7 @@ export default defineConfig(async () => ({
       ? {
           protocol: "ws",
           host,
-          port: 5174,
+          port: 15174,
         }
       : undefined,
 

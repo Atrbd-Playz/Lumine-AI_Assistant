@@ -52,7 +52,7 @@ import { SetupGate } from "./onboarding/SetupGate";
  * - `ActivityTimeline` is the largest single view in the app and holds an event
  *   buffer that is worth nothing until something has emitted.
  *
- * Everything else — Focus, the avatar lab, the settings overlay and all five
+ * Everything else — the avatar lab, the settings overlay and all five
  * settings pages — is a static import again. `PAGE_FALLBACKS` keeps its entries
  * so a name cannot silently drift, but only these two boundaries render anything.
  *
@@ -76,7 +76,6 @@ const ActivityTimeline = lazy(() => import("./home/components/ActivityTimeline")
  * block still reads as a list of pages, and so a new page has an obvious place to
  * go. The rule is weight, not count — see the note above.
  */
-import { FocusPage } from "./FocusPage";
 import AvatarLabPage from "./AvatarLabPage";
 import { SettingsDialog } from "./settings/SettingsDialog";
 import { AppearanceDialog } from "./home/components/AppearanceDialog";
@@ -115,7 +114,6 @@ function PageFallback({ title, detail }: { title: string; detail: string }) {
 
 /** The page a destination shows while its module is still arriving. */
 const PAGE_FALLBACKS: Record<Exclude<NavId, "home">, { title: string; detail: string }> = {
-  focus: { title: "Focus", detail: "One thing at a time, for as long as you mean it." },
   avatar: { title: "Avatar Lab", detail: "Emotion, activity and animation, tried out one at a time." },
   tools: { title: "Tools", detail: "What Lumine can reach on her own." },
   memory: { title: "Memory", detail: "What carries over between calls." },
@@ -129,7 +127,7 @@ const PAGE_FALLBACKS: Record<Exclude<NavId, "home">, { title: string; detail: st
  * three places that have to agree about them: the push on navigation, the
  * `popstate` that follows a Back, and the first render, which reads whatever
  * the address bar already says. The old code pushed `/tools`, `/memory`,
- * `/focus`, `/activity` and `/avatar` but only ever *read* `/avatar`, so
+ * `/activity` and `/avatar` but only ever *read* `/avatar`, so
  * reloading any other one landed on Home while the URL claimed otherwise —
  * and no `popstate` listener existed at all, so Back changed the address and
  * left the screen alone.
@@ -631,7 +629,7 @@ export default function Home() {
   // -- no error, and a recording indicator that is lit for nothing.
   const [isPublished, setIsPublished] = useState(false);
   const publishedRef = useRef(false);
-  const { publishVideo, unpublishVideo } = session;
+  const { publishVideo, unpublishVideo, sendVisionState } = session;
 
   const dropPublished = useCallback(() => {
     if (!publishedRef.current) return;
@@ -669,12 +667,31 @@ export default function Home() {
         // The capture never started, so whatever was already live is still live.
         // Unpublishing here would stop a camera the user never asked to stop --
         // the error field is what reports this, and it is already set.
+        //
+        // The worker is told as well, because it cannot see any of this: the
+        // capture happens in a browser window on the far side of a process
+        // boundary, so to the model a refused permission and a share nobody has
+        // started arrive as the same empty frame stream — and only one of those
+        // has a fix the user can perform.
+        //
+        // Only when *nothing* is being captured. A second source refusing while
+        // the first still streams changes nothing about what Lumine can see, and
+        // `denied` outranks sharing in her phase ladder, so reporting it would
+        // say that a working share is blocked.
+        if (result.message && !media.active) {
+          void sendVisionState(result.denied ? "denied" : "error", result.message);
+        }
         return;
       }
       if (result.kind === "stopped") {
         dropPublished();
         return;
       }
+      // The capture worked, and that is the one half of this the worker cannot
+      // infer for itself. Frames arriving prove a share; the *absence* of
+      // frames cannot distinguish a refused permission from a share nobody has
+      // begun, which is exactly the question the model will ask next.
+      void sendVisionState("enabled");
       if (!canReceiveVideo) {
         // Captured, previewed, and deliberately not published: the model cannot
         // read frames and would discard them without a word. The self-view still
@@ -685,7 +702,7 @@ export default function Home() {
       publishedRef.current = published;
       setIsPublished(published);
     },
-    [media, canReceiveVideo, publishVideo, dropPublished],
+    [media, canReceiveVideo, publishVideo, dropPublished, sendVisionState],
   );
 
   /**
@@ -850,15 +867,6 @@ export default function Home() {
       run: () => handleNavigation("avatar"),
     },
     {
-      id: "nav.focus",
-      label: "Go to Focus",
-      hint: "The timer and the notes",
-      group: "Navigate",
-      icon: "timer",
-      keys: ["mod+6"],
-      run: () => handleNavigation("focus"),
-    },
-    {
       id: "appearance.toggle",
       label: mode === "light" ? "Switch to the dark theme" : "Switch to the light theme",
       group: "Appearance",
@@ -989,9 +997,7 @@ export default function Home() {
       ? "avatar"
       : nav === "activity"
         ? "activity"
-        : nav === "focus"
-          ? "focus"
-          : "home";
+        : "home";
 
   return <div className={`lumine-app theme-${mode} route-${nav} ${glassMode ? "visual-glass" : "visual-classic"}${navCollapsed ? " is-nav-collapsed" : ""}`} style={variables}>
     <Sidebar
@@ -1058,8 +1064,7 @@ export default function Home() {
         notes.remove(id);
         setActiveNoteId((current) => (current === id ? null : current));
       }}
-      onFocusPage={() => handleNavigation("focus")}
-    /> : page === "focus" ? <FocusPage notes={notes} /> : page === "avatar" ? <AvatarLabPage /> : page === "activity" ? <ActivityTimeline entries={activity.entries} onClear={activity.clear} /> : <WorkspaceView kind={page} onSettings={() => { setSettingsSection("voice"); setSettingsOpen(true); }} />}
+    /> : page === "avatar" ? <AvatarLabPage /> : page === "activity" ? <ActivityTimeline entries={activity.entries} onClear={activity.clear} /> : <WorkspaceView kind={page} onSettings={() => { setSettingsSection("voice"); setSettingsOpen(true); }} />}
     </Suspense>
 
     {/* The approval question, wherever the user happens to be. A permission

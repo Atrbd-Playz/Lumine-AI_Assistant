@@ -316,6 +316,19 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
   );
 
   /**
+   * Report what the operating system said about a capture, so the worker's own
+   * state machine is not guessing from an empty frame stream.
+   *
+   * Stable by identity for the same reason `publishVideo` is: the caller sends
+   * it from an effect, and a fresh function each render would re-fire that
+   * effect on every render — re-reporting a permission that has not moved.
+   */
+  const sendVisionState = useCallback(
+    (state: "enabled" | "denied" | "error", message?: string) => managerRef.current!.sendVisionState(state, message),
+    [],
+  );
+
+  /**
    * Whether a typed message can reach Lumine.
    *
    * Derived from the snapshot rather than held as its own state, because it is
@@ -343,6 +356,7 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
     subscribeAudioLevel,
     sendText,
     respondPermission,
+    sendVisionState,
     canSendText,
     session: snapshot.sessionId ? { sessionId: snapshot.sessionId, roomName: snapshot.roomName ?? "", participantIdentity: "", agentIdentity: "Lumine" } : null,
     connect: () => managerRef.current!.start(interruptionModeRef.current),

@@ -128,13 +128,11 @@ check(
   !NAV_ITEMS.some(([id]) => PANEL_KINDS.includes(id)),
   NAV_ITEMS.map(([id]) => id),
 );
-check("focus is a rail item", NAV_ITEMS.some(([id]) => id === "focus"));
-check("focus is not a workspace page", !isWorkspaceNav("focus"));
 check("tools and memory are workspace pages", isWorkspaceNav("tools") && isWorkspaceNav("memory"));
 check("home is not a workspace page", !isWorkspaceNav("home"));
 check(
   "no workspace page is also a full view",
-  !(["home", "avatar", "activity", "focus"] as NavId[]).some(isWorkspaceNav),
+  !(["home", "avatar", "activity"] as NavId[]).some(isWorkspaceNav),
 );
 
 /* ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@ FIXTURE = b"""<!doctype html>
 <head><title>Fixture home</title></head>
 <body>
   <h1>Fixture</h1>
-  <form action="/results" method="get">
+  <form action="/results" method="get" role="search">
     <input name="q" id="q">
     <button type="submit">Go</button>
   </form>
@@ -196,10 +196,37 @@ class RealBrowserJourneyTests(unittest.TestCase):
             self.assertIsNotNone(found, "the fixture's search box was not found")
             # The fixture wraps its input in a real <form action="/results">.
             self.assertTrue(found.in_form, "a field inside a form was not reported as one")
+
+            # The control facts have to survive the collector, because the
+            # permission class is computed from them in Python. This is the
+            # script half of the same property the assertion below pins on the
+            # classifier: without `formRole` reaching Python, a search form is
+            # indistinguishable from a comment box and this page asks again.
+            candidate = next(
+                (c for c in snapshot.candidates if c.detail.get("inForm")),
+                None,
+            )
+            self.assertIsNotNone(candidate, "the form field was not collected at all")
             self.assertEqual(
-                classify_key("Enter", tag=found.tag, type_="", in_form=found.in_form),
-                "sensitive",
-                "Enter inside a submitting form must ask",
+                candidate.detail.get("formRole"),
+                "search",
+                "the form's own role did not survive into the candidate",
+            )
+
+            # And the end of it: a search box inside a search form is `act`, so
+            # "search this page" runs without interrupting the user. It was
+            # `sensitive` when Enter-in-a-form was read as a submission
+            # regardless of what the form was *for*.
+            self.assertEqual(
+                classify_key(
+                    "Enter",
+                    tag=found.tag,
+                    type_=candidate.detail.get("type") or "",
+                    in_form=found.in_form,
+                    search=True,
+                ),
+                "act",
+                "Enter in a search form must not ask",
             )
 
         self._with_engine(body)

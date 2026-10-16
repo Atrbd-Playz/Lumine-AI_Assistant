@@ -3,15 +3,6 @@ mod agent_manager;
 mod credential_injection;
 mod credential_probe;
 mod credentials;
-// The Focus Workspace's commands: document, statistics, and the music-root
-// security boundary. Split from `focus_store` because one is the file format and
-// the other is the IPC surface, and only the second one is allowed to widen the
-// asset protocol's scope.
-mod focus_commands;
-// The Focus Workspace document: versioned, validated, written atomically.
-mod focus_store;
-// Pre-aggregated focus statistics, shared by shape with `agent/focus_stats.py`.
-mod focus_stats;
 // The native folder picker for the music library, and what is inside it.
 mod media;
 mod python_env;
@@ -611,18 +602,7 @@ pub fn run() {
             voice_preview::preview_voice,
             media::pick_music_folder,
             media::inspect_music_folder,
-            media::queue_music,
-            // The Focus Workspace. `load_focus` / `save_focus` are the only
-            // writers of `focus.json`; `focus_stats` is a derived read; and the
-            // three music commands are the boundary that lets the webview play
-            // audio from exactly one folder the person picked.
-            focus_commands::load_focus,
-            focus_commands::save_focus,
-            focus_commands::focus_stats,
-            focus_commands::allow_music_root,
-            focus_commands::revoke_music_root,
-            focus_commands::granted_music_root,
-            focus_commands::resolve_focus_track
+            media::queue_music
         ])
         .setup(|app| {
             // The identifier moved from `com.art.lumine-ui` to `com.art.lumine`,
