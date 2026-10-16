@@ -136,6 +136,7 @@ agent/
 ├── whatsapp_message_probe.py CLI -- the send button and the bubbles, in a live chat
 ├── desktop_probe.py          CLI -- what the current window exposes, and how
 ├── desktop_smoke.py          CLI -- end-to-end checks, staged so nothing moves until asked
+├── vision_smoke.py           check -- a screen frame reaching the provider, staged, and nothing typed, clicked or sent
 ├── tool_catalog.py           CLI -- tool registry for the Tools page
 ├── voice_preview.py          CLI -- speak one phrase with a candidate TTS
 ├── local_models.py           CLI -- ask a local server which models it has
