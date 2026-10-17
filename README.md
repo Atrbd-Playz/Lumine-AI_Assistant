@@ -106,8 +106,8 @@ How far the code is from that, honestly and in detail, is in
 | "What's the weather in Dhaka?" | One lookup, one answer. No task, no ceremony |
 | "Open Notepad." | Resolves the name to one target, launches it, **waits for the window**, reports it opened |
 | "Open Chrome, search YouTube for *X*, play it, then start a 25-minute timer." | A **task**: routed, planned, executed step by step, each step observed afterwards, the whole thing cancelable |
-| "Send this WhatsApp message to Afia." | Resolves the contact, opens the chat, **types the text and reads it back out of the composer**, asks, sends, then confirms delivery from the message bubble |
-| "Has anyone replied in the Afia chat?" | Reads the chat — and asks once, out loud, because that grant lasts the rest of the conversation |
+| "Send this WhatsApp message to Sayuri." | Resolves the contact, opens the chat, **types the text and reads it back out of the composer**, asks, sends, then confirms delivery from the message bubble |
+| "Has anyone replied in the Sayuri chat?" | Reads the chat — and asks once, out loud, because that grant lasts the rest of the conversation |
 | "Play my vocal songs." | Matches the words you *said* against a real library, then opens **one ordered queue** rather than nine simultaneous launches |
 | "Click the save button." | Looks at the screen first, acts on a control it actually found, and re-reads before anything irreversible |
 | "Delete this file." | **Refused** — she has no verb that deletes a file. This is a decision, not a gap |
