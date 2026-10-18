@@ -243,6 +243,15 @@ dist
 dist-ssr
 *.local
 
+# Generated release payload: bundled CPython, dependencies, Chromium and agent sources.
+lumine-ui/src-tauri/resources/agent/*
+!lumine-ui/src-tauri/resources/agent/resource-placeholder.txt
+lumine-ui/src-tauri/resources/python/*
+!lumine-ui/src-tauri/resources/python/resource-placeholder.txt
+lumine-ui/src-tauri/resources/browsers/*
+!lumine-ui/src-tauri/resources/browsers/resource-placeholder.txt
+lumine-ui/src-tauri/resources/LICENSE.txt
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

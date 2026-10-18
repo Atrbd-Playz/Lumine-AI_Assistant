@@ -1,0 +1,64 @@
+name: Release Lumine
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    name: Build and publish Windows installer
+    runs-on: windows-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: lumine-ui/package-lock.json
+
+      - name: Set up Python for release preparation
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install NSIS
+        run: choco install nsis --no-progress --yes
+
+      - name: Install frontend dependencies
+        working-directory: lumine-ui
+        run: npm ci
+
+      - name: Verify frontend contracts
+        working-directory: lumine-ui
+        run: npm run check
+
+      - name: Install worker test dependencies
+        run: python -m pip install -r agent/requirements.txt
+
+      - name: Verify worker
+        run: python -m unittest discover -s agent/tests -p "test_*.py"
+
+      - name: Verify Tauri
+        working-directory: lumine-ui/src-tauri
+        run: cargo test --locked
+
+      - name: Build and publish installer
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Lumine ${{ github.ref_name }}
+          releaseBody: |
+            Windows x64 installer for Lumine. The UI, Python worker, required
+            Python packages, and Playwright Chromium are bundled in the installer.
+            Provider credentials are not included; configure them in Lumine.
+          releaseDraft: false
+          prerelease: false
