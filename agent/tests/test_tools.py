@@ -11,13 +11,21 @@ from agent.tools.apps import candidates, validate_app_name
 from agent.tools.messaging import whatsapp
 from agent.tools.news import SEARCH_URL as NEWS_SEARCH_URL
 from agent.tools.news import format_headlines, get_news, parse_headlines
-from agent.tools.tool_results import MAX_RESULT_CHARS
+from agent.tools.tool_results import MAX_RESULT_CHARS, UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 from agent.tools.tools_compat import ToolError
 from agent.tools.tools_permission import filter_permissions, tool_id
 from agent.tools.tools_text import clip
 from agent.tools.weather import FORECAST_URL, GEOCODE_URL
 from agent.tools.weather import WEATHER_CODES, format_weather, get_weather
-from agent.tools.web_search import SEARCH_URL, clean_url, parse_results, search_web, short_url
+from agent.tools.web_search import (
+    SEARCH_PAYLOAD_CHARS,
+    SEARCH_URL,
+    SNIPPET_LIMIT,
+    clean_url,
+    parse_results,
+    search_web,
+    short_url,
+)
 
 DDG_HTML = """
 <div class="result results_links results_links_deep web-result">
@@ -409,16 +417,23 @@ class RegistrationTests(unittest.TestCase):
                 "action", "css", "for_model", "frame", "index", "key", "name",
                 "position", "role", "strategy", "text", "url",
             ],
-            "whatsapp_read": ["action", "chat"],
+            "whatsapp_read": ["action", "chat", "query"],
             # The music library. `index` is how an ambiguity the model reported gets
             # resolved without asking again, `folder` is how "play my vocal songs"
             # reaches a playlist instead of matching one filename out of four
             # thousand, and `all_tracks` is the difference between "play a vocal
             # song" and "play all of them".
             "play_media": ["action", "all_tracks", "folder", "index", "query"],
-            "whatsapp_chats": ["action", "chat", "message"],
-            "whatsapp_account": ["action", "who"],
-            "send_whatsapp": ["attachment", "message", "recipient", "reply_to"],
+            # `emoji` is for `react` and `to` is for `forward` -- two actions on a
+            # chat that need one more fact each, and neither is a second tool.
+            "whatsapp_chats": ["action", "chat", "emoji", "message", "to"],
+            "whatsapp_account": ["action", "call_type", "who"],
+            # `draft_only` is the difference between Lumine writing a message for
+            # the user to send and Lumine sending it, which is the whole consent
+            # boundary of the send flow.
+            "send_whatsapp": [
+                "attachment", "draft_only", "message", "recipient", "reply_to",
+            ],
         }
         for tool in tools_registry.ALL_TOOLS:
             with self.subTest(tool=tool_id(tool)):
@@ -604,7 +619,31 @@ class SharedHttpClientTests(IsolatedAsyncioTestCase):
         FakeClient.routes = {SEARCH_URL: FakeResponse(text=long_results_html())}
         result = await search_web(None, "python release")
         self.assertLessEqual(result.count("\n") + 1, 5)
-        self.assertLessEqual(len(result), MAX_RESULT_CHARS + 200)
+        # Search's own ceiling, not the shared 800 + 200 slack: results now
+        # carry a snippet each, and the payload is sized to hold all four
+        # without `as_payload` halving the list. A search that silently
+        # dropped its second half would be the same bug as the one that
+        # dropped its snippets.
+        self.assertLessEqual(len(result), SEARCH_PAYLOAD_CHARS)
+
+    async def test_search_results_carry_a_snippet(self):
+        # The reported failure: "she obviously browses the websites but doesn't
+        # have context about the website content at all." A title says the page
+        # exists; only the snippet can answer the constraints the request
+        # actually carried -- "under 1K", the named retailers.
+        FakeClient.routes = {SEARCH_URL: FakeResponse(text=long_results_html())}
+        result = await search_web(None, "python release")
+        # The wrapper is a marker around the payload, not part of it -- strip
+        # it the way the model sees past it, rather than asserting on the
+        # delimiters.
+        body = result.split(UNTRUSTED_OPEN, 1)[1].split(UNTRUSTED_CLOSE, 1)[0]
+        payload = json.loads(body.split("\n", 2)[2])
+        rows = payload["results"]
+        self.assertTrue(rows)
+        for row in rows:
+            with self.subTest(title=row.get("title")):
+                self.assertIn("snippet", row)
+                self.assertLessEqual(len(row["snippet"]), SNIPPET_LIMIT)
 
     async def test_news_output_stays_within_budget(self):
         FakeClient.routes = {NEWS_SEARCH_URL: FakeResponse(text=long_news_feed())}

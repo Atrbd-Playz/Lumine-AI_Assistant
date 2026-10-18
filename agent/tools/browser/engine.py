@@ -230,6 +230,15 @@ class PlaywrightEngine:
             )
         except Exception:  # noqa: BLE001
             data["viewport"] = {}
+        # The content region, read last and merged. The collector above walks
+        # controls and takes the body's text wholesale; this replaces that text
+        # with the region that actually holds the page's substance and adds the
+        # site's named fields, which is what makes "what does this cost" answerable
+        # at all -- the body text of a product page is a banner and a nav drawer.
+        # Best effort on purpose: a page with no region keeps its body text.
+        data = state.apply_region(
+            data, await state.read_region(page, url=data.get("url") or page.url)
+        )
         return data
 
     async def history(self, direction: str) -> dict[str, Any]:

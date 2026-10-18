@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 52" width="112" height="52" role="img" aria-label="Blush">
+  <!-- Two rosy cheeks with hatching: the "red cheek" manpu, which is the single
+       strongest kawaii cue there is. Its own asset rather than a CSS tint,
+       because it arrives as an <img> and a stylesheet's `stroke` cannot reach
+       inside a replaced element.
+
+       Opacity is deliberately high (0.78) and the hue is light. The cheeks sit
+       on a near-black face, so a translucent pink reads as *grey* — the first
+       attempt at 0.42 was visible only as two darker patches. Manga draws this
+       as a solid rosy patch, not a wash, and against a dark field the only way
+       to keep the colour is to commit to it.
+
+       The centres sit at x=22 and x=90, a span of 68 units against the eyes'
+       own separation, so the pair frames the face rather than reading as one
+       mark in the middle of it. -->
+  <g transform="translate(22 26)">
+    <ellipse rx="20" ry="13" fill="#f79aa9" fill-opacity="0.78" stroke="#ffc9d3" stroke-width="1.6" />
+    <g stroke="#ffe6eb" stroke-width="2.2" stroke-linecap="round" opacity="0.72" fill="none">
+      <path d="M-10 -6.5 L-12 6.5" />
+      <path d="M0 -9 L0 9" />
+      <path d="M10 -6.5 L12 6.5" />
+    </g>
+  </g>
+  <g transform="translate(90 26)">
+    <ellipse rx="20" ry="13" fill="#f79aa9" fill-opacity="0.78" stroke="#ffc9d3" stroke-width="1.6" />
+    <g stroke="#ffe6eb" stroke-width="2.2" stroke-linecap="round" opacity="0.72" fill="none">
+      <path d="M-10 -6.5 L-12 6.5" />
+      <path d="M0 -9 L0 9" />
+      <path d="M10 -6.5 L12 6.5" />
+    </g>
+  </g>
+</svg>

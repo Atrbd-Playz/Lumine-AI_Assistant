@@ -212,6 +212,8 @@ MENU_ICONS: dict[str, tuple[str, ...]] = {
     "block": ("block", "block-filled", "ban"),
     "contact": ("profile-info", "contact-info"),
     "clear": ("clear", "close", "delete"),
+    "clear_chat": ("clear", "close", "delete", "trash"),
+    "clear_messages": ("clear", "close", "delete", "trash"),
     "voice_call": ("call", "phone"),
     "video_call": ("video", "video-call"),
     "unlink": ("logout", "log-out", "trash"),
@@ -600,8 +602,15 @@ function lumineRows(main) {
   const centre = pane.left + pane.width / 2;
   const composer = main.querySelector("footer [contenteditable='true']");
   const floor = composer ? composer.getBoundingClientRect().top : 0;
+  let currentDate = '';
   for (const row of main.querySelectorAll('[role="row"]')) {
     if (floor && row.getBoundingClientRect().top > floor) continue;  // the composer
+    const rawText = (row.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (rawText && !row.querySelector('[data-testid="tail-in"], [data-testid="tail-out"]')) {
+      if (/^(today|yesterday|\\d{1,2}[\\/.-]\\d{1,2}[\\/.-]\\d{2,4}|[a-z]+,?\\s+[a-z]+\\s+\\d{1,2},?\\s+\\d{4}|[a-z]+day|\\w+\\s+\\d{1,2},?\\s+\\d{4})/i.test(rawText)) {
+        currentDate = rawText;
+      }
+    }
     const bubble = row.querySelector('[data-testid="msg-container"]');
     if (!bubble) continue;              // a notice, a divider, a call log
     const rect = bubble.getBoundingClientRect();
@@ -610,12 +619,40 @@ function lumineRows(main) {
     const raw = (bubble.innerText || '').replace(/\\s+/g, ' ').trim();
     if (!raw) continue;
     const clock = (raw.match(/\\b\\d{1,2}:\\d{2}(\\s?[AP]M)?\\b\\s*$/i) || [''])[0].trim();
+    let sender = '';
+    let msgDate = currentDate;
+    const prePlain = row.querySelector('[data-pre-plain-text]') || bubble.querySelector('[data-pre-plain-text]');
+    if (prePlain) {
+      const preAttr = prePlain.getAttribute('data-pre-plain-text') || '';
+      const match = preAttr.match(/]\\s*([^:]+):/);
+      if (match) sender = match[1].trim();
+      const dateMatch = preAttr.match(/^\\[([^,]+),\\s*([^\\]]+)\\]/);
+      if (dateMatch) {
+        msgDate = dateMatch[2].trim();
+        currentDate = msgDate;
+      }
+    }
+    if (!sender) {
+      const authorSpan = bubble.querySelector('span[data-testid="author"], span._ao3e, span[dir="auto"]');
+      if (authorSpan && authorSpan.closest('[data-testid="msg-container"]') === bubble) {
+        const txt = (authorSpan.innerText || '').trim();
+        if (txt && txt !== raw && !txt.match(/\\b\\d{1,2}:\\d{2}/)) {
+          sender = txt;
+        }
+      }
+    }
+    const textEl = bubble.querySelector('.selectable-text, [data-testid="selectable-text"]');
+    const selText = textEl ? (textEl.innerText || '').replace(/\\s+/g, ' ').trim() : '';
+
     out.push({
       row: row,
       bubble: bubble,
       raw: raw,
       body: raw.replace(/\\b\\d{1,2}:\\d{2}(\\s?[AP]M)?\\b\\s*$/i, '').trim(),
+      text: selText,
       time: clock,
+      date: msgDate,
+      sender: sender,
       mine: rect.left + rect.width / 2 >= centre
     });
   }
@@ -665,12 +702,14 @@ _JS_READ_MESSAGES = _with_rows("limits", """
     if (!raw && doc) kind = 'document';
     else if (!raw && audio) kind = 'audio';
     else if (!raw && img) kind = 'image';
-    else if (raw === '‎\u200e\u200f') kind = 'sticker';
+    else if (raw === '?\u200e\u200f') kind = 'sticker';
     rows.push({
       text: raw.slice(0, 400),
       mine: item.mine,
+      sender: item.sender || '',
       kind: kind,
-      time: item.time
+      time: item.time,
+      date: item.date || ''
     });
   }
   const total = rows.length;
@@ -1129,6 +1168,9 @@ _JS_DELIVERED = _with_rows("text", """
   for (const item of lumineRows(main)) {
     if (!item.mine) continue;
     if (item.body === wanted || item.raw === wanted) return true;
+    if (item.text && item.text === wanted) return true;
+    const hasUrl = wanted.includes('://');
+    if ((wanted.length >= 10 || hasUrl) && (item.body.includes(wanted) || item.raw.includes(wanted) || (item.text && item.text.includes(wanted)))) return true;
   }
   return false;
 }
@@ -1707,6 +1749,97 @@ async def search_chats(query: str) -> list[dict[str, Any]]:
         try:
             await page.keyboard.press("Escape")
         except Exception:  # noqa: BLE001 - best effort; nothing depends on it
+            pass
+
+
+async def search_messages(query: str, chat: str = "") -> list[dict[str, Any]]:
+    """Search for messages matching `query`, optionally filtered to `chat`.
+
+    If `chat` is specified, opens that chat and searches within it.
+    Otherwise, performs a search across messages.
+    """
+    page = await whatsapp_page()
+    await require_ready()
+    wanted_chat = str(chat or "").strip()
+    if wanted_chat:
+        if not await open_chat(wanted_chat):
+            raise ToolError(f"I couldn't open {wanted_chat}'s chat, so nothing was searched.")
+        clicked = await page.evaluate(
+            """
+            () => {
+              const btn = document.querySelector("#main header [data-testid='search'], #main header [data-icon='search'], #main header button[aria-label*='Search']");
+              if (btn) { btn.click(); return true; }
+              return false;
+            }
+            """
+        )
+        if clicked:
+            await _sleep(0.3)
+            focused = await page.evaluate(
+                """
+                () => {
+                  const el = document.querySelector("div[role='region'] [contenteditable='true'], div[data-testid='search-input'] [contenteditable='true'], div[title*='Search'] [contenteditable='true']");
+                  if (el) { el.focus(); return true; }
+                  return false;
+                }
+                """
+            )
+            if focused:
+                await page.keyboard.type(str(query or ""))
+                await _sleep(0.5)
+                hits = await page.evaluate(
+                    """
+                    () => {
+                      const results = [];
+                      const pane = document.querySelector("div[role='region'], div[data-testid='search-results']");
+                      if (!pane) return results;
+                      for (const row of pane.querySelectorAll('[role=\"listitem\"], [role=\"row\"], [data-testid^=\"list-item\"]')) {
+                        const txt = (row.innerText || '').replace(/\\s+/g, ' ').trim();
+                        if (txt) results.push({ text: txt });
+                      }
+                      return results;
+                    }
+                    """
+                )
+                try:
+                    await page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                if hits is not None:
+                    return [{"chat": wanted_chat, "text": h.get("text", "")} for h in hits]
+
+    try:
+        box = await _focus(page, "search_box")
+        if box is None:
+            raise _missing("search box")
+        if not await _empty_search_box(page):
+            raise _missing("search box")
+        await page.keyboard.type(str(query or ""))
+        await _sleep(0.5)
+        hits = await page.evaluate(
+            """
+            () => {
+              const results = [];
+              const root = document.querySelector('#pane-side');
+              if (!root) return results;
+              for (const el of root.querySelectorAll('[data-testid^=\"list-item\"], [role=\"listitem\"], [role=\"row\"]')) {
+                const txt = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+                if (!txt) continue;
+                const titleEl = el.querySelector('span[title], [data-testid=\"cell-frame-title\"]');
+                const title = titleEl ? (titleEl.getAttribute('title') || titleEl.innerText || '').trim() : '';
+                results.push({ chat: title, text: txt });
+              }
+              return results;
+            }
+            """
+        )
+        if wanted_chat:
+            return [h for h in (hits or []) if wanted_chat.lower() in h.get("chat", "").lower()]
+        return list(hits or [])
+    finally:
+        try:
+            await page.keyboard.press("Escape")
+        except Exception:
             pass
 
 
@@ -2380,6 +2513,13 @@ async def _clear_composer() -> bool:
     return False
 
 
+async def clear_composer() -> bool:
+    """Empty the composer message box and verify it is empty."""
+    await require_ready()
+    return await _clear_composer()
+
+
+
 async def _composer_holds(expected: str) -> bool:
     """Whether the composer holds exactly `expected` -- the whole of it.
 
@@ -2599,15 +2739,20 @@ async def _click_emoji(page: Any, emoji: str) -> bool:
             """
             (emoji) => {
               const panels = Array.from(
-                document.querySelectorAll("div[role='dialog'], div[aria-label]")
+                document.querySelectorAll("div[role='dialog'], div[aria-label], div[data-testid*='reaction']")
               );
               for (const old of document.querySelectorAll('[data-lumine-wa-emoji]')) {
                 old.removeAttribute('data-lumine-wa-emoji');
               }
               for (const panel of panels) {
-                for (const el of panel.querySelectorAll('span, div[role="button"]')) {
-                  if ((el.textContent || '').trim() === emoji) {
-                    el.setAttribute('data-lumine-wa-emoji', '1');
+                for (const el of panel.querySelectorAll('span, div[role="button"], button, img')) {
+                  const txt = (el.textContent || '').trim();
+                  const alt = (el.getAttribute('alt') || '').trim();
+                  const aria = (el.getAttribute('aria-label') || '').trim();
+                  const plain = (el.getAttribute('data-plain-text') || '').trim();
+                  if (txt === emoji || alt === emoji || aria === emoji || plain === emoji || (aria && aria.includes(emoji))) {
+                    const target = el.closest('button, [role="button"]') || el;
+                    target.setAttribute('data-lumine-wa-emoji', '1');
                     return true;
                   }
                 }
@@ -2675,6 +2820,7 @@ _CONFIRM_WORDS = {
     "block": "block",
     "unlink": "log out",
     "leave": "leave",
+    "clear": "clear",
 }
 
 
@@ -2945,6 +3091,30 @@ async def _flag_is(page: Any, title: str, flag: str, want: bool) -> bool:
     if not (data or {}).get("found"):
         return None
     return True if bool((data or {}).get("present")) == want else None
+
+
+async def clear_chat() -> bool:
+    """Clear all messages in the open chat via chat menu."""
+    await require_ready()
+    page = await whatsapp_page()
+    menu_clicked = await page.evaluate(
+        """
+        () => {
+          const btn = document.querySelector("#main header [data-testid='menu'], #main header [data-icon='menu'], #main header button[aria-label*='Menu']");
+          if (btn) { btn.click(); return true; }
+          return false;
+        }
+        """
+    )
+    if not menu_clicked:
+        return False
+    await _sleep(0.3)
+    clicked = await _click_menu("clear_chat", fallback_text="clear chat")
+    if not clicked:
+        clicked = await _click_menu("clear_messages", fallback_text="clear messages")
+    if not clicked:
+        return False
+    return bool(await _confirm(page, "clear"))
 
 
 # ---------------------------------------------------------------------------

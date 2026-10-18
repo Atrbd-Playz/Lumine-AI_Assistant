@@ -49,10 +49,12 @@ try:
     from ..tools_compat import ToolError
     from ..tools_text import clip
     from .actions import REF_RE, host_verdict, hostname_of, normalize_url, TITLE_CHARS, URL_CHARS
+    from . import state as browser_state
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_compat import ToolError
     from tools_text import clip
     from browser.actions import REF_RE, host_verdict, hostname_of, normalize_url, TITLE_CHARS, URL_CHARS
+    from browser import state as browser_state  # type: ignore[no-redef]
 
 logger = logging.getLogger("lumine")
 
@@ -235,8 +237,8 @@ MSG_BAD_URL = (
 # reference between our decision and our action. `fill` repeats the password
 # refusal at the point of typing for the same reason.
 
-_JS_OBSERVE = """
-(gen) => {
+_JS_OBSERVE = """(gen) => {
+""" + browser_state._JS_VIEWPORT_FN + """
   for (const el of document.querySelectorAll('[data-lumine-ref]')) {
     el.removeAttribute('data-lumine-ref');
   }
@@ -288,38 +290,147 @@ _JS_OBSERVE = """
     }
     return pageFooter;
   };
-  const nodes = document.querySelectorAll(
-    'a[href],button,input,select,textarea,[role="button"],[role="link"],[role="tab"],[onclick]'
-  );
+  // A name for a control that has none. Ordered by what a *person* would call
+  // it, and the fallbacks at the end are the whole point: the old rule was
+  // `if (!label) continue`, so a page's headings, images and unlabelled buttons
+  // were collected into nothing at all and the model was told the page had no
+  // controls on it. An icon button with no accessible name is still a button,
+  // and "button 14" is a worse label than no label but a far better one than a
+  // control that does not exist as far as the tool is concerned.
+  //
+  // Written against `getAttribute`, `textContent`, a `parentElement` walk and
+  // one precomputed `label[for]` map -- no `closest`, no `querySelector` -- so
+  // the same script still runs against the stub DOM in `test_observe_controls`,
+  // which is the only honest test of what it collects.
+  const labelsById = {};
+  for (const label of document.querySelectorAll('label')) {
+    const forId = label.getAttribute ? label.getAttribute('for') : null;
+    const text = label && label.textContent ? String(label.textContent).trim() : '';
+    if (forId && text && !labelsById[forId]) labelsById[forId] = text.slice(0, 120);
+  }
+  const nameOf = (el, role) => {
+    const attrs = ['aria-label', 'placeholder', 'alt', 'title', 'name'];
+    for (const attr of attrs) {
+      const value = el.getAttribute(attr);
+      if (value && String(value).trim()) return String(value).trim().slice(0, 120);
+    }
+    if (el.id && labelsById[el.id]) return labelsById[el.id];
+    // A <label> that *wraps* its control has no `for`, so the map above cannot
+    // hold it. Walk up instead of calling `closest`, which the stub does not
+    // implement and which would silently make this half of the naming dead in
+    // the only test that exercises it.
+    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+      if (node.tagName && node.tagName.toLowerCase() === 'label' && node.textContent) {
+        const text = String(node.textContent).trim();
+        if (text) return text.slice(0, 120);
+      }
+    }
+    const own = el.textContent ? String(el.textContent).trim() : '';
+    if (own) return own.slice(0, 120);
+    // An image's file name, which is what an alt-less icon usually is. Only the
+    // leaf: a sprite sheet's URL names every icon on the site at once.
+    const src = el.getAttribute('src');
+    if (src) {
+      const leaf = String(src).split(/[?#]/)[0].split('/').pop();
+      if (leaf && leaf !== '.' && leaf !== '..') return leaf.slice(0, 120);
+    }
+    return el.tagName.toLowerCase() + ' ' + role;
+  };
+  const roleOf = (el) => {
+    const explicit = (el.getAttribute('role') || '').trim().toLowerCase();
+    if (explicit) return explicit;
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'a' && el.getAttribute('href')) return 'link';
+    if (tag === 'button') return 'button';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'input') {
+      if (type === 'checkbox') return 'checkbox';
+      if (type === 'radio') return 'radio';
+      if (type === 'submit' || type === 'button' || type === 'image' || type === 'reset') return 'button';
+      if (type === 'search') return 'searchbox';
+      if (type === 'range') return 'slider';
+      if (type === 'number') return 'spinbutton';
+      if (type === 'password') return 'textbox';
+      return 'textbox';
+    }
+    if (tag === 'img') return 'img';
+    if (tag === 'video') return 'video';
+    if (tag === 'h1' || tag === 'h2' || tag === 'h3') return 'heading';
+    if (tag === 'h4' || tag === 'h5' || tag === 'h6') return 'heading';
+    return tag;
+  };
+  // Every element the report may offer. The ARIA roles are here for the same
+  // reason `locators.ROLES` holds them: a `role="radiogroup"` filter, a
+  // `role="dialog"` and a `role="heading"` are all things a person points at,
+  // and none of them is reachable by any HTML tag of its own.
+  const nodes = document.querySelectorAll([
+    'a[href]', 'button', 'input', 'select', 'textarea', 'video', 'summary', 'img',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    '[role="button"]', '[role="link"]', '[role="tab"]', '[role="menuitem"]',
+    '[role="option"]', '[role="checkbox"]', '[role="switch"]', '[contenteditable="true"]',
+    '[role="radiogroup"]', '[role="radio"]', '[role="combobox"]', '[role="listbox"]',
+    '[role="slider"]', '[role="spinbutton"]', '[role="dialog"]', '[role="alertdialog"]',
+    '[role="searchbox"]', '[role="textbox"]', '[role="togglebutton"]',
+    '[role="menuitemcheckbox"]', '[role="row"]', '[role="cell"]', '[role="heading"]',
+    '[role="figure"]', '[role="listitem"]', '[onclick]'
+  ].join(','));
   let minted = 0;
   const controls = [];
+  // How many of each role one report offers. Without it a results page is sixty
+  // `listitem` rows and the search box that produced them is nowhere in the
+  // report -- the cap is per role so the *mix* survives, which is the property a
+  // model actually needs to act.
+  //
+  // Enforced *before* the ref is minted, not after. Minting first and then
+  // skipping leaves a hole in the sequence (`r1`, `r3`), and the contiguity of
+  // that sequence is a stated property: a model told to act on `r2` must be
+  // able to see what `r2` is.
+  const MAX_PER_ROLE = 12;
+  const perRole = {};
   for (const el of nodes) {
-    if (minted >= 60) break;
+    if (minted >= 300) break;
+    if (controls.length >= 60) break;
     const rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) continue;
     if (isChrome(el)) continue;
+    const role = roleOf(el);
+    if ((perRole[role] || 0) >= MAX_PER_ROLE) continue;
     const ref = 'r' + (minted + 1);
     el.setAttribute('data-lumine-ref', ref);
+    perRole[role] = (perRole[role] || 0) + 1;
     minted += 1;
-    if (controls.length >= 12) continue;
+    const label = nameOf(el, role);
     controls.push({
       ref: ref,
       tag: el.tagName.toLowerCase(),
       type: el.getAttribute('type') || '',
       href: (el.getAttribute('href') || '').slice(0, 200),
-      label: (
-        el.getAttribute('aria-label') ||
-        el.getAttribute('placeholder') ||
-        el.getAttribute('name') ||
-        (el.textContent || '').trim()
-      ).slice(0, 80)
+      label: label,
+      role: role,
+      // Set when the label was invented rather than read off the page, so a
+      // caller can tell "the button named Save" from "the third unnamed button"
+      // without guessing.
+      synthesised: label === el.tagName.toLowerCase() + ' ' + role
     });
   }
   const body = document.body;
   return {
     title: document.title || '',
     url: location.href,
-    text: (body && body.innerText || '').slice(0, 4000),
+    // The viewport window leads, the head is the fallback. `browse observe` used
+    // to slice the body from character zero on every call, so six observes and
+    // four scrolls on one product page all returned the same 127 words of
+    // header and the turn ended "I couldn't find the price" -- the price was
+    // below the fold and the read never went there. `''` from the helper means
+    // this environment cannot answer (no layout yet, the suite's stub DOM), and
+    // the head keeps the read a read.
+    text: (onScreenText(body, 4000) || (body && body.innerText || '')).slice(0, 4000),
+    // Where the read was taken from. Without it a model cannot tell "I read the
+    // same text twice" from "the page moved", and `scroll down and read again`
+    // is a sentence it has no way to confirm it followed.
+    scroll: scrollPosition(),
     controls: controls
   };
 }
@@ -601,6 +712,99 @@ def _endpoint_file() -> Path:
     return profile_dir().parent / "browser-cdp.txt"
 
 
+#: How long `_close_remote` waits for the endpoint it just closed to stop
+#: answering. Chromium is still tearing down when `context.close()` returns, and
+#: a socket mid-shutdown still accepts a connect -- so one instant probe is not
+#: evidence that the browser survived. 2.5 s is far longer than any real teardown
+#: (measured: the port refuses immediately once the process is gone, which makes
+#: this loop exit on its first check in the normal case) and far shorter than a
+#: user would notice as a hang in release.
+_ENDPOINT_DEATH_SECONDS = 2.5
+
+#: Spacing between those probes. Small enough that a slow teardown is caught
+#: within the deadline rather than being slept past.
+_ENDPOINT_POLL_SECONDS = 0.1
+
+
+#: Launch attempts for a profile lock, including the first one. A lock that is on
+#: its way out -- the browser this session just closed -- clears within this; a
+#: lock somebody else holds does not, and the refusal arrives as before.
+_LAUNCH_ATTEMPTS = 3
+
+#: Delay between those attempts. Short enough that a genuinely held lock costs the
+#: user well under two seconds, long enough for a closing Chromium to let go.
+_LAUNCH_RETRY_SECONDS = 0.7
+
+
+def _profile_locked(message: str) -> bool:
+    """Chromium's two spellings of "this profile is already in use".
+
+    Lower-cased on both sides: the message comes from the browser, and matching it
+    case-sensitively meant a capitalised variant slipped past and became the
+    generic "I couldn't start the browser" instead of the sentence that tells the
+    user which window to close.
+    """
+    lowered = str(message or "").lower()
+    return "existing browser session" in lowered or "user data directory is already in use" in lowered
+
+
+async def _launch_persistent(playwright: Any, directory: Path) -> Any:
+    """Launch the profile's browser, retrying a lock that is on its way out.
+
+    **A lock that is *being* released looks exactly like one somebody holds**, and
+    this is the path that has to reopen the browser in the same session: `release`
+    has just closed the previous one, and the teardown it schedules onto the owning
+    loop is not awaited by the caller -- so the next `ensure` can arrive while
+    Chromium is still letting go of the directory. One attempt would translate that
+    into `MSG_PROFILE_LOCKED`, which tells the user to go and close a window that is
+    already closing, and the reopen would fail for a reason that is no longer true.
+
+    Only the locked outcome is retried, and only a bounded number of times. A lock
+    genuinely held by another window does not clear, and every extra attempt is time
+    the user spends waiting for a refusal that was correct on the first try -- so
+    `_LAUNCH_ATTEMPTS` and `_LAUNCH_RETRY_SECONDS` keep that under two seconds, and
+    anything else (a missing executable, a broken profile) is raised on the first
+    attempt exactly as before.
+    """
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            return await playwright.chromium.launch_persistent_context(
+                str(directory),
+                headless=headless_default(),
+                # Downloads are cancelled at the source: a browser the
+                # assistant drives is not a browser that drops files on the
+                # user's disk without a conversation about it.
+                accept_downloads=False,
+                # Emulate nothing about the display. Playwright's defaults
+                # substitute a viewport and force the *light* colour scheme, so
+                # the window overflowed the screen and every site rendered
+                # light while the machine was set to dark -- which is why the
+                # browser looked unlike the user's own. `None` means "follow the
+                # OS", which is what any window the user opens does.
+                no_viewport=True,
+                color_scheme=None,
+                args=_window_args()
+                # A DevTools endpoint, so another process can *join* this
+                # browser instead of failing against its lock. Port 0 lets the
+                # OS choose it, because two processes launching at once would
+                # otherwise both ask for the same fixed one -- and the endpoint
+                # is published from `DevToolsActivePort` once it is known.
+                + ["--remote-debugging-port=0"],
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised unless locked
+            if attempts >= _LAUNCH_ATTEMPTS or not _profile_locked(str(exc)):
+                raise
+            logger.info(
+                "[Browser] the profile is still busy; launch attempt %d/%d in %.1fs",
+                attempts + 1,
+                _LAUNCH_ATTEMPTS,
+                _LAUNCH_RETRY_SECONDS,
+            )
+            await asyncio.sleep(_LAUNCH_RETRY_SECONDS)
+
+
 def _publish_endpoint(port: int) -> None:
     target = _endpoint_file()
     try:
@@ -653,6 +857,27 @@ def _forget_endpoint() -> None:
         _endpoint_file().unlink()
     except OSError:
         pass
+
+
+async def _close_page_safe(page: Any, what: str = "a browser tab") -> None:
+    """Close one page. Best effort, never raises, and **never under `_lock`**.
+
+    It is a module-level coroutine rather than a method because the caller that
+    matters is `release`, and `release` must not hold `_lock` while it awaits.
+    `_lock` is a `threading.Lock`, so a second coroutine reaching
+    `with self._lock` on the same thread blocks the *event loop* instead of
+    waiting its turn -- and the close the first one is awaiting can then never
+    finish. Teardown would deadlock against itself, which is the worst possible
+    shape for the one path that is not allowed to fail.
+
+    `what` is only ever used in the log line, so a tab that refuses to close
+    names itself instead of being an anonymous failure.
+    """
+    try:
+        if page is not None and not page.is_closed():
+            await page.close()
+    except Exception as exc:  # noqa: BLE001 - a tab that will not close is not fatal
+        logger.info("[browser] could not close %s: %s", what, exc)
 
 
 def sharing_endpoint() -> tuple[str, bool]:
@@ -881,12 +1106,18 @@ class _Tab:
     replacing its body all invalidate the same way they always did.
     """
 
-    __slots__ = ("key", "page", "generation")
+    __slots__ = ("key", "page", "generation", "last_read")
 
     def __init__(self, key: int, page: Any, generation: int) -> None:
         self.key = key
         self.page = page
         self.generation = generation
+        # A digest of the last read this tab produced -- url, scroll position and
+        # text -- so a second observe that returns the *same* page can say so.
+        # Six observes and four scrolls returning identical header text was the
+        # measured failure; a model that is not told it is re-reading the same
+        # thing keeps re-reading it.
+        self.last_read: str | None = None
 
     def url(self) -> str:
         """The tab's address, or ``""`` -- a page mid-navigation reads as none."""
@@ -1331,35 +1562,6 @@ class _Browser:
         except Exception:  # noqa: BLE001 - the registry is bookkeeping, not the work
             logger.debug("[browser] could not drop an adopted tab", exc_info=True)
 
-    async def _close_wa_tab(self) -> None:
-        """Close the WhatsApp tab this process opened. Best effort, never raises.
-
-        The tab is ours -- `whatsapp_page` created it -- so letting it outlive the
-        conversation that used it means a persistent worker leaves one behind per
-        conversation. That is not untidy, it is *broken*: the next conversation
-        cannot see the old tab, so `whatsapp_page` opens another, and after a few
-        conversations there are several copies of WhatsApp open at once. The search
-        then runs against one while the press lands in another, which reads as
-        "she can't open the chat", and the assistant's reaction to that failure is
-        to open yet another tab.
-
-        Closing is the honest end of a tab's life. The login does **not** go with
-        it -- that lives in the profile on disk, which is the part worth keeping.
-
-        Best effort on purpose: release runs on the way out of a room and must not
-        be the thing that fails. If the close does not land, adoption on the next
-        session picks the tab up rather than adding to the pile.
-        """
-        page = self._wa_page
-        self._wa_page = None
-        if page is None:
-            return
-        try:
-            if not page.is_closed():
-                await page.close()
-        except Exception as exc:  # noqa: BLE001 - a tab that will not close is not fatal
-            logger.info("[browser] could not close the WhatsApp tab: %s", exc)
-
     async def _page_on(self, context: Any) -> Any:
         """One more page on a context we already hold, or a sentence."""
         try:
@@ -1543,29 +1745,7 @@ class _Browser:
                 context = None
 
             if context is None:
-                context = await playwright.chromium.launch_persistent_context(
-                    str(directory),
-                    headless=headless_default(),
-                    # Downloads are cancelled at the source: a browser the
-                    # assistant drives is not a browser that drops files on the
-                    # user's disk without a conversation about it.
-                    accept_downloads=False,
-                    # Emulate nothing about the display. Playwright's defaults
-                    # substitute a viewport and force the *light* colour scheme, so
-                    # the window overflowed the screen and every site rendered
-                    # light while the machine was set to dark -- which is why the
-                    # browser looked unlike the user's own. `None` means "follow the
-                    # OS", which is what any window the user opens does.
-                    no_viewport=True,
-                    color_scheme=None,
-                    args=_window_args()
-                    # A DevTools endpoint, so another process can *join* this
-                    # browser instead of failing against its lock. Port 0 lets the
-                    # OS choose it, because two processes launching at once would
-                    # otherwise both ask for the same fixed one -- and the endpoint
-                    # is published from `DevToolsActivePort` once it is known.
-                    + ["--remote-debugging-port=0"],
-                )
+                context = await _launch_persistent(playwright, directory)
                 port = _discover_devtools_port(directory)
                 if port:
                     _publish_endpoint(port)
@@ -1587,7 +1767,7 @@ class _Browser:
             message = str(exc)
             if "Executable" in message or "executable" in message:
                 raise ToolError(MSG_NOT_INSTALLED) from None
-            if "existing browser session" in message or "user data directory is already in use" in message:
+            if _profile_locked(message):
                 # The profile is locked, which means a Lumine browser window is
                 # already open somewhere -- usually the Tauri app, or a probe that
                 # did not exit cleanly. Chromium's own wording here is a paragraph
@@ -1944,15 +2124,44 @@ class _Browser:
             shared = self._shared
             self._context = self._page = self._pw = None
             self._shared = False
+            # We are no longer attached to that browser, so nothing here may keep
+            # a handle to it. Leaving `_joined_browser` set meant a later read of
+            # "am I a guest?" answered yes for a browser we had already left.
+            self._joined_browser = None
             # The WhatsApp tab goes with everything else. Its *login* survives on disk
             # in the profile, which is the part worth keeping; the open chat, the
             # half-typed draft, and the search box somebody left filtered are all
             # state a new conversation must not inherit.
             #
+            # The tab is ours -- `whatsapp_page` created it -- so letting it outlive
+            # the conversation that used it means a persistent worker leaves one
+            # behind per conversation. That is not untidy, it is *broken*: the next
+            # conversation cannot see the old tab, so `whatsapp_page` opens another,
+            # and after a few rooms there are several copies of WhatsApp open at
+            # once. The search then runs against one while the press lands in
+            # another, which reads as "she can't open the chat" -- and the reaction
+            # to that failure is to open yet another tab.
+            #
+            # Best effort, and deliberately so: release runs on the way out of a
+            # room and must not be the thing that fails. A close that does not land
+            # is picked up by adoption on the next session rather than added to.
+            #
             # **Unless the browser is shared**, in which case that tab is another
             # agent's and this process does not get to decide it should go.
+            #
+            # The *page* is taken out here and closed after the lock is released.
+            # `_OwnerLock`'s contract is that it is held only for the statements
+            # that read or write the ownership fields and **never across an
+            # `await`** -- and awaiting the tab's close inside it broke that in the
+            # worst available way: `with self._lock` is a `threading.Lock`, so a
+            # second coroutine reaching it blocks the *event loop* rather than
+            # waiting its turn, and the close the first one is waiting on can then
+            # never finish. Teardown is the one path that is not allowed to fail,
+            # and it was failing against its own lock. See `_close_page_safe`.
+            wa_page = None
             if not shared:
-                await self._close_wa_tab()
+                wa_page = self._wa_page
+                self._wa_page = None
                 self._wa_lock = None
             # Every tab goes with them, for the same reason: a page somebody was
             # halfway through reading is not state the next conversation should
@@ -1966,6 +2175,19 @@ class _Browser:
             self._loop = None
             self._owner_token = None
             self._start_lock = None
+
+        if wa_page is not None:
+            if owner is not None and owner is not loop and not owner.is_closed() and owner.is_running():
+                # The tab belongs to the loop that made it. Hand it back there
+                # rather than awaiting it from a loop that cannot service it.
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        _close_page_safe(wa_page, "the WhatsApp tab"), owner
+                    )
+                except RuntimeError:  # pragma: no cover - loop died mid-handoff
+                    pass
+            else:
+                await _close_page_safe(wa_page, "the WhatsApp tab")
 
         if owner is not None and owner is not loop:
             # Somebody else made these objects. Close them on *their* loop if it
@@ -2011,9 +2233,31 @@ class _Browser:
                 await playwright.stop()
             except Exception:  # noqa: BLE001
                 pass
+        if context is None:
+            # We had no browser of our own to close, so the published endpoint may
+            # still be somebody else's: drop it only once nothing answers on it.
+            if not _endpoint_alive(_read_endpoint()):
+                _forget_endpoint()
+            return
         # We closed the browser, so its endpoint is no longer a way in.
-        if not _endpoint_alive(_read_endpoint()):
-            _forget_endpoint()
+        #
+        # **The check has to outlive the close, and the forget is not conditional
+        # on it.** `context.close()` returns as Chromium is tearing down, and a
+        # socket that is mid-shutdown still accepts a connect -- so one instant
+        # probe read "alive" for a browser that was already gone and left the file
+        # behind. The next `_start` in this same session then *joined* that dying
+        # browser, got a context for a window that no longer existed, and failed
+        # against it -- which is the whole of "close it, then ask me to open it
+        # again and it will not". So: poll until the port stops answering (bounded,
+        # because teardown must not become the slow part of a teardown), then drop
+        # the file either way. A surviving file costs one no-op unlink; a surviving
+        # *file for a dead browser* costs a whole session.
+        deadline = time.monotonic() + _ENDPOINT_DEATH_SECONDS
+        while time.monotonic() < deadline:
+            if not _endpoint_alive(_read_endpoint()):
+                break
+            await asyncio.sleep(_ENDPOINT_POLL_SECONDS)
+        _forget_endpoint()
 
     # -- page operations ---------------------------------------------------
     #
@@ -2193,8 +2437,57 @@ class _Browser:
         for control in result.get("controls") or []:
             if isinstance(control, dict):
                 self._remember_video_id(str(control.get("href") or ""))
+        # The content region, read separately from the control walk. `_JS_OBSERVE`
+        # returns the *body* text, which on a product page is a cookie banner, a
+        # nav drawer and a recommendation rail before anything the user asked
+        # about -- the reported failure was a read that could not say what the
+        # thing cost. The region read replaces that text with the part that
+        # matters and adds the site's named fields, and is deliberately best
+        # effort: a page with no region answers with nothing and keeps the body
+        # text, which is still a read rather than an error.
+        result = browser_state.apply_region(
+            result, await browser_state.read_region(page, url=page.url)
+        )
         result.update(await self.tab_context())
+        self._flag_repeat_read(result)
         return result
+
+    def _flag_repeat_read(self, result: dict[str, Any]) -> None:
+        """Say so when a read returns the text this tab already returned.
+
+        The measured failure was six observes and four scrolls on one product
+        page, every one returning the same 127 words of header, with nothing
+        telling the model it was re-reading the same window. A scroll that
+        does not move (a page with no height to give, a wheel event the page
+        swallows) looks exactly like success from the outside, so the model
+        kept asking and kept getting the same text.
+
+        The digest is url + scroll position + text: all three, because any one
+        alone is ambiguous. The same url at a *different* position is a real
+        second read and must not be flagged; the same text at a different url
+        is a different page that happens to share its header. The notice lands
+        in the payload as `notice`, next to the text it is about.
+        """
+        tab = self._tab_by_key(self._active)
+        if tab is None:
+            return
+        scroll = result.get("scroll")
+        position = scroll.get("y") if isinstance(scroll, dict) else None
+        digest = "|".join(
+            (
+                str(result.get("url") or ""),
+                str(position if position is not None else ""),
+                str(result.get("text") or "")[:400],
+            )
+        )
+        previous, tab.last_read = tab.last_read, digest
+        if previous is not None and previous == digest:
+            result["notice"] = (
+                "This is the same text you just read from this page -- nothing"
+                " moved. Scroll first (the payload's scroll.y / scroll.max say"
+                " where you are and how much is left), then observe again; do"
+                " not re-read the same window."
+            )
 
     async def tab_context(self) -> dict[str, Any]:
         """Which tab this is, and what else is open.

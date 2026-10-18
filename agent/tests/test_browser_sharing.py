@@ -68,9 +68,13 @@ class WindowGeometryTests(unittest.TestCase):
         """
         import inspect
 
-        source = inspect.getsource(session._Browser._start)
+        # The launch arguments live in `_launch_persistent`, which `_start` calls:
+        # they moved there with the bounded retry for a profile lock, and a test
+        # that grepped `_start` would have gone green while the flags were gone.
+        source = inspect.getsource(session._launch_persistent)
         self.assertIn("no_viewport=True", source)
         self.assertIn("color_scheme=None", source)
+        self.assertIn("_launch_persistent(", inspect.getsource(session._Browser._start))
 
 
 class SharedBrowserTests(unittest.TestCase):

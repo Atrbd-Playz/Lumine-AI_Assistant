@@ -210,11 +210,29 @@ export class LumineAvatarEngine {
     this.intensity = nextIntensity;
     const transitionId = ++this.transitionToken;
     const start = performance.now();
-    const transitionDuration = 420;
+    /**
+     * How long an expression takes to arrive, and how it arrives.
+     *
+     * It was 420ms through `easeInOut` — a symmetric ramp, which is the easing
+     * of a thing being *lowered*. An expression is not lowered into place, it
+     * *lands*: anime timing holds a face still, snaps the new one on in a
+     * fraction of a second, and lets it overshoot by a hair before it settles.
+     * That overshoot is most of what makes an expression read as deliberate
+     * rather than as a fade, and it is free here — `easeOutBack` already exists
+     * in `animationUtils` and the pose channels are plain scalars, so a
+     * `maskScale` of 1.34 passing through 1.45 on its way to rest is a bigger
+     * eye for two frames and then a normal one.
+     *
+     * The arc path does not get the same treatment: it is a flubber `d`
+     * interpolation, and flubber is only defined on `t` in `[0, 1]` — an
+     * overshoot there is an interpolation past the target shape, not past its
+     * scale. So the crescents ease normally and the face pops around them.
+     */
+    const transitionDuration = 260;
     const tick = (now: number) => {
       if (transitionId !== this.transitionToken || this.destroyed) return;
       const progress = clamp01((now - start) / transitionDuration);
-      this.render(interpolatePose(from, to, easeInOut(progress)), interpolateArcPose(fromArc, toArc, easeInOut(progress)));
+      this.render(interpolatePose(from, to, easeOutBack(progress)), interpolateArcPose(fromArc, toArc, easeInOut(progress)));
       if (progress < 1) this.transitionRaf = requestAnimationFrame(tick); else this.render();
     };
     cancelAnimationFrame(this.transitionRaf);
@@ -225,7 +243,10 @@ export class LumineAvatarEngine {
       proud: "blink", worried: "lookLeft", playful: "wiggle", loving: "happyBlink", jealous: "peek", wink: "happyBlink",
     };
     const animation = signature[emotion];
-    if (animation) window.setTimeout(() => { if (transitionId === this.transitionToken) void this.play(animation, 2); }, 360);
+    // The signature gesture fires just after the face has landed rather than a
+    // beat after it — with a 260ms face, 360ms read as a pause before the
+    // gesture instead of as one motion.
+    if (animation) window.setTimeout(() => { if (transitionId === this.transitionToken) void this.play(animation, 2); }, 240);
   }
   setActivity(activity: LumineActivity) { this.activity = activity; this.render(); }
   setEyeMode(mode: ExpressiveEyeMode) {

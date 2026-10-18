@@ -1383,10 +1383,15 @@ input {
 
 .permission-card {
   pointer-events: auto;
+  position: relative;
+  /* The draining bar runs to the card's own edges, so the rounded corners have
+     to be what clips it — a bar with square ends poking out of a rounded card
+     is the one detail that makes the whole thing look unfinished. */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 9px;
-  padding: 13px 15px 13px;
+  gap: 8px;
+  padding: 14px 16px 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -1408,14 +1413,34 @@ input {
  * pick its own colour.
  */
 .permission-class {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   flex: 0 0 auto;
-  padding: 2px 7px;
-  border-radius: 6px;
+  padding: 3px 9px 4px;
+  border-radius: 999px;
   color: var(--color-text-soft);
   background: color-mix(in srgb, var(--color-text) 7%, transparent);
   font: 500 9px var(--font-mono);
   letter-spacing: 0.05em;
   text-transform: uppercase;
+}
+
+/*
+ * A dot beside the word, in the word's own colour.
+ *
+ * The label is the signal and the dot is the emphasis on it — never the other
+ * way round, or the card would be asking for a decision on the strength of a
+ * colour alone. What the dot buys is the periphery: this card arrives while the
+ * user is looking somewhere else, and a red dot at the edge of vision is what
+ * turns a glance into a look. Same reasoning as the table's outcome column.
+ */
+.permission-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 .permission-class.is-sensitive,
@@ -1426,8 +1451,34 @@ input {
 
 .permission-clock {
   color: var(--color-text-soft);
-  font: 500 10.5px var(--font-mono);
+  font: 500 11px var(--font-mono);
   font-variant-numeric: tabular-nums;
+  transition: color 160ms ease;
+}
+
+/*
+ * Under ten seconds the clock and the bar go red together. The card has said
+ * "decide now" since it arrived; this is where that stops being a warning and
+ * becomes a fact, and someone still reading deserves to be told without having
+ * to do the arithmetic.
+ */
+.permission-clock.is-urgent {
+  color: var(--color-danger);
+}
+
+/*
+ * Which tool is asking, in words rather than in an identifier.
+ *
+ * The question is what is being approved and this is who is asking, which is
+ * the same distinction the class badge draws from the other side: without it a
+ * `web_control` card and a `desktop_control` card look identical until the user
+ * parses the sentence.
+ */
+.permission-title {
+  color: var(--color-text);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.3;
 }
 
 .permission-summary {
@@ -1510,23 +1561,38 @@ input {
   font-size: 11.5px;
 }
 
+/*
+ * Bigger than a settings button, and deliberately so.
+ *
+ * This is the only pair of buttons in the app that decides whether something
+ * *happens to another person's inbox*, and it is pressed while somebody is
+ * talking — with half their attention, sometimes from across a desk. At the
+ * sizes the rest of the app uses they were the smallest targets on the screen.
+ *
+ * Equal widths so the pair reads as one decision with two answers rather than
+ * as a primary button and its reject. The order is unchanged: the affirmative
+ * is the right-hand one, which is where Windows and macOS both put it, so the
+ * hand does not have to learn a new corner for this dialog.
+ */
 .permission-allow {
-  padding: 8px 16px;
-  border-radius: 10px;
+  min-width: 96px;
+  padding: 10px 18px;
+  border-radius: 11px;
   color: var(--color-stage-text);
   background: var(--color-accent);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
 }
 
 .permission-deny {
-  padding: 8px 14px;
+  min-width: 96px;
+  padding: 10px 18px;
   border: 1px solid var(--color-border);
-  border-radius: 10px;
+  border-radius: 11px;
   color: var(--color-text);
   background: var(--color-surface-muted);
-  font-size: 12.5px;
+  font-size: 13px;
   cursor: pointer;
 }
 
@@ -1534,6 +1600,51 @@ input {
 .permission-deny:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/*
+ * The deadline, draining.
+ *
+ * Not a progress bar — nothing is being built. It is the number in the header
+ * without the arithmetic, in the place the eye finishes at, and it turns with
+ * the clock when the request becomes urgent. At the top of the card it would
+ * compete with the class badge for "what is this"; at the bottom it reads as
+ * the card emptying, which is what is actually happening.
+ *
+ * Absolutely positioned so it never changes the card's height — cards arrive in
+ * bursts and a stack whose rows grow would shove the buttons down every second.
+ * `.permission-bar-fill` is transitioned at exactly the interval the clock
+ * ticks, so the drain is a slide rather than a series of jumps.
+ */
+.permission-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+
+.permission-bar-fill {
+  height: 100%;
+  background: var(--color-accent);
+  transition:
+    width 1000ms linear,
+    background-color 200ms ease;
+}
+
+.permission-card.is-urgent .permission-bar-fill {
+  background: var(--color-danger);
+}
+
+/* The drain is the one animation on this card, and it is a countdown rather
+   than decoration — but reduced motion is reduced motion, and the seconds in
+   the header carry the same information in a form that does not move. */
+@media (prefers-reduced-motion: reduce) {
+  .permission-bar-fill,
+  .permission-clock {
+    transition: none;
+  }
 }
 
 @media (max-width: 560px) {
@@ -3395,6 +3506,24 @@ input {
   stroke-width: 1.8;
   stroke-dasharray: 0.5 3.8;
   filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.18));
+  /* A held manpu that settles and then never moves again reads as a sticker.
+     The entrance is framer's, on the `<img>` inside; this is the *idle*, on the
+     wrapper, so the two never write the same property and never fight — which is
+     the whole reason it lives here rather than as a `repeat` on the entrance. */
+  animation: expression-breathe 3.4s ease-in-out infinite;
+  transform-origin: 62% 34%;
+}
+
+@keyframes expression-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-2.5px) scale(1.05); }
+}
+
+/* Motion that is decoration has to be the first thing to go when the person has
+   asked for less of it. This is not load-bearing — it is a floating symbol — so
+   it stops, while the symbol itself stays exactly where it is. */
+@media (prefers-reduced-motion: reduce) {
+  .expression-effects { animation: none; }
 }
 
 .expression-artifact {
@@ -3418,11 +3547,29 @@ input {
    -- so a rule keyed on a modifier would match nothing. The per-effect placement
    that used to be split across modifiers is a property of the wrapper above. */
 
-.expression-effects--blush {
-  stroke: color-mix(in srgb, #ef8b96 72%, var(--color-stage-text));
-  fill: color-mix(in srgb, #f7b6c0 18%, transparent);
-  stroke-width: 1.5;
-  stroke-dasharray: 0 0;
+/* Blush is the only artifact that is not a corner mark: two cheeks have to sit
+   *across the face* rather than beside it, so it is centred and dropped to the
+   cheek line instead of taking `right: 8px; top: 18px`.
+
+   The number is measured rather than guessed. The artwork's eyes are two 45-unit
+   circles on a 250-unit sheet, so in the Lab's 250px face they span 103–146px;
+   the dark face itself runs to 213px. Cheeks are the band between the two, and
+   `top: 60%` with the asset's own 48px height puts them at 150–198px — below the
+   eyes and still inside the jaw. The first attempt used `top: 46%`, which put
+   them *on* the eyes, and a pair of rosy ovals over the eyes reads as a
+   sleep-mask rather than as a blush. The same proportion holds on the home
+   presence, where the body is a `clamp()` rather than a flat 250px, because both
+   boxes wrap the same SVG at the same ratio.
+
+   Centred with `left/right: 0` plus a fixed width rather than a `transform`,
+   because framer writes `transform` on that element every frame and would win. */
+.expression-effects--blush .expression-artifact {
+  left: 0;
+  right: 0;
+  top: 60%;
+  width: 112px;
+  height: 52px;
+  margin: 0 auto;
 }
 
 .expression-effects--anger,
@@ -3619,6 +3766,12 @@ input {
    the list under it, which reads as two things that do not belong to each other. */
 .activity-page > .workspace-header {
   max-width: none;
+  /* The shared header's `margin: 0 auto` is a horizontal centring rule for a
+     block, and this page makes it a flex item in a *column*. Auto cross-axis
+     margins replace stretch, so the header sized itself to its own words — 336px
+     of a 1080px measure — and sat centred while everything beneath it filled
+     the page. Dropping the auto margins restores the stretch. */
+  margin-inline: 0;
 }
 
 /* The strip's own 40px gutters are for the settings overlay, whose panes are
@@ -3739,51 +3892,133 @@ input {
   color: var(--color-danger);
 }
 
-/* One day, one box.
+/* ---- The controls above the table --------------------------------------- */
 
-   A sticky day label moves only while its containing block is in the scrollport,
-   and a containing block is its parent — so with one `<li>` per row the label
-   held for a single row's height and then scrolled away with it. A day being one
-   `<li>` is what makes the label follow the whole day. */
-.activity-day-group {
-  display: flex;
-  flex-direction: column;
-}
+/* The filter chips, the search box, and the count line that says how much is
+   actually below them.
 
-/* Day separators. A log with no dates is a wall of lines; the eye needs to know
-   how far back it is looking, and that is the one fact a row cannot carry
-   without repeating it two hundred times.
-
-   `margin: 0` is here rather than as a utility because this is an `<h2>`: a
-   heading inside a list item gets the document's heading margins by default, and
-   a 24px gap on top of a sticky separator pushes the first row of each day out
-   from under its own label. */
-.activity-day {
-  position: sticky;
-  top: 0;
-  z-index: 1;
+   Chips left, search pushed right, and the count on a line of its own: it is a
+   sentence *about* the table, and squeezed into whatever the chips leave behind
+   it would stop being a caption and start being a third chip. */
+.activity-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
-  margin: 0;
-  padding: 12px 2px 7px;
-  /* Opaque, with a five-pixel fade on its own lower edge.
-     A half-transparent label reads as a smudge: rows scroll *underneath* it, and
-     the row that is half under it is half readable, which is the one thing a
-     section label must not be. The fade is there so it reads as floating over the
-     list rather than as a solid bar glued to the scrollport's top edge. */
-  background: linear-gradient(to bottom, var(--color-canvas) 0 calc(100% - 5px), transparent);
-  font: 500 9.5px var(--font-mono);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  margin-top: 14px;
+}
+
+/* The strip's own padding — 16px of top, 40px of side — is for the settings
+   overlay, whose panes are narrower than this page. Sitting directly above the
+   table it would pull the chips away from the table's own left edge, which is
+   the edge the TIME column starts from. */
+.activity-controls .settings-tabs-bar {
+  padding: 0;
+  /* The bar carries `flex: 0 0 auto` from the settings header, where nothing
+     else shares its row. Here it does, so it has to be able to give way when the
+     container cannot hold every chip — with shrink off, a narrow container
+     pushed the strip past its own edge instead of clipping a chip. */
+  flex: 0 1 auto;
+}
+
+/* `flex: 1` is what the strip uses to fill a settings header, and
+   `.settings-tabs button` carries `flex: 1` under it: **every chip takes an
+   equal share of whatever width the strip ends up at**, so a longer label is the
+   first thing to lose characters. Measured at the strip's natural width,
+   "Problems 5" and "Timing 9" were ellipsised while 700px sat empty beside
+   them — the labels are shorter than the row, and equal division does not care.
+
+   Chips are sized by their own words instead: `flex-basis: auto` and no shrink
+   on the button, so the strip's width becomes the width of the labels, and the
+   row only clips once the container genuinely cannot hold them. */
+.activity-controls .settings-tabs {
+  flex: 0 1 auto;
+}
+
+.activity-controls .settings-tabs button {
+  flex: 0 0 auto;
+}
+
+.activity-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 168px;
+  margin-left: auto;
+  padding: 7px 12px;
+  color: var(--color-text-faint);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  transition: border-color 140ms ease;
+}
+
+.activity-search:focus-within {
+  border-color: var(--color-accent);
+}
+
+.activity-search input {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  color: var(--color-text);
+  background: none;
+  border: 0;
+  outline: 0;
+  font: 400 12px var(--font-ui);
+}
+
+.activity-search input::placeholder {
   color: var(--color-text-faint);
 }
 
-.activity-day::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--color-border);
+.activity-search-clear {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 2px;
+  color: var(--color-text-faint);
+  background: none;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.activity-search-clear:hover {
+  color: var(--color-text);
+}
+
+/* A caption, not a chip: it describes the rows and belongs to the table's left
+   edge rather than to the controls' right one. `aria-live` is on the element in
+   the component, so narrowing the list is also announced. */
+.activity-count {
+  flex-basis: 100%;
+  margin: -3px 0 0;
+  color: var(--color-text-faint);
+  font: 500 10.5px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+}
+
+/* A filter or a search that matched nothing — which is *not* an empty timeline.
+   An empty timeline is a state of the worker; this is a state of the filter, and
+   the two must not look alike, or a mistyped search reads as "Lumine reported
+   nothing". */
+.activity-none {
+  margin: 18px 0 0;
+  color: var(--color-text-soft);
+  font-size: 12.5px;
+}
+
+.activity-none-reset {
+  padding: 0;
+  color: var(--color-accent);
+  background: none;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .activity-list {
@@ -3827,66 +4062,325 @@ input {
   background-clip: content-box;
 }
 
-/* A 2px edge in the row's tone, rather than a coloured dot. A dot has to be
-   looked at; an edge is read peripherally, which is what a timeline wants — you
-   are scanning for the one red line, not reading. */
-.activity-row {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 9px 12px 9px 14px;
-  border-radius: 8px;
-  transition: background-color 140ms ease;
+/* ---- The table ---------------------------------------------------------- */
+
+/*
+ * The table itself.
+ *
+ * `table-layout: fixed` is what makes the columns *columns*. Under auto layout
+ * a long provider string widens its own cell, so each row's content lines up
+ * against a different edge — which is exactly the read a table exists to
+ * prevent. Here the widths are declared once below, the WHAT column takes the
+ * remainder, and every row's five values sit in the same five places.
+ *
+ * `border-collapse: separate` rather than `collapse`, because a collapsed
+ * border does not travel with a sticky header: the header would keep its bottom
+ * border while the rows slipped underneath and left a second, unattached line.
+ */
+.activity-table {
+  /* The header's own height, and therefore the distance a sticky day label
+     parks below it. A custom property because two rules have to agree on the
+     number and its only meaning is in their relationship. */
+  --activity-head-h: 28px;
+
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
 }
 
-.activity-row:hover {
+.activity-table th,
+.activity-table td {
+  padding: 0 6px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+/*
+ * The header row, and why it is opaque.
+ *
+ * It sticks while the log scrolls under it, so anything less than a solid fill
+ * shows rows through itself — and a half-readable column label is worse than
+ * none, because it is read as a different word.
+ */
+.activity-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: var(--activity-head-h);
+  color: var(--color-text-faint);
+  background: var(--color-canvas);
+  border-bottom: 1px solid var(--color-border);
+  font: 500 9px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* The four measured columns. WHAT is the only one without a width, so it is the
+   one that receives what is left of the row. */
+.activity-col-time {
+  width: 66px;
+}
+
+.activity-col-kind {
+  width: 76px;
+}
+
+.activity-col-outcome {
+  width: 100px;
+}
+
+.activity-col-ms {
+  width: 88px;
+  text-align: right;
+}
+
+.activity-table tbody td {
+  padding: 7px 6px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
+}
+
+/* Hover as a wash across the whole row, not the title's line: the row is the
+   thing being pointed at. The header is excluded by its `z-index` — it is the
+   one element that must stay a solid bar while rows move behind it. */
+.activity-row:hover td {
   background: color-mix(in srgb, var(--color-text) 3.5%, transparent);
 }
 
-/* The glyph sits in a tinted chip for the same reason a toast's does: a bare
-   outline next to two lines of text is decoration, and a chip is a category. */
-.activity-row-glyph {
-  margin-top: 1px;
-  border-radius: 7px;
-  background: color-mix(in srgb, currentColor 12%, var(--color-surface));
+/*
+ * Day separators — plain rows, and the reason they are not sticky.
+ *
+ * This was built as one sticky `<tbody>` per day, on the rule that a sticky
+ * element is bounded by its containing block and that a table cell's containing
+ * block is its row group. **Measured, that is not what Chromium does.** With the
+ * list scrolled to the very bottom, "Today" sat at viewport y 28 while its own
+ * row group spanned -312 to 13: the cell is bounded by the *table* instead, so
+ * every day label piles up under the column header, stacked on the same
+ * pixels. Neither `position: relative` nor `contain: paint` on the `<tbody>`
+ * changes that — the containing block is the table box either way. (Checked in
+ * the same engine WebView2 ships, so this is not a browser quirk that the app
+ * will not have.)
+ *
+ * So the sticky element on this page is the column header, which does stick
+ * correctly, and the day label is a separator. The markup keeps one `<tbody>`
+ * per day, but for meaning rather than for positioning: `scope="rowgroup"` on
+ * the label is what tells a screen reader that the rows below it belong to it.
+ *
+ * A separator still does most of the job the sticky label was reaching for — a
+ * log with no dates is a wall of lines and the eye needs to know how far back it
+ * is looking. What it does not do is keep the day on screen while you read a
+ * deep row, and that is answered by reading upward, which is what a separator
+ * is for.
+ */
+.activity-day-row .activity-day-cell {
+  height: auto;
+  padding: 11px 6px 6px;
+  color: var(--color-text-faint);
+  background: var(--color-canvas);
+  font: 500 9.5px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
 }
 
-/* The measurement a latency row exists to carry. Mono and tabular so a column of
-   them lines up and a 40 ms row is visibly different from a 400 ms one — which
-   is the entire reason this page is worth having. */
-.activity-row-ms {
-  margin-top: 2px;
-  padding: 1px 5px 2px;
-  border-radius: 5px;
-  font: 500 10px var(--font-mono);
+.activity-day-row .activity-day {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.activity-day-row .activity-day::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
+.activity-cell-time,
+.activity-cell-ms {
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0;
+}
+
+.activity-cell-time {
+  color: var(--color-text-soft);
+  font: 500 11px var(--font-mono);
+}
+
+/* The KIND column is a category, not a sentence. Mono, uppercase and tinted —
+   the same treatment a toast's icon chip gets, for the same reason: a bare word
+   beside two lines of prose reads as more prose. */
+.activity-kind {
+  padding: 2px 6px 3px;
+  border-radius: 5px;
   color: var(--color-text-faint);
   background: color-mix(in srgb, var(--color-text) 6%, transparent);
+  font: 500 9px var(--font-mono);
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.activity-what-line {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+}
+
+/* `min-width: 0` is what lets a flex item truncate at all: without it the title
+   refuses to shrink below its content, and `text-overflow` has nothing to clip
+   against. The `title` attribute in the component is the other half — a row
+   truncated here has its full text on hover, and these are provider strings and
+   step labels that are routinely longer than the column. */
+.activity-what-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text);
+  font-size: 12.5px;
+}
+
+.activity-what-detail {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+/*
+ * The duration, repeated beside the title — the copy that survives the DURATION
+ * column collapsing on a narrow page, and only that copy. `display: none` by
+ * default, which is what keeps it out of the accessibility tree whenever the
+ * column is present: read both and a screen reader announces the same number
+ * twice, which sounds like two measurements.
+ */
+.activity-what-ms {
+  display: none;
+  flex: 0 0 auto;
+  color: var(--color-text-faint);
+  font: 500 10px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * A dot and a word, in a tinted pill.
+ *
+ * The word is the signal and the tint is the emphasis on it, never the other way
+ * round: a colour-only OUTCOME column fails for anyone who cannot separate the
+ * amber from the green, and the same three pills are what make the column
+ * scannable in the first place — they are uniform in shape and differ only in
+ * what they mean.
+ */
+.activity-outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 4px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 500;
   white-space: nowrap;
 }
 
-.activity-row-ms.is-slow {
-  color: var(--color-warn);
-  background: color-mix(in srgb, var(--color-warn) 14%, transparent);
+.activity-outcome-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
-/* Above the list, not fixed to the bottom: a timeline's "there is more below"
-   sits at the end of what is visible. */
-.activity-jump {
-  position: absolute;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  padding: 7px 12px;
-  color: var(--color-text);
-  background: var(--color-surface);
-  border: 0;
-  border-radius: 999px;
-  box-shadow: var(--elevation-2);
-  font: 500 11px var(--font-ui);
-  cursor: pointer;
+.activity-outcome.is-neutral {
+  color: var(--color-text-soft);
+  background: color-mix(in srgb, var(--color-text) 7%, transparent);
+}
+
+.activity-outcome.is-good {
+  color: var(--color-ok);
+  background: color-mix(in srgb, var(--color-ok) 15%, transparent);
+}
+
+.activity-outcome.is-warn {
+  color: var(--color-warn);
+  background: color-mix(in srgb, var(--color-warn) 17%, transparent);
+}
+
+.activity-outcome.is-bad {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 15%, transparent);
+}
+
+/* The measurement a timing row exists to carry: mono and tabular, so a column of
+   them lines up and a 40 ms row is visibly shorter than a 400 ms one. Right
+   aligned because numbers compare down an edge, not down their last digit. */
+.activity-ms {
+  color: var(--color-text-soft);
+  font: 500 11px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-ms.is-empty {
+  color: color-mix(in srgb, var(--color-text-faint) 70%, transparent);
+}
+
+/*
+ * Columns dropped by the *page's* width, not the window's.
+ *
+ * `.activity-page` is the container, so the rail folding and the panel opening —
+ * both of which are invisible to any `@media` query — are what decide how much
+ * room this table has, and they are the two things that actually change it.
+ *
+ * KIND goes first, because the title says it. DURATION goes second, and the
+ * number is repeated inline under the title for exactly as long as the column is
+ * gone, so a narrow page loses a column and never a measurement. The default
+ * window is ~480px of container, which is below both thresholds: the page opens
+ * as WHAT plus TIME plus OUTCOME, and that is the arrangement it was checked at.
+ */
+@container (max-width: 680px) {
+  .activity-table .activity-col-kind,
+  .activity-table .activity-cell-kind {
+    display: none;
+  }
+}
+
+@container (max-width: 540px) {
+  .activity-table .activity-col-ms,
+  .activity-table .activity-cell-ms {
+    display: none;
+  }
+
+  .activity-what-ms {
+    display: inline-block;
+  }
+
+  /* What the dropped columns leave behind belongs to the title, which is the
+     only thing on this page that is a sentence. The clock column is seven
+     characters and never more, so it gives up eight; OUTCOME gives up eight
+     from the hundred it has — its widest pill ("Attention", dot included) is
+     76 — and both go to the one column whose length actually varies.
+     `overflow: hidden` is already on every cell, so a pill that ever outgrew
+     its column would be clipped rather than push the table out of the page. */
+  .activity-table .activity-col-time {
+    width: 58px;
+  }
+
+  .activity-table .activity-col-outcome {
+    width: 92px;
+  }
+
+  /* With the chips alone already filling a 480px measure, the search box wraps
+     to a line of its own and takes all of it rather than the 168px it asked
+     for. */
+  .activity-search {
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
 }
 
 .activity-empty-mark {

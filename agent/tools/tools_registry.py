@@ -458,7 +458,7 @@ TOOL_CARDS: dict[str, dict[str, Any]] = {
                 "name": "action",
                 "kind": "choice",
                 "required": True,
-                "help": "chats, unread, messages, find, or contact.",
+                "help": "chats, unread, messages, find, search_messages, or contact.",
             },
             {
                 "name": "chat",
@@ -466,13 +466,19 @@ TOOL_CARDS: dict[str, dict[str, Any]] = {
                 "required": False,
                 "help": "The person's name. Needed for messages, find and contact.",
             },
+            {
+                "name": "query",
+                "kind": "text",
+                "required": False,
+                "help": "Keywords to look up for search_messages.",
+            },
         ],
     },
     "whatsapp_chats": {
         "label": "Manage WhatsApp chats",
         "summary": (
-            "Marks read, pins, mutes, archives, stars, or deletes a message. "
-            "Deleting for everyone always asks first."
+            "Marks read, pins, mutes, archives, stars, reacts, forwards or deletes "
+            "a message. Deleting for everyone always asks first."
         ),
         "category": "Messaging",
         "effect": "acts",
@@ -484,7 +490,8 @@ TOOL_CARDS: dict[str, dict[str, Any]] = {
                 "required": True,
                 "help": (
                     "mark_read, mark_unread, pin, unpin, mute, unmute, archive, "
-                    "unarchive, star, unstar, delete, or block."
+                    "unarchive, star, unstar, delete, block, unblock, react, "
+                    "forward, clear_chat, or clear_composer."
                 ),
             },
             {"name": "chat", "kind": "text", "required": True, "help": "The person's name."},
@@ -492,7 +499,19 @@ TOOL_CARDS: dict[str, dict[str, Any]] = {
                 "name": "message",
                 "kind": "text",
                 "required": False,
-                "help": "A message id from a read. Needed for star and delete.",
+                "help": "A message id from a read. Needed for star, delete, react and forward.",
+            },
+            {
+                "name": "emoji",
+                "kind": "text",
+                "required": False,
+                "help": "The emoji character or name for react.",
+            },
+            {
+                "name": "to",
+                "kind": "text",
+                "required": False,
+                "help": "The destination contact name for forward.",
             },
         ],
     },
@@ -517,6 +536,12 @@ TOOL_CARDS: dict[str, dict[str, Any]] = {
                 "kind": "text",
                 "required": False,
                 "help": "The person's name, or the device name for unlink.",
+            },
+            {
+                "name": "call_type",
+                "kind": "choice",
+                "required": False,
+                "help": "voice (default) or video for call.",
             },
         ],
     },
@@ -553,6 +578,12 @@ TOOL_CARDS: dict[str, dict[str, Any]] = {
                 "kind": "text",
                 "required": False,
                 "help": "A message id from a read, to reply quoting that message.",
+            },
+            {
+                "name": "draft_only",
+                "kind": "boolean",
+                "required": False,
+                "help": "True to prepare the text in the message box without sending.",
             },
         ],
     },

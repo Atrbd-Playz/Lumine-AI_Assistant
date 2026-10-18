@@ -22,6 +22,7 @@ import { useActivityFeed } from "../features/activity/activityFeed";
 import { useLumineVoice } from "../features/voice/useLumineVoice";
 import type { VoiceBrowserPreview, VoicePermissionRequest, VoiceScreenState } from "../features/voice/voice-manager";
 import { useLocalMedia } from "../features/voice/useLocalMedia";
+import { useApprovalNotifications } from "../features/voice/approvalNotifications";
 import { DEFAULT_INTERRUPTION_MODE } from "../features/voice/interruption";
 import { CONFIG_VERSION } from "../features/settings/aiConfigTypes";
 import { useAiConfig } from "../features/settings/useAiConfig";
@@ -321,8 +322,11 @@ export default function Home() {
     const timer = window.setInterval(() => {
       const now = Date.now() / 1000;
       setPermissions((current) =>
-        current.some((entry) => entry.expiresAt <= now)
-          ? current.filter((entry) => entry.expiresAt > now)
+        // `expiresAt <= 0` is "this worker sent no deadline", not "expired": an
+        // older worker omits the field, and sweeping those would dismiss a
+        // question the worker is still waiting on the moment it appeared.
+        current.some((entry) => entry.expiresAt > 0 && entry.expiresAt <= now)
+          ? current.filter((entry) => entry.expiresAt <= 0 || entry.expiresAt > now)
           : current,
       );
     }, 1000);
@@ -379,6 +383,21 @@ export default function Home() {
     },
     [session.respondPermission],
   );
+
+  /**
+   * The same question, also where the user's eyes already are.
+   *
+   * Placed after `answerPermission` on purpose: this hook does not get its own
+   * path back to the worker. It renders a system notification, plays the arrival
+   * sound *if that notification did not go out*, and turns an Allow / Not now
+   * press on the toast into the identical call this card makes — so there is one
+   * answer channel and two ways to reach it, and the worker cannot tell which.
+   *
+   * It observes `permissions` rather than taking a callback per request, which
+   * is also what makes the expiry tick possible: a deadline that passes is a
+   * request that *leaves* this list, and the sweep that removes it runs here.
+   */
+  useApprovalNotifications(permissions, answerPermission);
 
   // A finished call's cards answer nothing -- the worker released its gate
   // with the room -- so the UI stops showing them rather than letting someone

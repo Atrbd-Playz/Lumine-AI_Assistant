@@ -305,7 +305,7 @@ export function MainSpace({
           centers symmetrically. The fixed 256 existed to give the old inner
           preview a corner off the face; the preview now anchors to the stage.
         */}
-        <div className="stage-presence relative z-[1] grid place-items-center self-center min-h-0">
+        <div className="stage-presence relative z-1 grid place-items-center self-center min-h-0">
           <Presence
             state={state}
             cursorGaze={cursorGaze}

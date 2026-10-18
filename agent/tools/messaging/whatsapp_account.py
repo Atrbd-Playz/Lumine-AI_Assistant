@@ -74,7 +74,12 @@ async def _resolve(name: str) -> str:
 
 
 @function_tool()
-async def whatsapp_account(context: RunContext, action: str, who: str = "") -> str:
+async def whatsapp_account(
+    context: RunContext,
+    action: str,
+    who: str = "",
+    call_type: str = "voice",
+) -> str:
     """Check on the WhatsApp account itself: presence, devices, own profile, calls.
 
     This is about the account rather than about a conversation. To read a chat use
@@ -86,7 +91,7 @@ async def whatsapp_account(context: RunContext, action: str, who: str = "") -> s
     - ``devices``: the other devices signed in to this account.
     - ``about``: this account's own name, number and about text.
     - ``unlink``: sign one other device out. Give its name in ``who``.
-    - ``call``: start a voice or video call. Give the person in ``who``.
+    - ``call``: start a voice or video call. Give the person in ``who`` and "voice" or "video" in ``call_type``.
 
     A call rings somebody's phone, so the user is always asked first and it only
     starts when they say yes. Never start one to "check if they're there" --
@@ -95,6 +100,7 @@ async def whatsapp_account(context: RunContext, action: str, who: str = "") -> s
     Args:
         action: presence, devices, about, unlink, or call.
         who: The person's name, for presence and call; the device name, for unlink.
+        call_type: For call, either "voice" (default) or "video".
     """
     verb = str(action or "").strip().lower().replace("-", "_")
 
@@ -162,17 +168,19 @@ async def whatsapp_account(context: RunContext, action: str, who: str = "") -> s
 
     if verb == "call":
         title = await _resolve(who)
+        is_video = "video" in str(call_type or "").lower()
+        call_label = "video call" if is_video else "call"
         with progress_step(
             context, ops.ACCOUNT_TOOL, "call",
-            f"Starting a call with {clip(title, 20)}", index=1, total=2,
+            f"Starting a {call_label} with {clip(title, 20)}", index=1, total=2,
         ):
             if not await web.open_chat(title):
                 raise ToolError(f"I couldn't open {title}'s chat, so no call started.")
-            if not await web.start_call(title):
+            if not await web.start_call(title, video=is_video):
                 raise ToolError(
-                    f"I couldn't start a call with {title} -- WhatsApp's call "
+                    f"I couldn't start a {call_label} with {title} -- WhatsApp's call "
                     "button may have moved. No call was started."
                 )
-        return f"Calling {title}. I can't tell whether they picked up."
+        return f"Started a {call_label} with {title}. I can't tell whether they picked up."
 
     raise ToolError(MSG_UNKNOWN)

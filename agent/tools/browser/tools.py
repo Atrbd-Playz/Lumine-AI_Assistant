@@ -37,19 +37,22 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
 
 try:
     from ..tools_compat import RunContext, ToolError, function_tool
-    from ..tool_results import as_payload, wrap_untrusted
+    from ..tool_results import MAX_PAGE_READ_CHARS, as_payload, wrap_untrusted
     from ..tools_text import clip
     from .actions import (
+        BROWSE_ACTIONS,
         classify_click,
         classify_key,
         fill_deny_reason,
         hostname_of,
         is_search_control,
+        normalize_browse_action,
         normalize_key,
         normalize_scroll,
         normalize_url,
         observe_payload,
         parse_tab_request,
+        unknown_action_message,
         TAB_ACTION_CLASS,
         TAB_ASK_VERB,
         LABEL_CHARS,
@@ -81,19 +84,22 @@ try:
     )
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_compat import RunContext, ToolError, function_tool
-    from tool_results import as_payload, wrap_untrusted
+    from tool_results import MAX_PAGE_READ_CHARS, as_payload, wrap_untrusted  # type: ignore[no-redef]
     from tools_text import clip
     from browser.actions import (
+        BROWSE_ACTIONS,
         classify_click,
         classify_key,
         fill_deny_reason,
         hostname_of,
         is_search_control,
+        normalize_browse_action,
         normalize_key,
         normalize_scroll,
         normalize_url,
         observe_payload,
         parse_tab_request,
+        unknown_action_message,
         TAB_ACTION_CLASS,
         TAB_ASK_VERB,
         LABEL_CHARS,
@@ -138,8 +144,21 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
 #: takes its direction in `text`: opening, listing, switching and closing tabs
 #: are one decision about the browser rather than four decisions about controls,
 #: and none of them needs a reference.
-ACTIONS = ("open", "observe", "act", "back", "forward", "scroll", "tab", "close")
+#:
+#: The tuple itself is `actions.BROWSE_ACTIONS`, declared beside the parser that
+#: has to accept it. The names a model *reaches for* before these eight are the
+#: alias table next to it, and this module's job is only the eight.
+ACTIONS: tuple[str, ...] = BROWSE_ACTIONS
 
+#: Kept as the module's record of the surface, and nothing raises it any more.
+#:
+#: It used to be the refusal, and that is the failure this replaced: a constant
+#: sentence naming the vocabulary while saying nothing about what the model had
+#: actually sent, so it had nothing to correct against and sent the same word
+#: fifty times in one turn. The raise now goes through
+#: `actions.normalize_browse_action` and `unknown_action_message`, which names
+#: the input and guesses a near match -- but the surface is still worth writing
+#: down, and `test_browser_lifecycle` checks it against `ACTIONS`.
 MSG_BAD_ACTION = "Tell me one of: open, observe, act, back, forward, scroll, tab, or close."
 MSG_NO_URL = "Tell me which page to open."
 MSG_BAD_URL = (
@@ -298,7 +317,7 @@ def _is_search(info: Any) -> bool:
 @function_tool()
 async def browse(
     context: RunContext,
-    action: str,
+    action: str = "",
     url: str = "",
     ref: str = "",
     text: str = "",
@@ -308,8 +327,10 @@ async def browse(
 
     One tool, eight actions:
     - open: go to a page (needs url; http/https only).
-    - observe: read the current tab -- title, address, a short excerpt, and
-      the visible controls with references like "r3".
+    - observe: read the current tab -- title, address, the text currently in
+      view (plus a little above and below the fold), and the visible controls
+      with references like "r3". The payload's `scroll` says how far down you
+      are and how much page is left.
     - act: operate one control you named by reference. Give ref alone to
       click it; ref and text to type into it, or -- on a dropdown -- to
       choose its option; ref and key to press Enter, Escape, or an arrow key
@@ -318,7 +339,8 @@ async def browse(
       passwords.
     - back / forward: one step through this tab's own history.
     - scroll: move the view -- text "down" (the default), "up", "top", or
-      "bottom".
+      "bottom". It reports where it landed, so you can tell a scroll that
+      moved from one that did not.
     - tab: work with more than one tab. Say nothing to list them; "new" to
       open another (add a url to open a page in it), a tab's number to switch
       to it, or "close" (with or without a number) to close one. Tabs are how
@@ -326,6 +348,13 @@ async def browse(
       pages -- a link that opens its own window now becomes a tab instead of
       replacing the one you were on.
     - close: close the browser and every tab in it.
+
+    **A read shows the part of the page you are looking at, not the top of
+    it.** To read further down: scroll, then observe again -- and if a read
+    comes back with the same text and the same `scroll.y`, nothing moved, so
+    scroll further rather than reading it a third time. What you are looking
+    for (a price, a spec, a date) is usually below the fold; the header is
+    what you get when a read does not move.
 
     **"open" reuses the tab in use; "tab new" adds one.** If the user wants to
     keep what is on screen -- "open this in a new tab", "check that without
@@ -350,13 +379,30 @@ async def browse(
             "scroll", or which tab request for action "tab".
         key: The key to press, for action "act" with a ref.
     """
-    normalized = str(action or "").strip().lower()
-    if normalized not in ACTIONS:
-        raise ToolError(MSG_BAD_ACTION)
+    # The action is read as a *sentence*, not matched against a shape. The
+    # model shares its context with `web_control`, whose verbs are `read` and
+    # `click`, so it reaches for those -- and refusing them cost one live
+    # session fifty consecutive failures in a single turn, because a refusal
+    # that does not say what arrived cannot be corrected against. `payload` is
+    # whatever else the phrase carried, used only where the named parameter is
+    # empty: a model that fills in `url`/`ref`/`text` properly is never
+    # second-guessed.
+    act_str = str(action or "").strip()
+    if not act_str:
+        if str(url or "").strip():
+            act_str = "open"
+        elif str(ref or "").strip():
+            act_str = "act"
+        else:
+            act_str = "observe"
+    try:
+        normalized, payload = normalize_browse_action(act_str)
+    except ValueError:
+        raise ToolError(unknown_action_message(action, ACTIONS)) from None
 
     # -- open ---------------------------------------------------------------
     if normalized == "open":
-        raw = str(url or "").strip()
+        raw = str(url or "").strip() or str(payload or "").strip()
         if not raw:
             raise ToolError(MSG_NO_URL)
         try:
@@ -394,11 +440,19 @@ async def browse(
                     for c in list(data.get("controls") or [])[:MAX_REPORTED_CONTROLS]
                     if isinstance(c, dict) and REF_RE.match(str(c.get("ref") or ""))
                 ][:MAX_REPORTED_CONTROLS]
+                fields = data.get("fields") or {}
+                if fields:
+                    payload["fields"] = fields
             except ToolError:
                 # `observe` refuses on about:blank; here it means the page went
                 # somewhere on its own. The notice still stands.
                 pass
-            return wrap_untrusted(as_payload(payload))
+            # The page-read ceiling, not the global one. This payload carries
+            # `OBSERVE_TEXT_CHARS` of text *and* `MAX_REPORTED_CONTROLS` controls,
+            # so under the global 800 `as_payload` was halving the control list --
+            # the "she read it but could not act on it" failure, arriving through
+            # a path that looks like a shortcut rather than a read.
+            return wrap_untrusted(as_payload(payload, max_chars=MAX_PAGE_READ_CHARS))
         # A read, so the default policy answers immediately -- but the gate
         # is still the door, so `browse=off` in settings actually closes it.
         await require_approval(
@@ -451,6 +505,18 @@ async def browse(
                 url=data.get("url", ""),
                 text=data.get("text", ""),
                 controls=data.get("controls") or [],
+                # The per-site extraction. A page whose price is behind its own
+                # markup reports it here under a stable name rather than leaving
+                # the model to find a number in a paragraph -- which is the whole
+                # of "she read the page and could not tell me what it costs".
+                fields=data.get("fields") or {},
+                # Where the windowed text was taken from, and the repeat-read
+                # warning when this tab already returned exactly this. Both are
+                # decided upstream -- the page knows its scroll position and
+                # `observe_page` holds the previous digest -- so this branch
+                # only carries them.
+                scroll=data.get("scroll"),
+                notice=data.get("notice"),
             )
         ) + _where_am_i(data)
 
@@ -478,7 +544,7 @@ async def browse(
     # -- scroll -------------------------------------------------------------
     if normalized == "scroll":
         try:
-            direction = normalize_scroll(text)
+            direction = normalize_scroll(str(text or "") or str(payload or ""))
         except ValueError:
             raise ToolError(MSG_BAD_SCROLL) from None
         await require_approval(
@@ -495,13 +561,18 @@ async def browse(
             return "That page fits on screen -- there is nothing to scroll."
         landed = int(data.get("y") or 0)
         limit = int(data.get("max") or 0)
+        # The position is *in* the message, not only in the next observe: the
+        # model compares this number against the payload's `scroll.y`, and a
+        # scroll that reported "down" while landing on the same line is then
+        # visible as the no-op it is, rather than as another identical read.
+        at = f" Now at {landed} of {limit}."
         if direction == "top":
             return "Scrolled to the top of the page."
         if direction == "bottom":
             return "Scrolled to the bottom of the page."
         if direction == "up":
-            return "Scrolled up." + (" That is the top of the page." if landed <= 0 else "")
-        return "Scrolled down." + (" That is the bottom of the page." if landed >= limit else "")
+            return "Scrolled up." + (" That is the top of the page." if landed <= 0 else at)
+        return "Scrolled down." + (" That is the bottom of the page." if landed >= limit else at)
 
     # -- tab ----------------------------------------------------------------
     #
@@ -512,7 +583,7 @@ async def browse(
     # it has the least context.
     if normalized == "tab":
         try:
-            op, arg = parse_tab_request(text)
+            op, arg = parse_tab_request(str(text or "") or str(payload or ""))
         except ValueError:
             raise ToolError(MSG_BAD_TAB) from None
 
@@ -656,7 +727,10 @@ async def browse(
         return "The browser is closed."
 
     # -- act ----------------------------------------------------------------
-    chosen = str(ref or "").strip()
+    # The reference may be in `ref` or written into the sentence ("click r3"):
+    # the one thing salvaged from prose, because it is a value the page minted
+    # and checked -- never a string we invented for somebody else's control.
+    chosen = str(ref or "").strip() or str(payload or "").strip()
     if not REF_RE.match(chosen):
         raise ToolError(MSG_UNKNOWN_REF)
 

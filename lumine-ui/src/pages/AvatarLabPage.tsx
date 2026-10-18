@@ -90,7 +90,18 @@ export default function AvatarLabPage() {
   const [intensity, setIntensity] = useState(DEFAULT_INTENSITY);
   const [activity, setActivity] = useState<LumineActivity>("none");
   const [eyeMode, setEyeMode] = useState<"canonical" | ExpressiveEyeMode>("canonical");
-  const [montageOn, setMontageOn] = useState(false);
+  /**
+   * On by default, because the home screen's is on by default.
+   *
+   * The lab exists to show what the home screen does, and the one thing it could
+   * not show while this defaulted to `false` was the thing it was built to show:
+   * the *live* face. Every other control on this page drives a static hold, so a
+   * lab that opened held was a lab that opened looking exactly like the bug this
+   * page was written to diagnose. The toggle stays — pausing is a real thing to
+   * want while inspecting one pose — but the state it defaults to is the state
+   * the product runs in.
+   */
+  const [montageOn, setMontageOn] = useState(true);
   const [playing, setPlaying] = useState<"idle" | LumineAnimation>("idle");
 
   useEffect(() => {
@@ -144,7 +155,10 @@ export default function AvatarLabPage() {
     setIntensity(DEFAULT_INTENSITY);
     setActivity("none");
     setEyeMode("canonical");
-    setMontageOn(false);
+    // Back to the *starting* state, which now includes the montage being on —
+    // a reset that returned to a state the page no longer opens in would make
+    // "reset" mean "make this page different from how you found it".
+    setMontageOn(true);
     setPlaying("idle");
   };
 

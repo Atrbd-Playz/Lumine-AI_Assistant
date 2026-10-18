@@ -549,6 +549,7 @@ class SendLedger:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._entries: dict[str, tuple[str, float]] = {}
+        self._events: dict[str, asyncio.Event] = {}
 
     def _prune(self, now: float) -> None:
         horizon = max(dedup_window(), 0.0)
@@ -556,9 +557,10 @@ class SendLedger:
             hold = UNCERTAIN_HOLD_SECONDS if kind == "uncertain" else horizon
             if now - at > hold:
                 del self._entries[key]
+                self._events.pop(key, None)
 
     def check(self, recipient: str, message: str, now: float | None = None) -> str | None:
-        """``"sent"``, ``"uncertain"``, or ``None`` for "not known"."""
+        """``"sent"``, ``"uncertain"``, ``"in_flight"``, or ``None`` for "not known"."""
         moment = time.monotonic() if now is None else now
         with self._lock:
             self._prune(moment)
@@ -567,12 +569,40 @@ class SendLedger:
 
     def mark(self, recipient: str, message: str, kind: str, now: float | None = None) -> None:
         moment = time.monotonic() if now is None else now
+        digest = _digest(recipient, message)
         with self._lock:
-            self._entries[_digest(recipient, message)] = (kind, moment)
+            self._entries[digest] = (kind, moment)
+            ev = self._events.get(digest)
+            if ev and kind in ("sent", "uncertain"):
+                ev.set()
+
+    def mark_in_flight(self, recipient: str, message: str) -> asyncio.Event:
+        digest = _digest(recipient, message)
+        with self._lock:
+            self._entries[digest] = ("in_flight", time.monotonic())
+            ev = self._events.get(digest)
+            if ev is None or ev.is_set():
+                ev = asyncio.Event()
+                self._events[digest] = ev
+            return ev
+
+    def clear_in_flight(self, recipient: str, message: str) -> None:
+        digest = _digest(recipient, message)
+        with self._lock:
+            if self._entries.get(digest, (None,))[0] == "in_flight":
+                del self._entries[digest]
+            ev = self._events.pop(digest, None)
+            if ev:
+                ev.set()
+
+    def get_event(self, recipient: str, message: str) -> asyncio.Event | None:
+        with self._lock:
+            return self._events.get(_digest(recipient, message))
 
     def reset(self) -> None:
         with self._lock:
             self._entries.clear()
+            self._events.clear()
 
 
 #: One ledger for the process, like the launch dedup it is modelled on.
@@ -1240,6 +1270,7 @@ async def send_whatsapp(
     message: str,
     attachment: str = "",
     reply_to: str = "",
+    draft_only: bool = False,
 ) -> str:
     """Message someone on WhatsApp from the user's own account, after approval.
 
@@ -1249,8 +1280,8 @@ async def send_whatsapp(
     them to choose from -- ask, then call again with that exact name.
 
     In automation mode the text is typed into the chat first and the user is asked
-    to confirm while they can see it, so the question is about something they have
-    read rather than something they must take on trust.
+    to confirm while they can see it. When ``draft_only`` is True, it leaves the
+    message in the composer without asking for confirmation to send.
 
     Never guess a number from a name, never message anyone the user did not name,
     and never retry a send that reported failure after the attempt -- report it
@@ -1258,7 +1289,7 @@ async def send_whatsapp(
 
     There is no ``action`` argument: the operation follows from the mode and from
     which arguments are filled in. ``send_text`` (automation, plain text),
-    ``prepare_draft`` (default mode), ``reply`` (``reply_to`` given, so it quotes),
+    ``prepare_draft`` (draft only or default mode), ``reply`` (``reply_to`` given, so it quotes),
     ``attach`` (``attachment`` given), ``typing`` (a hint while drafting).
 
     Args:
@@ -1267,6 +1298,7 @@ async def send_whatsapp(
         message: The text to send, worded as the user wants it.
         attachment: Optional file on this computer to send with it.
         reply_to: Optional message id from a read; the reply quotes it.
+        draft_only: If True, types the text as a draft into the composer and leaves it unsent.
     """
     mode = resolve_mode()
     if mode == "off":
@@ -1377,7 +1409,47 @@ async def send_whatsapp(
         # second confirmed hold is this turn replayed, not a person asking again,
         # and the user already heard the first confirmation.
         return MSG_ALREADY_SENT_QUIET
+    if previous == "in_flight":
+        ev = ledger.get_event(who, text or file_path)
+        if ev:
+            try:
+                await asyncio.wait_for(ev.wait(), timeout=15.0)
+            except (asyncio.TimeoutError, Exception):
+                pass
+        after = ledger.check(who, text or file_path)
+        if after == "sent":
+            return MSG_ALREADY_SENT_QUIET
+        if after == "uncertain":
+            raise ToolError(MSG_RETRY_UNCERTAIN)
 
+    ledger.mark_in_flight(who, text or file_path)
+    try:
+        return await _send_whatsapp_flow(
+            context=context,
+            backend=backend,
+            who=who,
+            number=number,
+            text=text,
+            file_path=file_path,
+            reply_to=reply_to,
+            draft_only=draft_only,
+        )
+    finally:
+        if ledger.check(who, text or file_path) == "in_flight":
+            ledger.clear_in_flight(who, text or file_path)
+
+
+async def _send_whatsapp_flow(
+    *,
+    context: RunContext,
+    backend: Any,
+    who: str,
+    number: str | None,
+    text: str,
+    file_path: str,
+    reply_to: str,
+    draft_only: bool,
+) -> str:
     # -- open the chat and confirm it is the right one ------------------------
     with progress_step(
         context,
@@ -1466,6 +1538,13 @@ async def send_whatsapp(
                     "WhatsApp didn't take the message exactly as I typed it, so I "
                     "cleared the box and sent nothing. Try again and I'll retype it."
                 )
+
+    if draft_only:
+        ledger.mark(who, text or file_path, "sent")
+        return (
+            f"Drafted message to {who} on WhatsApp: '{text or file_path}'. "
+            "It is ready in your composer for you to review and send."
+        )
 
     # -- the question -------------------------------------------------------
     with progress_step(

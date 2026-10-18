@@ -12,6 +12,12 @@ python-dotenv>=1.0.1
 # chromium` once. The tool reports that sentence instead of failing to start
 # when the engine is missing, and LUMINE_ENABLE_BROWSER=false hides it.
 playwright>=1.49
+# Per-site content maps for the browser read path (`sites_map.yaml`). Declared
+# explicitly even though several LiveKit plugins pull it in transitively: the
+# browser tools degrade to a generic content ladder without it rather than
+# failing to import, so a fresh install that has not run `pip install -r` must
+# not silently lose the feature and look like it never existed.
+pyyaml>=6.0
 # Windows UI Automation for WhatsApp Desktop automation (the primary path;
 # WhatsApp Web underneath is the fallback). Pure Python -- no post-install
 # step. On a non-Windows machine the import is skipped at runtime and the

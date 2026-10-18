@@ -30,6 +30,25 @@ from typing import Any
 #: a new tool cannot regress past it. Roughly 200 tokens.
 MAX_RESULT_CHARS = 800
 
+#: The ceiling for a *page read*, raised on purpose and only there.
+#:
+#: A page's text is content rather than a tool's own answer, and 800 characters
+#: of it is the bug this number exists to fix: a product page has to yield its
+#: price, and the shared ceiling meant a read returned the masthead, eight
+#: labels, and nothing about the thing that was asked for. The reported symptom
+#: was `browse observe` coming back with navigation text and the scroll that was
+#: supposed to move past it returning the same navigation text -- because the
+#: cut happened in :func:`wrap_untrusted` *after* the script had already read
+#: the whole body.
+#:
+#: Raised per call rather than globally for the reason the global one exists:
+#: every result is re-sent on every later turn, so this is ~600 tokens paid
+#: repeatedly. The browser tools are the ones that need it, and they are the
+#: ones that pass it. Anything still answers under :data:`MAX_RESULT_CHARS`
+#: unless it says otherwise, which keeps a new tool from inheriting this by
+#: accident.
+MAX_PAGE_READ_CHARS = 2400
+
 #: The delimiter that separates instructions from retrieved text. Chosen to be
 #: something a scraped page is unlikely to emit verbatim, and to be obviously not
 #: part of a conversation.

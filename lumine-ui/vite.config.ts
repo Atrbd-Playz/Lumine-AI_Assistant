@@ -43,5 +43,17 @@ export default defineConfig(async () => ({
     watch: {
       ignored: ["**/src-tauri/**"],
     },
+
+    // The first page load after the dev server starts transforms this app's
+    // entry chain on demand, and the window has nothing to draw until it does:
+    // measured on this machine at 0.2 s with a warm cache and 9.6 s cold, the
+    // bulk of it waiting on these four files. Warming them moves that work to
+    // server start -- which is while `cargo` is still building the Rust side, so
+    // it is time the launch was spending anyway. It does not shorten the
+    // webview's own start-up, and it does not make a cold disk warm; it removes
+    // the part of the wait that is ours.
+    warmup: {
+      clientFiles: ["./src/main.tsx", "./src/App.css", "./src/App.tsx", "./src/pages/Home.tsx"],
+    },
   },
 }));

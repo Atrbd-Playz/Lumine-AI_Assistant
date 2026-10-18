@@ -48,17 +48,18 @@ page-presented fact *lowers* a class:
 
 from __future__ import annotations
 
+import difflib
 import ipaddress
 import re
-from typing import Sequence
+from typing import Any, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 try:
     from ..tools_text import clip
-    from ..tool_results import as_payload
+    from ..tool_results import as_payload, MAX_PAGE_READ_CHARS
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_text import clip
-    from tool_results import as_payload
+    from tool_results import as_payload, MAX_PAGE_READ_CHARS
 
 #: The only schemes this tool opens. Everything else -- ``file:``,
 #: ``javascript:``, ``data:``, ``chrome:`` -- reaches something that is not a
@@ -72,14 +73,25 @@ ALLOWED_SCHEMES = frozenset({"http", "https"})
 REF_RE = re.compile(r"^r\d{1,3}$")
 
 #: How much of the page's own text and control list :func:`observe_payload`
-#: keeps. A tool result joins the conversation permanently, so the ceiling is
-#: the same one every other tool answers under -- `tool_results` -- and these
-#: are the pieces that share it.
-OBSERVE_TEXT_CHARS = 220
-MAX_REPORTED_CONTROLS = 8
+#: keeps. Both are budgeted against `tool_results.MAX_PAGE_READ_CHARS` rather
+#: than the shared ceiling, for the reason that constant documents: these are
+#: the pieces of a *page*, and a read that cannot hold a price or a heading is
+#: not a read.
+#:
+#: ``220`` was the measured number behind the report -- on a results page that
+#: is one line of masthead, so scrolling and re-reading kept returning the same
+#: header. ``8`` controls was the same problem one layer down: eight labels of
+#: which several were navigation, and no way to address the ninth.
+OBSERVE_TEXT_CHARS = 900
+MAX_REPORTED_CONTROLS = 20
 LABEL_CHARS = 40
 TITLE_CHARS = 70
 URL_CHARS = 90
+#: A one-line remark the caller attaches to a read -- today only the
+#: repeat-read warning ("this is the same text you just read; scroll first").
+#: Clipped like everything else, because a notice that grows is a notice the
+#: model stops reading.
+NOTICE_CHARS = 160
 #: A link's own address. Clipped hard because it is carried on every control of
 #: every observe -- and a full query string is rarely the part that identifies
 #: where a link goes. The host and path survive; a tracking tail does not.
@@ -736,19 +748,269 @@ def _address_after(raw: object) -> str:
     return match.group(0).strip(" .,:;-") if match else ""
 
 
+# -- browse's action word ---------------------------------------------------
+#
+#: `browse`'s eight, declared here rather than in `tools.py` because the parser
+#: below is the thing that has to know them -- and one authority is the same
+#: rule the tab verbs follow. `tools.ACTIONS` is this tuple, so the surface the
+#: refusal lists and the surface the parser accepts cannot drift.
+BROWSE_ACTIONS: tuple[str, ...] = (
+    "open",
+    "observe",
+    "act",
+    "back",
+    "forward",
+    "scroll",
+    "tab",
+    "close",
+)
+
+# `web_control` already solved this and `browse` had neither half of it. The
+# halves are separate and both were missing.
+#
+# **The refusal said nothing about what arrived.** `browse` raised a constant
+# "Tell me one of: open, observe, act, back, forward, scroll, tab, or close."
+# for every unrecognised action, so a model that had sent `read` was told the
+# vocabulary without being told what *it* had said -- and it had nothing to
+# correct against. Measured in a live session: fifty consecutive `browse`
+# failures carrying that exact sentence, in one 170-second turn, for one bad
+# word. About a million input tokens spent on a message that could not end the
+# loop it was answering. `unknown_action_message` names the input and guesses a
+# near match, and it already existed -- `browse` simply did not call it.
+#
+# **And the vocabulary was one word wide.** `browse` accepts `observe` and
+# `act`; the model shares its context with `web_control`, whose verbs are `read`
+# and `click`, so it reaches for those first. Every one of them is a refusal it
+# has to recover from on a voice turn, which is exactly what
+# `web_control.VERB_ALIASES` was written to stop. The entries below are not
+# invented: each is a word that module already recorded as one a model uses
+# before it uses ours, plus the obvious sub-mode names of `browse`'s own `act`.
+BROWSE_ALIASES: dict[str, str] = {
+    # reading the page. `observe` is `browse`'s word for it.
+    "read": "observe",
+    "extract": "observe",
+    "get": "observe",
+    "look": "observe",
+    "look_at": "observe",
+    "inspect": "observe",
+    "view": "observe",
+    "describe": "observe",
+    "see": "observe",
+    # operating one control. `act` carries four sub-modes precisely because a
+    # click, a fill, a key and a choice all take the one reference `observe`
+    # just handed over -- so every word below is one intention by another name.
+    "click": "act",
+    "press": "act",
+    "type": "act",
+    "fill": "act",
+    "write": "act",
+    "enter": "act",
+    "select": "act",
+    "choose": "act",
+    "pick": "act",
+    "submit": "act",
+    "tap": "act",
+    "check": "act",
+    "uncheck": "act",
+    "hover": "act",
+    # navigation. `goto` and `navigate` are the two `web_control` recorded.
+    "goto": "open",
+    "go_to": "open",
+    "navigate": "open",
+    "visit": "open",
+    "load": "open",
+    # search / lookup
+    "search": "act",
+    "find": "observe",
+    # history.
+    "previous": "back",
+    "prev": "back",
+    "go_back": "back",
+    "backward": "back",
+    "next": "forward",
+    "go_forward": "forward",
+    "forwards": "forward",
+}
+
+#: The same words, found anywhere in a phrase rather than standing alone.
+#:
+#: A model does not always send a verb -- it sends "read the page", "click r3",
+#: "scroll down", "open https://…". The first version of this tool wanted the
+#: verb and nothing else, and that is the same mistake `parse_tab_request` was
+#: rewritten for: measured against real phrasings, an exact-word parser refuses
+#: almost everything. Here the verb is looked for anywhere in the phrase, in
+#: the phrase's own order, so "open the page then click r3" is `open` and
+#: "go back" is `back`.
+#:
+#: `tab` is checked before this table runs, and that ordering is the only thing
+#: that makes it safe: **"close tab 2" closes a tab and "close" closes the
+#: browser.** A model cannot learn that from a refusal, so the rule cannot be
+#: left to a word list. Anything containing a tab word reaches `tab` and is
+#: then read by `parse_tab_request`, which is the sentence reader that already
+#: knows the difference.
+_TAB_ACTION_WORDS = frozenset({"tab", "tabs"})
+
+BROWSE_VERB_WORDS: dict[str, str] = {
+    "observe": "observe",
+    "read": "observe",
+    "extract": "observe",
+    "get": "observe",
+    "look": "observe",
+    "inspect": "observe",
+    "describe": "observe",
+    "view": "observe",
+    "see": "observe",
+    "find": "observe",
+    "search": "act",
+    # `act` itself belongs here too: it is caught whole at step 1, and a
+    # *phrase* that names it ("act on r5") only reaches this table.
+    "act": "act",
+    "scroll": "scroll",
+    "back": "back",
+    "backward": "back",
+    "previous": "back",
+    "prev": "back",
+    "forward": "forward",
+    "forwards": "forward",
+    "next": "forward",
+    "open": "open",
+    "goto": "open",
+    "navigate": "open",
+    "visit": "open",
+    "load": "open",
+    "click": "act",
+    "press": "act",
+    "type": "act",
+    "fill": "act",
+    "write": "act",
+    "select": "act",
+    "choose": "act",
+    "pick": "act",
+    "submit": "act",
+    "enter": "act",
+    "tap": "act",
+    "hover": "act",
+    "check": "act",
+    "uncheck": "act",
+    "focus": "act",
+    "close": "close",
+}
+
+#: A reference written inside a sentence. `REF_RE` is anchored, so it cannot
+#: find one there; this is the same shape with word boundaries, and it is the
+#: only thing salvaged from prose for `act`. A *word* to type is deliberately
+#: not salvaged -- a guessed string typed into somebody else's control is worse
+#: than a refusal, and `text` is one field away.
+_REF_IN_PHRASE = re.compile(r"\br\d{1,3}\b", re.I)
+
+
+def _cut_word(phrase: str, word: str) -> str:
+    """The phrase with one whole word taken out, keeping the rest intact.
+
+    Cut out of the **original string**, not a token list, because a token list
+    cannot hold an address: splitting ``https://youtube.com/watch?v=abc`` is how
+    a page becomes unopenable. Boundary-checked, so "read" does not take the
+    start of "reading".
+    """
+    found = re.search(rf"(?<![a-z0-9]){re.escape(word)}(?![a-z0-9])", phrase, re.I)
+    if not found:
+        return phrase
+    return (phrase[: found.start()] + " " + phrase[found.end() :]).strip()
+
+
+def _payload_for(action: str, phrase: str, word: str = "") -> str:
+    """What the phrase carried *for this action*, and ``""`` when it carried none.
+
+    Per action, because "the payload" is a different shape for each one: an
+    address for ``open``, a direction for ``scroll``, a reference for ``act``,
+    and the whole sentence for ``tab`` -- which is the one reader that wants a
+    sentence rather than a fragment. Nothing is guessed: `_address_after` and
+    `_REF_IN_PHRASE` both return nothing unless they find their own shape, so a
+    phrase of pure prose leaves the caller with the parameter it asked for.
+    """
+    if action == "open":
+        return _address_after(phrase)
+    if action == "scroll":
+        return _cut_word(phrase, word) if word else ""
+    if action == "tab":
+        return phrase
+    if action == "act":
+        found = _REF_IN_PHRASE.search(phrase)
+        return found.group(0) if found else ""
+    return ""
+
+
+def normalize_browse_action(raw: object) -> tuple[str, str]:
+    """The `browse` action that was asked for, and whatever was said with it.
+
+    Returns ``(action, payload)``. `payload` is what the phrase carried for that
+    action -- see :func:`_payload_for`. The caller uses it **only where the named
+    parameter is empty**, so a model that fills in ``url``/``ref``/``text``
+    properly is never second-guessed, and one that puts the whole request in
+    ``action`` still lands.
+
+    Raises ``ValueError`` when no action can be found. The caller turns that into
+    `unknown_action_message`, which is what names the input -- the half of the
+    fix that makes the refusal end the loop instead of repeating it.
+    """
+    phrase = " ".join(str(raw or "").split())
+    words = _tokens(phrase)
+    if not words:
+        raise ValueError("no action was said")
+
+    # 1. The verb as given: separators fold away, so "go-back", "go_back" and
+    #    "go back" are one word, and then the alias table.
+    key = re.sub(r"[\s_-]+", "_", phrase.casefold()).strip("_")
+    if key in BROWSE_ACTIONS:
+        return key, _payload_for(key, phrase)
+    aliased = BROWSE_ALIASES.get(key)
+    if aliased:
+        return aliased, _payload_for(aliased, phrase)
+
+    # 2. A sentence, with the verb somewhere inside it.
+    if _TAB_ACTION_WORDS.intersection(words):
+        return "tab", phrase
+    for word in words:
+        action = BROWSE_VERB_WORDS.get(word)
+        if action:
+            return action, _payload_for(action, phrase, word)
+    raise ValueError(f"no action in {phrase!r}")
+
+
 # -- observe ----------------------------------------------------------------
 
 
 def observe_payload(
-    *, title: object, url: object, text: object, controls: Sequence[object]
+    *,
+    title: object,
+    url: object,
+    text: object,
+    controls: Sequence[object],
+    fields: object = None,
+    scroll: object = None,
+    notice: object = None,
+    max_chars: int = MAX_PAGE_READ_CHARS,
 ) -> str:
     """The page as a compact payload: title, address, text, and controls.
 
     JSON with a fixed shape rather than a paragraph, because the model reads
     this to decide its *next* action -- it needs the reference of the third
     button, not a description of the page's mood. Every piece is clipped
-    before it joins the budget, so the whole answer fits the same ceiling
-    every other tool result answers under.
+    before it joins the budget, so the whole answer fits the ceiling a page
+    read answers under (:data:`tool_results.MAX_PAGE_READ_CHARS`).
+
+    ``fields`` is the per-site extraction from `sites_map.yaml` -- a price, a
+    rating, a title the site puts behind its own markup. It is passed in
+    rather than looked up here so this stays a *shaping* function: the map is
+    read by :mod:`.site_map`, and only the page knows whether a selector on
+    it matched.
+
+    ``scroll`` is ``{y, max}`` and is what makes a *windowed* read
+    interpretable: the text is the viewport's, so "how far down am I and how
+    much is left" is the difference between "scroll and read again" and
+    "re-reading the same 400 characters". ``notice`` is a one-line remark from
+    the caller -- the repeat-read warning -- carried verbatim, because the
+    sentence is decided where the repeat is *detected*, not here.
     """
     reported: list[dict[str, str]] = []
     for item in controls[:MAX_REPORTED_CONTROLS]:
@@ -766,6 +1028,15 @@ def observe_payload(
             "kind": kind,
             "label": clip(str(item.get("label") or kind or "control"), LABEL_CHARS),
         }
+        # The role, when it says something the tag does not. A `<button>` needs
+        # no role line -- that is what `kind` already is -- but a `<div>` the site
+        # made into a button is addressable only by that fact, and a model told
+        # it is a div will look for a button that does not exist. This is the
+        # half of "full page access" that a tag alone cannot carry.
+        role = str(item.get("role") or "").strip().casefold()
+        tag_only = str(item.get("tag") or "").strip().casefold()
+        if role and role != tag_only:
+            entry["role"] = clip(role, 40)
         # The real address, for links. This was the missing half of "observe": a
         # model shown eight labels and no hrefs cannot open the thing it is
         # looking at, so on a results page its only move is to *invent* an address
@@ -776,11 +1047,59 @@ def observe_payload(
             entry["href"] = clip(href, HREF_CHARS)
         reported.append(entry)
     body = " ".join(str(text or "").split())[:OBSERVE_TEXT_CHARS]
-    return as_payload(
-        {
-            "title": clip(str(title or ""), TITLE_CHARS),
-            "url": clip(str(url or ""), URL_CHARS),
-            "text": body,
-            "controls": reported,
-        }
-    )
+    payload: dict[str, Any] = {
+        "title": clip(str(title or ""), TITLE_CHARS),
+        "url": clip(str(url or ""), URL_CHARS),
+        "text": body,
+        "controls": reported,
+    }
+    # Only what the page actually answered with. A `fields` key naming selectors
+    # that matched nothing is a claim that the site has no price, which is a
+    # different statement from "we do not know where this site keeps one".
+    named = {
+        str(key): clip(str(value), 120)
+        for key, value in dict(fields or {}).items()
+        if str(value or "").strip()
+    }
+    if named:
+        payload["fields"] = named
+    # The scroll window this text was taken from, when the page could say. A
+    # number rather than a phrase so "is there more below?" is answerable by
+    # comparison rather than by another read.
+    if isinstance(scroll, dict):
+        try:
+            position = int(scroll.get("y"))  # type: ignore[arg-type]
+            maximum = int(scroll.get("max"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            position = -1
+            maximum = -1
+        if position >= 0 and maximum >= 0:
+            payload["scroll"] = {"y": position, "max": maximum}
+    remark = " ".join(str(notice or "").split())
+    if remark:
+        payload["notice"] = clip(remark, NOTICE_CHARS)
+    return as_payload(payload, max_chars=max_chars)
+
+
+#: Verbs each browser tool actually accepts, and the sentence an unknown one
+#: turns into. Here rather than duplicated in both tools because the two drive
+#: one browser and a model must not find that one of them spells a verb
+#: differently from the other.
+def unknown_action_message(raw: object, actions: Sequence[str]) -> str:
+    """The refusal for an action name nothing recognises, with a nudge.
+
+    The bare list was the whole message, and on a voice turn it is a wall: the
+    model is told twenty things it may say and not which of them it meant.
+    A near-match is the useful half -- `scoll` is `scroll`, `recieve` is
+    `receive` -- so the sentence names the likely verb first and then gives
+    the list, because a *confident* wrong suggestion would be worse than no
+    suggestion at all and the list is what makes that recoverable.
+    """
+    said = " ".join(str(raw or "").split()).strip("_") or "that"
+    options = [str(item) for item in actions]
+    close = difflib.get_close_matches(said.casefold().replace("_", ""), options, n=1, cutoff=0.6)
+    head = f"I can't do '{clip(said, 30)}'."
+    if close:
+        head += f" Did you mean '{close[0]}'?"
+    return f"{head} Tell me one of: {', '.join(options)}."
+
