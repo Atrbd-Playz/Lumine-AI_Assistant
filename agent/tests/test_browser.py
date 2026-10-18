@@ -403,6 +403,26 @@ class ObservePayloadTests(unittest.TestCase):
         parsed = json.loads(self._payload())
         self.assertEqual(parsed["controls"][0]["ref"], "r1")
 
+    def test_controls_keep_their_nearby_item_context(self):
+        parsed = json.loads(self._payload(controls=[{
+            "ref": "r1",
+            "tag": "a",
+            "type": "",
+            "label": "View item",
+            "context": "Wireless headphones - $79.99",
+            "href": "/headphones",
+        }]))
+        control = parsed["controls"][0]
+        self.assertEqual(control["context"], "Wireless headphones - $79.99")
+        self.assertNotIn("href", control)
+
+    def test_long_page_control_names_keep_enough_of_the_title_to_identify_it(self):
+        title = "A video title long enough to distinguish this result from another"
+        parsed = json.loads(self._payload(controls=[{
+            "ref": "r1", "tag": "a", "type": "", "label": title,
+        }]))
+        self.assertEqual(parsed["controls"][0]["label"], title)
+
     def test_the_scroll_window_rides_along_when_the_page_reports_one(self):
         # The text is windowed, so its position belongs beside it -- without
         # the number "scroll down and read again" is a sentence the model

@@ -370,6 +370,7 @@ class SnapshotTests(unittest.TestCase):
         ]
         snapshot = state.snapshot_from_script(1, payload)
         self.assertIn("Pinkfong", snapshot.candidates[0].detail["meta"])
+        self.assertIn("Pinkfong", snapshot.candidates[0].to_dict()["detail"]["context"])
 
     def test_a_junk_payload_still_produces_a_snapshot(self):
         snapshot = state.snapshot_from_script(1, None)

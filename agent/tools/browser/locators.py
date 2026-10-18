@@ -377,7 +377,10 @@ class Candidate:
         if self.checked is not None:
             out["checked"] = self.checked
         if self.detail:
-            out["detail"] = self.detail
+            detail = dict(self.detail)
+            if "meta" in detail:
+                detail["context"] = detail.pop("meta")
+            out["detail"] = detail
         return out
 
 
@@ -399,6 +402,14 @@ def score(candidate: Candidate, query: ElementQuery) -> int:
         return 0
     if name == wanted:
         return 0
+    item_title = str(candidate.detail.get("itemTitle") or "").casefold()
+    if item_title:
+        if item_title == wanted:
+            return 1
+        if item_title.startswith(wanted):
+            return 2
+        if wanted in item_title:
+            return 3
     if query.qualifier:
         blob = " ".join(
             [name, candidate.role, str(candidate.detail.get("channel", "")), str(candidate.detail.get("meta", ""))]
@@ -409,13 +420,16 @@ def score(candidate: Candidate, query: ElementQuery) -> int:
         return 2
     if wanted in name:
         return 3
+    context = str(candidate.detail.get("meta", "")).casefold()
+    if context and wanted in context:
+        return 4
     return NO_MATCH
 
 
 #: A candidate the query's text does not touch at all. Kept only when the query
 #: named no text, because "the first button" is a real request and filtering on an
 #: empty name would answer nothing.
-NO_MATCH = 4
+NO_MATCH = 5
 
 
 def rank(candidates: Sequence[Candidate], query: ElementQuery, *, limit: int = MAX_CANDIDATES) -> list[Candidate]:

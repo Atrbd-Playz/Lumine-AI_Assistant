@@ -140,6 +140,73 @@ class BoundedFieldsTests(unittest.TestCase):
         self.assertEqual(state._bounded_fields(["price"]), {})
 
 
+class PageItemSnapshotTests(unittest.TestCase):
+    def test_page_items_keep_title_price_and_the_grounded_target(self):
+        snapshot = state.snapshot_from_script(
+            4,
+            {
+                "url": "https://shop.example/results",
+                "candidates": [
+                    {
+                        "index": 1,
+                        "ref": "r1",
+                        "role": "link",
+                        "name": "View item",
+                        "tag": "a",
+                        "rowText": "Portable speaker $39.99",
+                    }
+                ],
+                "items": [
+                    {
+                        "kind": "product",
+                        "title": "Portable speaker",
+                        "text": "Portable speaker $39.99",
+                        "price": "$39.99",
+                        "ref": "r1",
+                        "href": "https://shop.example/speaker",
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(
+            snapshot.items[0].to_dict(),
+            {
+                "index": 1,
+                "kind": "product",
+                "title": "Portable speaker",
+                "text": "Portable speaker $39.99",
+                "ref": "r1",
+                "href": "https://shop.example/speaker",
+                "price": "$39.99",
+            },
+        )
+        self.assertEqual(snapshot.candidates[0].detail["itemTitle"], "Portable speaker")
+        query = state.locators.build_query(name="Portable speaker", role="link")
+        resolution = state.locate(snapshot, query)
+        self.assertTrue(resolution.ok)
+        self.assertEqual(resolution.chosen.ref, "r1")
+
+    def test_page_items_reject_bad_refs_urls_and_unknown_kinds(self):
+        items = state.page_items_from_script(
+            {
+                "items": [
+                    {
+                        "title": "An unsafe destination",
+                        "text": "A visible result card",
+                        "kind": "script",
+                        "ref": "javascript:alert(1)",
+                        "href": "javascript:alert(1)",
+                    }
+                ]
+            }
+        )
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].kind, "result")
+        self.assertEqual(items[0].ref, "")
+        self.assertEqual(items[0].href, "")
+
+
 class ApplyRegionTests(unittest.TestCase):
     def _payload(self, **over):
         base = {"title": "T", "url": "https://example.com/", "text": "body words", "controls": []}
@@ -199,6 +266,23 @@ class SnapshotFieldTests(unittest.TestCase):
         out = snap.to_dict()
         out["fields"]["price"] = "$1"
         self.assertEqual(snap.fields["price"], "$49")
+
+
+class CandidateContextTests(unittest.TestCase):
+    def test_item_context_survives_in_semantic_candidates(self):
+        candidates = state.candidates_from_script({
+            "candidates": [{
+                "ref": "r1",
+                "role": "button",
+                "name": "Add to cart",
+                "tag": "button",
+                "rowText": "Wireless headphones $79.99",
+            }]
+        })
+        self.assertEqual(
+            candidates[0].detail["meta"],
+            "Wireless headphones $79.99",
+        )
 
 
 class LadderTests(unittest.TestCase):

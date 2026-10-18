@@ -47,6 +47,8 @@ FIXTURE = b"""<!doctype html>
 <body>
   <h1>Fixture</h1>
   <form action="/results" method="get" role="search">
+    <input id="hidden-youtube-search" type="hidden" name="search_query">
+    <input id="youtube-search" name="search_query">
     <input name="q" id="q">
     <button type="submit">Go</button>
   </form>
@@ -251,6 +253,37 @@ class RealBrowserJourneyTests(unittest.TestCase):
                 found, "the fixture's label-less search box was not found"
             )
             self.assertTrue(found.query.css or found.query.name)
+
+        self._with_engine(body)
+
+    def test_a_site_css_selector_filters_candidates_before_resolving(self):
+        """A hidden duplicate selector match must not make the visible field ambiguous.
+
+        YouTube's site mapping addresses its search input by CSS. The old engine
+        ranked every page control without applying that CSS, so the search step
+        failed with "more than one matches" before it could type.
+        """
+        async def body(eng):
+            await eng.navigate(self.base)
+            snapshot = eng.gate.stamp(await eng.observe())
+            query = locators.build_query(css='input[name="search_query"]')
+            await eng.act(
+                engine.EngineAction(
+                    kind="fill",
+                    query=query,
+                    text="your love is gone",
+                    generation=snapshot.generation,
+                )
+            )
+            page = await eng._page()
+            self.assertEqual(
+                await page.locator("#youtube-search").input_value(),
+                "your love is gone",
+            )
+            self.assertEqual(
+                await page.locator("#hidden-youtube-search").input_value(),
+                "",
+            )
 
         self._with_engine(body)
 

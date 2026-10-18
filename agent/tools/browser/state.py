@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
@@ -63,6 +64,7 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
 MAX_TEXT = MAX_PAGE_READ_CHARS
 MAX_CANDIDATES = locators.MAX_CANDIDATES
 MAX_TABS = 12
+MAX_PAGE_ITEMS = 20
 
 #: How many controls one collection reports. Raised alongside `MAX_TEXT` for the
 #: same reason: 8 was a page's header, and a model asked to find "the second
@@ -99,6 +101,34 @@ MODEL_IMAGE_QUALITY = 70
 
 
 @dataclass(frozen=True)
+class PageItem:
+    """A visible result/product card grounded in its current page snapshot."""
+
+    index: int
+    kind: str
+    title: str
+    text: str
+    ref: str = ""
+    href: str = ""
+    price: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "index": self.index,
+            "kind": self.kind,
+            "title": self.title,
+            "text": self.text,
+        }
+        if self.ref:
+            item["ref"] = self.ref
+        if self.href:
+            item["href"] = self.href
+        if self.price:
+            item["price"] = self.price
+        return item
+
+
+@dataclass(frozen=True)
 class Snapshot:
     """One observation, with the generation that identifies it.
 
@@ -113,6 +143,7 @@ class Snapshot:
     title: str = ""
     text: str = ""
     candidates: tuple[locators.Candidate, ...] = ()
+    items: tuple[PageItem, ...] = ()
     tab_count: int = 0
     ready: str = "loading"
     #: Named fields pulled out of the page's *content* region by the site map
@@ -136,6 +167,7 @@ class Snapshot:
             "ready": self.ready,
             "text": self.text,
             "candidates": [item.to_dict() for item in self.candidates],
+            "items": [item.to_dict() for item in self.items],
         }
         if self.fields:
             out["fields"] = dict(self.fields)
@@ -270,14 +302,132 @@ const scrollPosition = () => {
 };
 """
 
-_JS_COLLECT = """() => {
+# Nearby item text lets a control keep the identity of the card it belongs to:
+# a thumbnail link may only be labelled "Play", while its video title lives in
+# the surrounding renderer; a product button may only say "Add to cart".
+_JS_ITEM_CONTEXT_FN = """
+const itemContext = (el) => {
+  const isItem = (node) => {
+    if (!node || !node.tagName) return false;
+    const tag = node.tagName.toLowerCase();
+    const role = (node.getAttribute('role') || '').toLowerCase();
+    if (['article', 'li', 'tr', 'ytd-video-renderer', 'ytd-rich-item-renderer'].includes(tag)
+        || role === 'listitem') return true;
+    const markers = [
+      node.getAttribute('data-testid') || '',
+      node.getAttribute('data-component-type') || '',
+      node.getAttribute('class') || ''
+    ].join(' ');
+    return /(^|[\\s_-])(product|item|result|card|video)([\\s_-]|$)/i.test(markers);
+  };
+  for (let node = el && el.parentElement, depth = 0;
+       node && node !== document.body && depth < 8;
+       node = node.parentElement, depth += 1) {
+    if (!isItem(node)) continue;
+    const text = String(node.innerText || node.textContent || '')
+      .replace(/\\s+/g, ' ').trim();
+    if (text.length >= 12 && text.length <= 800) return text.slice(0, 180);
+  }
+  return '';
+};
+"""
+
+_JS_PAGE_ITEMS_FN = r"""
+const pageItems = () => {
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = typeof window === 'undefined' ? null : window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 &&
+      (!style || (style.display !== 'none' && style.visibility !== 'hidden'));
+  };
+  // Site-identified cards must be collected before generic list items: large
+  // shops commonly put dozens of navigation `<li>` nodes before their products.
+  const selectors = [
+    'ytd-video-renderer', 'ytd-rich-item-renderer',
+    '[data-component-type="s-search-result"]',
+    '[data-testid*="product" i]', '[class*="product-card" i]',
+    '[class*="video-card" i]', 'article', '[role="listitem"]', 'li'
+  ];
+  const nodes = new Set();
+  for (const selector of selectors) {
+    try {
+      for (const node of document.querySelectorAll(selector)) nodes.add(node);
+    } catch (err) {
+      // A browser-supported selector failure must not break the page read.
+    }
+  }
+  const money = /(?:[$€£¥₹৳]\s?\d[\d,.]*(?:\s?(?:USD|EUR|GBP|BDT|INR))?|\b(?:USD|EUR|GBP|BDT|INR)\s?\d[\d,.]*)/i;
+  const seen = new Set();
+  const out = [];
+  for (const node of nodes) {
+    if (out.length >= 20 || !visible(node)) continue;
+    const text = clean(node.innerText || node.textContent);
+    if (text.length < 12) continue;
+    const titleNode = Array.from(node.querySelectorAll(
+      '[itemprop="name"], [id*="video-title"], [data-testid*="title" i], h1, h2, h3, h4, a[title]'
+    )).find(visible);
+    const links = Array.from(node.querySelectorAll('a[href]')).filter(visible);
+    const title = clean(
+      (titleNode && (titleNode.getAttribute('content') || titleNode.getAttribute('title') ||
+        titleNode.innerText || titleNode.textContent)) ||
+      (links[0] && (links[0].getAttribute('title') || links[0].getAttribute('aria-label') ||
+        links[0].innerText || links[0].textContent)) ||
+      text.split(/[.!?]\s/)[0]
+    ).slice(0, 140);
+    if (title.length < 3) continue;
+    const link = links.find((entry) => {
+      const label = clean(entry.getAttribute('title') || entry.getAttribute('aria-label') ||
+        entry.innerText || entry.textContent);
+      return label.toLowerCase().includes(title.toLowerCase()) ||
+        title.toLowerCase().includes(label.toLowerCase());
+    }) || links[0];
+    const href = link ? String(link.href || '').slice(0, 240) : '';
+    const identity = title.toLowerCase() + '|' + href;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const priceNode = Array.from(node.querySelectorAll(
+      '[itemprop="price"], meta[itemprop="price"], [class*="price" i], [data-testid*="price" i]'
+    )).find(visible);
+    const candidatePrice = priceNode
+      ? clean(priceNode.getAttribute('content') || priceNode.innerText || priceNode.textContent)
+      : '';
+    const price = (candidatePrice.match(money) || text.match(money) || [])[0] || '';
+    const isVideo = /ytd-video|video-card/i.test(node.tagName + ' ' + (node.className || '')) ||
+      /\/watch\?/.test(href);
+    const isProduct = !!price || /product|s-search-result/i.test(
+      node.tagName + ' ' + (node.className || '') + ' ' + (node.getAttribute('data-testid') || '')
+    );
+    const target = link && link.getAttribute('data-lumine-ref')
+      ? link.getAttribute('data-lumine-ref')
+      : '';
+    out.push({
+      index: out.length + 1,
+      kind: isVideo ? 'video' : (isProduct ? 'product' : 'result'),
+      title: title,
+      text: text.slice(0, 300),
+      ref: target,
+      href: href,
+      price: price.slice(0, 60)
+    });
+  }
+  return out;
+};
+"""
+
+_JS_COLLECT = """(generation) => {
 """ + _JS_VIEWPORT_FN + """
+""" + _JS_ITEM_CONTEXT_FN + """
+""" + _JS_PAGE_ITEMS_FN + """
   // Stale markers from a previous collection are cleared first. Leaving them
   // behind would mean an action that presents an old reference resolves against
   // a node this run never looked at -- which is exactly the "clicked something
   // else" failure the generation check exists to prevent.
   for (const old of document.querySelectorAll('[data-lumine-ref]')) {
     old.removeAttribute('data-lumine-ref');
+  }
+  if (generation !== undefined && generation !== null && document.documentElement) {
+    document.documentElement.setAttribute('data-lumine-gen', String(generation));
   }
   const visible = (el) => {
     const rect = el.getBoundingClientRect();
@@ -394,6 +544,16 @@ _JS_COLLECT = """() => {
     if (href && role === 'link') detail.href = href.slice(0, 200);
     const type = (node.getAttribute('type') || '').toLowerCase();
     if (type === 'checkbox' || type === 'radio') detail.checked = node.checked === true;
+    if (node.tagName.toLowerCase() === 'select') {
+      detail.options = Array.from(node.options)
+        .map((option) => (option.textContent || '').replace(/\\s+/g, ' ').trim())
+        .filter(Boolean)
+        .slice(0, 20);
+      if (node.selectedIndex >= 0) {
+        detail.selectedOption = (node.options[node.selectedIndex].textContent || '')
+          .replace(/\\s+/g, ' ').trim().slice(0, 80);
+      }
+    }
     const value = node.getAttribute('value');
     if (value) detail.value = value.slice(0, 80);
     if (soleFieldOfForm(node)) detail.soleField = true;
@@ -438,10 +598,7 @@ _JS_COLLECT = """() => {
       checked: (type === 'checkbox' || type === 'radio') ? (node.checked === true) : null,
       detail: detail,
       // The nearest row-ish ancestor, so a caller can describe "the third result".
-      rowText: (node.closest('li, [role="listitem"], article, ytd-video-renderer, tr') || {}).textContent
-        ? (node.closest('li, [role="listitem"], article, ytd-video-renderer, tr').textContent || '')
-            .replace(/\\s+/g, ' ').trim().slice(0, 300)
-        : ''
+      rowText: itemContext(node)
     });
   }
   return {
@@ -464,7 +621,8 @@ _JS_COLLECT = """() => {
     // be recognised for what it is.
     scroll: scrollPosition(),
     ready: document.readyState,
-    candidates: out
+    candidates: out,
+    items: pageItems()
   };
 }
 """
@@ -772,6 +930,61 @@ def candidates_from_script(payload: Any) -> list[locators.Candidate]:
     return out
 
 
+def page_items_from_script(payload: Any) -> tuple[PageItem, ...]:
+    """Parse bounded, visible result cards without trusting page field types."""
+    rows = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return ()
+    out: list[PageItem] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = " ".join(str(row.get("title") or "").split())[:140]
+        text = " ".join(str(row.get("text") or "").split())[:300]
+        if len(title) < 3 or not text:
+            continue
+        href = str(row.get("href") or "").strip()[:240]
+        if not href.startswith(("http://", "https://")):
+            href = ""
+        ref = str(row.get("ref") or "")
+        if not re.fullmatch(r"r\d{1,3}", ref):
+            ref = ""
+        identity = (title.casefold(), href)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        kind = str(row.get("kind") or "result")
+        if kind not in {"video", "product", "result"}:
+            kind = "result"
+        out.append(
+            PageItem(
+                index=len(out) + 1,
+                kind=kind,
+                title=title,
+                text=text,
+                ref=ref,
+                href=href,
+                price=" ".join(str(row.get("price") or "").split())[:60],
+            )
+        )
+        if len(out) >= MAX_PAGE_ITEMS:
+            break
+    return tuple(out)
+
+
+def ground_candidates(
+    candidates: Sequence[locators.Candidate], items: Sequence[PageItem]
+) -> list[locators.Candidate]:
+    """Attach a result's title to its primary link for semantic resolution."""
+    item_titles = {item.ref: item.title for item in items if item.ref}
+    for candidate in candidates:
+        title = item_titles.get(candidate.ref)
+        if title:
+            candidate.detail["itemTitle"] = title
+    return list(candidates)
+
+
 def snapshot_from_script(
     generation: int, payload: Any, *, tab_count: Any = None
 ) -> Snapshot:
@@ -786,12 +999,16 @@ def snapshot_from_script(
     """
     data = payload if isinstance(payload, dict) else {}
     count = data.get("tabs") if tab_count is None else tab_count
+    candidates = candidates_from_script(data)
+    items = page_items_from_script(data)
+    candidates = ground_candidates(candidates, items)
     return Snapshot(
         generation=generation,
         url=str(data.get("url") or ""),
         title=str(data.get("title") or ""),
         text=str(data.get("text") or "")[:MAX_TEXT],
-        candidates=tuple(candidates_from_script(data)),
+        candidates=tuple(candidates),
+        items=items,
         # Counted leniently on purpose. This is the one field whose argument can
         # arrive as a list rather than a number -- `tabs` holds a list everywhere
         # in this module's own vocabulary -- and it used to raise here, taking

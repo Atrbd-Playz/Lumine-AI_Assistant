@@ -47,7 +47,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agent.runtime.permission_gate import MSG_NO_GATE
-from agent.tools.browser import session
+from agent.tools.browser import control as web_control, session
 from agent.tools.browser.tools import browse
 from agent.tools.tools_compat import ToolError
 from agent.tools.tool_results import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
@@ -90,12 +90,63 @@ TALL_FIXTURE = b"""<!doctype html>
 </body>
 </html>"""
 
+ITEM_FIXTURE = b"""<!doctype html>
+<html>
+<head><title>Items</title></head>
+<body>
+  <main>
+    <form role="search">
+      <input name="q" aria-label="Search products">
+    </form>
+    <label for="sort">Sort by</label>
+    <select id="sort" aria-label="Sort by">
+      <option>Relevance</option>
+      <option>Price: low to high</option>
+    </select>
+    <script>
+      const nav = document.createElement('ul');
+      for (let i = 0; i < 24; i += 1) {
+        const item = document.createElement('li');
+        item.textContent = 'Navigation category ' + i;
+        nav.appendChild(item);
+      }
+      document.querySelector('main').insertBefore(nav, document.querySelector('main > ul'));
+    </script>
+    <ul>
+      <li class="product-card">
+        <h2>Wireless headphones</h2>
+        <p>$79.99</p>
+        <button onclick="document.getElementById('note').textContent = 'headphones selected'">
+          Add to cart
+        </button>
+      </li>
+      <li class="product-card">
+        <h2>Portable speaker</h2>
+        <p>$39.99</p>
+        <a href="/speaker" aria-label="View item">Details</a>
+      </li>
+    </ul>
+    <ytd-video-renderer>
+      <h3>How to tune a guitar</h3>
+      <p>Music Workshop - 8:42</p>
+      <a href="/watch?v=fixture" aria-label="Play video">Play</a>
+    </ytd-video-renderer>
+    <p id="note"></p>
+  </main>
+</body>
+</html>"""
+
 
 class _FixtureHandler(http.server.BaseHTTPRequestHandler):
     """Every path answers a fixture page: `/tall` overflows, the rest fits."""
 
     def do_GET(self):  # noqa: N802 -- http.server's spelling
-        body = TALL_FIXTURE if self.path.startswith("/tall") else FIXTURE
+        if self.path.startswith("/tall"):
+            body = TALL_FIXTURE
+        elif self.path.startswith("/items"):
+            body = ITEM_FIXTURE
+        else:
+            body = FIXTURE
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -225,6 +276,82 @@ class RealBrowserJourneyTests(unittest.TestCase):
 
     def test_open_observe_act_and_refuse_on_a_real_page(self):
         self._run(self._journey())
+
+    def test_item_context_identifies_product_and_video_controls(self):
+        async def journey():
+            ctx = SimpleNamespace()
+            try:
+                await browse(ctx, "open", url=self.url + "items")
+                result = await browse(ctx, "observe")
+                body = result.split(UNTRUSTED_OPEN, 1)[1].split(UNTRUSTED_CLOSE, 1)[0]
+                payload = body.partition("\n")[2]
+                self.assertGreater(len(payload), 800)
+                seen = _payload_of(result)
+                controls = seen["controls"]
+                items = seen["items"]
+
+                headphones = next(item for item in items if item["title"] == "Wireless headphones")
+                self.assertEqual(headphones["kind"], "product")
+                self.assertEqual(headphones["price"], "$79.99")
+
+                speaker = next(item for item in items if item["title"] == "Portable speaker")
+                self.assertEqual(speaker["price"], "$39.99")
+                self.assertTrue(speaker["ref"].startswith("r"))
+
+                video = next(item for item in items if item["title"] == "How to tune a guitar")
+                self.assertEqual(video["kind"], "video")
+                self.assertTrue(video["ref"].startswith("r"))
+
+                add_to_cart = next(c for c in controls if c["label"] == "Add to cart")
+                self.assertIn("Wireless headphones", add_to_cart["context"])
+                self.assertIn("$79.99", add_to_cart["context"])
+
+                product_link = next(c for c in controls if c["label"] == "View item")
+                self.assertIn("Portable speaker", product_link["context"])
+                self.assertIn("$39.99", product_link["context"])
+
+                video_link = next(c for c in controls if c["label"] == "Play video")
+                self.assertIn("How to tune a guitar", video_link["context"])
+
+                search = next(c for c in controls if c["label"] == "Search products")
+                await browse(ctx, "act", ref=search["ref"], text="headphones")
+                controls = _payload_of(await browse(ctx, "observe"))["controls"]
+                sort = next(c for c in controls if c["label"] == "Sort by")
+                self.assertEqual(sort["options"], ["Relevance", "Price: low to high"])
+                self.assertEqual(sort["selected"], "Relevance")
+                await browse(ctx, "act", ref=sort["ref"], text="Price: low to high")
+
+                observed = _payload_of(await browse(ctx, "observe"))
+                controls = observed["controls"]
+                sort = next(c for c in controls if c["label"] == "Sort by")
+                self.assertEqual(sort["selected"], "Price: low to high")
+                add_to_cart = next(c for c in controls if c["label"] == "Add to cart")
+                await browse(ctx, "act", ref=add_to_cart["ref"])
+                after = _payload_of(await browse(ctx, "observe"))
+                self.assertIn("headphones selected", after["text"])
+            finally:
+                await session.release()
+
+        self._run(journey())
+
+    def test_web_control_resolves_a_video_title_to_its_grounded_link(self):
+        async def journey():
+            ctx = SimpleNamespace()
+            try:
+                await browse(ctx, "open", url=self.url + "items")
+                result = await web_control.web_control(
+                    ctx,
+                    action="click",
+                    name="How to tune a guitar",
+                    role="link",
+                )
+                payload = _payload_of(result)
+                self.assertIn("/watch?v=fixture", payload["url"])
+                self.assertEqual(payload["actedOn"]["detail"]["itemTitle"], "How to tune a guitar")
+            finally:
+                await session.release()
+
+        self._run(journey())
 
     def test_a_reference_does_not_survive_the_page_it_was_read_from(self):
         # The mechanism behind a click landing on the wrong thing.

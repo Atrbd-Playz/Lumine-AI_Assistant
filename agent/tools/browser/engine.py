@@ -96,6 +96,17 @@ class EngineAction:
     resolve_only: bool = False
 
 
+_JS_MATCH_CSS_REFS = """(selector) => {
+  try {
+    return Array.from(document.querySelectorAll(selector))
+      .map((node) => node.getAttribute('data-lumine-ref'))
+      .filter((ref) => !!ref);
+  } catch (err) {
+    return [];
+  }
+}"""
+
+
 def _tab_count(payload: Any) -> int:
     """How many tabs a script reported, from a field that holds a *list*.
 
@@ -370,7 +381,7 @@ class PlaywrightEngine:
         if refusal:
             raise EngineError(refusal)
 
-        candidates = await _collect(page, step.query)
+        candidates = await _collect(scope, step.query)
         resolution = locators.resolve_one(candidates, step.query or locators.ElementQuery())
         chosen = _choose(resolution, step.index)
         if chosen is None:
@@ -470,7 +481,20 @@ async def _collect(page: Any, query: locators.ElementQuery | None) -> list[locat
         payload = await page.evaluate(state._JS_COLLECT)
     except Exception as exc:  # noqa: BLE001
         raise EngineError(f"I could not read that page: {str(exc)[:120]}") from None
-    return state.candidates_from_script(payload)
+    candidates = state.ground_candidates(
+        state.candidates_from_script(payload),
+        state.page_items_from_script(payload),
+    )
+    if query.css:
+        try:
+            refs = await page.evaluate(_JS_MATCH_CSS_REFS, query.css)
+        except Exception as exc:  # noqa: BLE001 - a selector failure must be explicit
+            raise EngineError(f"I could not resolve that selector: {str(exc)[:100]}") from None
+        if not isinstance(refs, list):
+            raise EngineError("I could not resolve that selector on the current page")
+        matched = {str(ref) for ref in refs}
+        candidates = [candidate for candidate in candidates if candidate.ref in matched]
+    return candidates
 
 
 def _choose(resolution: locators.Resolution, index: int) -> locators.Candidate | None:

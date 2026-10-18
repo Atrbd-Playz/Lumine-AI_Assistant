@@ -534,6 +534,7 @@ async def web_control(
                 generation=snapshot.generation,
                 controls=[item.to_dict() for item in snapshot.candidates[:MAX_READ_CONTROLS]],
                 count=len(snapshot.candidates),
+                items=[item.to_dict() for item in snapshot.items[:8]],
                 # The per-site extraction, when the page's own map has one. A
                 # price under a stable name rather than a number inside a
                 # paragraph -- see `site_map`.

@@ -239,6 +239,8 @@ MSG_BAD_URL = (
 
 _JS_OBSERVE = """(gen) => {
 """ + browser_state._JS_VIEWPORT_FN + """
+""" + browser_state._JS_ITEM_CONTEXT_FN + """
+""" + browser_state._JS_PAGE_ITEMS_FN + """
   for (const el of document.querySelectorAll('[data-lumine-ref]')) {
     el.removeAttribute('data-lumine-ref');
   }
@@ -402,12 +404,14 @@ _JS_OBSERVE = """(gen) => {
     perRole[role] = (perRole[role] || 0) + 1;
     minted += 1;
     const label = nameOf(el, role);
+    const context = itemContext(el);
     controls.push({
       ref: ref,
       tag: el.tagName.toLowerCase(),
       type: el.getAttribute('type') || '',
       href: (el.getAttribute('href') || '').slice(0, 200),
       label: label,
+      context: context,
       role: role,
       // Set when the label was invented rather than read off the page, so a
       // caller can tell "the button named Save" from "the third unnamed button"
@@ -431,7 +435,8 @@ _JS_OBSERVE = """(gen) => {
     // same text twice" from "the page moved", and `scroll down and read again`
     // is a sentence it has no way to confirm it followed.
     scroll: scrollPosition(),
-    controls: controls
+    controls: controls,
+    items: pageItems()
   };
 }
 """
@@ -665,6 +670,23 @@ def profile_dir() -> Path:
     else:
         base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "lumine" / "browser-profile"
+
+
+async def _joined_start_page(context: Any) -> Any:
+    """Use an existing blank tab or create one without changing joined pages."""
+    pages = list(getattr(context, "pages", []) or [])
+    for page in pages:
+        try:
+            if str(page.url or "") == "about:blank":
+                return page
+        except Exception:  # noqa: BLE001 -- an unreadable page is not ours to navigate
+            continue
+    try:
+        return await context.new_page()
+    except Exception as exc:  # noqa: BLE001 -- do not close a shared context
+        raise ToolError(
+            f"I couldn't open a browser tab: {clip(str(exc), 100)}"
+        ) from None
 
 
 def headless_default() -> bool:
@@ -1794,22 +1816,23 @@ class _Browser:
         # leaving the context with zero pages, which is the state Chromium does
         # not like.
         pages = list(getattr(context, "pages", []) or [])
-        if pages:
+        if shared:
+            # A joined context belongs to another process and may contain the
+            # user's active page. Reuse only an existing blank tab; otherwise
+            # create a Lumine tab instead of navigating somebody else's page to
+            # about:blank.
+            try:
+                page = await _joined_start_page(context)
+            except ToolError:
+                await self._close_remote(context, playwright, shared=True)
+                raise
+        elif pages:
             page = pages[0]
-            # Close the rest **only when we launched this browser.**
-            #
-            # When we joined somebody else's, those pages are not clutter -- they
-            # are the other agent's WhatsApp tab and whatever the user is looking
-            # at. Closing them because "a persistent profile must not mean
-            # persistent tabs" would close a conversation mid-read, which is the
-            # worst thing a shared browser can do and is invisible to the person
-            # it happens to.
-            if not shared:
-                for extra in pages[1:]:
-                    try:
-                        await extra.close()
-                    except Exception:  # noqa: BLE001 -- best effort
-                        pass
+            for extra in pages[1:]:
+                try:
+                    await extra.close()
+                except Exception:  # noqa: BLE001 -- best effort
+                    pass
             try:
                 await page.goto("about:blank")
             except Exception:  # noqa: BLE001 -- a fresh tab is still usable
@@ -2429,7 +2452,44 @@ class _Browser:
         page = await self.ensure()
         if page.url == "about:blank":
             raise ToolError(MSG_NO_PAGE)
-        result = await page.evaluate(_JS_OBSERVE, self._active_generation())
+        raw = await page.evaluate(
+            browser_state._JS_COLLECT,
+            self._active_generation(),
+        )
+        rows = raw.get("candidates") if isinstance(raw, dict) else []
+        items = browser_state.page_items_from_script(raw)
+        item_titles = {item.ref: item.title for item in items if item.ref}
+        controls = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+            control = {
+                "ref": str(row.get("ref") or ""),
+                "tag": str(row.get("tag") or ""),
+                "type": str(row.get("type") or ""),
+                "href": str(detail.get("href") or ""),
+                "label": str(row.get("name") or ""),
+                "context": str(row.get("rowText") or ""),
+                "role": str(row.get("role") or ""),
+                "synthesised": bool(detail.get("synthesizedName")),
+            }
+            if control["ref"] in item_titles:
+                control["itemTitle"] = item_titles[control["ref"]]
+            if isinstance(detail.get("options"), list):
+                control["options"] = detail["options"][:20]
+            if detail.get("selectedOption"):
+                control["selectedOption"] = str(detail["selectedOption"])[:80]
+            controls.append(control)
+        result = {
+            "title": str(raw.get("title") or ""),
+            "url": str(raw.get("url") or page.url),
+            "text": str(raw.get("text") or ""),
+            "scroll": raw.get("scroll"),
+            "ready": str(raw.get("ready") or "loading"),
+            "controls": controls,
+            "items": [item.to_dict() for item in items],
+        }
         # Every video the page just showed us is an id worth remembering. A
         # results page is the only place this happens, which is why it has to be
         # collected here: `observe` is the one call that reads the whole document
@@ -2437,7 +2497,9 @@ class _Browser:
         for control in result.get("controls") or []:
             if isinstance(control, dict):
                 self._remember_video_id(str(control.get("href") or ""))
-        # The content region, read separately from the control walk. `_JS_OBSERVE`
+        for item in items:
+            self._remember_video_id(item.href)
+        # The content region, read separately from the shared control walk.
         # returns the *body* text, which on a product page is a cookie banner, a
         # nav drawer and a recommendation rail before anything the user asked
         # about -- the reported failure was a read that could not say what the

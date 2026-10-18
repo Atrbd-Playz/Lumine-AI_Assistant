@@ -84,9 +84,10 @@ REF_RE = re.compile(r"^r\d{1,3}$")
 #: which several were navigation, and no way to address the ninth.
 OBSERVE_TEXT_CHARS = 900
 MAX_REPORTED_CONTROLS = 20
-LABEL_CHARS = 40
+LABEL_CHARS = 80
 TITLE_CHARS = 70
 URL_CHARS = 90
+CONTEXT_CHARS = 120
 #: A one-line remark the caller attaches to a read -- today only the
 #: repeat-read warning ("this is the same text you just read; scroll first").
 #: Clipped like everything else, because a notice that grows is a notice the
@@ -987,6 +988,7 @@ def observe_payload(
     text: object,
     controls: Sequence[object],
     fields: object = None,
+    items: Sequence[object] = (),
     scroll: object = None,
     notice: object = None,
     max_chars: int = MAX_PAGE_READ_CHARS,
@@ -1037,13 +1039,27 @@ def observe_payload(
         tag_only = str(item.get("tag") or "").strip().casefold()
         if role and role != tag_only:
             entry["role"] = clip(role, 40)
+        options = item.get("options")
+        if isinstance(options, list) and options:
+            entry["options"] = [
+                clip(str(option), 60) for option in options[:12] if str(option).strip()
+            ]
+        if item.get("selectedOption"):
+            entry["selected"] = clip(str(item["selectedOption"]), 60)
+        if item.get("itemTitle"):
+            entry["itemTitle"] = clip(str(item["itemTitle"]), TITLE_CHARS)
         # The real address, for links. This was the missing half of "observe": a
         # model shown eight labels and no hrefs cannot open the thing it is
         # looking at, so on a results page its only move is to *invent* an address
         # -- and an invented one is a dead end that reports itself as a broken
         # page rather than as a guess. A link it can read is a link it can use.
         href = str(item.get("href") or "").strip()
-        if href and kind.startswith("a"):
+        context = " ".join(str(item.get("context") or item.get("rowText") or "").split())
+        if context:
+            entry["context"] = clip(context, CONTEXT_CHARS)
+        elif href and kind.startswith("a"):
+            # Nearby card context is more useful than a raw destination when
+            # distinguishing similarly labelled product/video links.
             entry["href"] = clip(href, HREF_CHARS)
         reported.append(entry)
     body = " ".join(str(text or "").split())[:OBSERVE_TEXT_CHARS]
@@ -1063,6 +1079,27 @@ def observe_payload(
     }
     if named:
         payload["fields"] = named
+    page_items: list[dict[str, Any]] = []
+    for row in items:
+        if not isinstance(row, dict):
+            continue
+        title = " ".join(str(row.get("title") or "").split())
+        if not title:
+            continue
+        item = {
+            "index": len(page_items) + 1,
+            "kind": str(row.get("kind") or "result")[:20],
+            "title": clip(title, TITLE_CHARS),
+        }
+        if row.get("price"):
+            item["price"] = clip(str(row["price"]), 60)
+        if REF_RE.match(str(row.get("ref") or "")):
+            item["ref"] = str(row["ref"])
+        page_items.append(item)
+        if len(page_items) >= 8:
+            break
+    if page_items:
+        payload["items"] = page_items
     # The scroll window this text was taken from, when the page could say. A
     # number rather than a phrase so "is there more below?" is answerable by
     # comparison rather than by another read.
@@ -1102,4 +1139,3 @@ def unknown_action_message(raw: object, actions: Sequence[str]) -> str:
     if close:
         head += f" Did you mean '{close[0]}'?"
     return f"{head} Tell me one of: {', '.join(options)}."
-

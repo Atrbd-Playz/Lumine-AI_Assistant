@@ -55,6 +55,7 @@ try:
         unknown_action_message,
         TAB_ACTION_CLASS,
         TAB_ASK_VERB,
+        CONTEXT_CHARS,
         LABEL_CHARS,
         MAX_REPORTED_CONTROLS,
         OBSERVE_TEXT_CHARS,
@@ -102,6 +103,7 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
         unknown_action_message,
         TAB_ACTION_CLASS,
         TAB_ASK_VERB,
+        CONTEXT_CHARS,
         LABEL_CHARS,
         MAX_REPORTED_CONTROLS,
         OBSERVE_TEXT_CHARS,
@@ -329,8 +331,10 @@ async def browse(
     - open: go to a page (needs url; http/https only).
     - observe: read the current tab -- title, address, the text currently in
       view (plus a little above and below the fold), and the visible controls
-      with references like "r3". The payload's `scroll` says how far down you
-      are and how much page is left.
+      with references like "r3". Controls inside a product, video, or result
+      card include nearby `context` text so their titles, prices, channels, or
+      other identifying details stay attached to the thing you can click. The
+      payload's `scroll` says how far down you are and how much page is left.
     - act: operate one control you named by reference. Give ref alone to
       click it; ref and text to type into it, or -- on a dropdown -- to
       choose its option; ref and key to press Enter, Escape, or an arrow key
@@ -436,10 +440,26 @@ async def browse(
                 payload["title"] = clip(str(data.get("title") or ""), 70)
                 payload["text"] = clip(str(data.get("text") or ""), OBSERVE_TEXT_CHARS)
                 payload["controls"] = [
-                    {"ref": c.get("ref"), "kind": c.get("tag"), "label": clip(str(c.get("label") or ""), LABEL_CHARS)}
+                    {
+                        "ref": c.get("ref"),
+                        "kind": c.get("tag"),
+                        "label": clip(str(c.get("label") or ""), LABEL_CHARS),
+                        **(
+                            {"context": clip(str(c.get("context") or ""), CONTEXT_CHARS)}
+                            if c.get("context")
+                            else {}
+                        ),
+                    }
                     for c in list(data.get("controls") or [])[:MAX_REPORTED_CONTROLS]
                     if isinstance(c, dict) and REF_RE.match(str(c.get("ref") or ""))
                 ][:MAX_REPORTED_CONTROLS]
+                page_items = data.get("items")
+                if isinstance(page_items, list) and page_items:
+                    payload["items"] = [
+                        item
+                        for item in page_items[:8]
+                        if isinstance(item, dict)
+                    ]
                 fields = data.get("fields") or {}
                 if fields:
                     payload["fields"] = fields
@@ -452,7 +472,10 @@ async def browse(
             # so under the global 800 `as_payload` was halving the control list --
             # the "she read it but could not act on it" failure, arriving through
             # a path that looks like a shortcut rather than a read.
-            return wrap_untrusted(as_payload(payload, max_chars=MAX_PAGE_READ_CHARS))
+            return wrap_untrusted(
+                as_payload(payload, max_chars=MAX_PAGE_READ_CHARS),
+                max_chars=MAX_PAGE_READ_CHARS,
+            )
         # A read, so the default policy answers immediately -- but the gate
         # is still the door, so `browse=off` in settings actually closes it.
         await require_approval(
@@ -510,6 +533,7 @@ async def browse(
                 # the model to find a number in a paragraph -- which is the whole
                 # of "she read the page and could not tell me what it costs".
                 fields=data.get("fields") or {},
+                items=data.get("items") or [],
                 # Where the windowed text was taken from, and the repeat-read
                 # warning when this tab already returned exactly this. Both are
                 # decided upstream -- the page knows its scroll position and
@@ -517,7 +541,8 @@ async def browse(
                 # only carries them.
                 scroll=data.get("scroll"),
                 notice=data.get("notice"),
-            )
+            ),
+            max_chars=MAX_PAGE_READ_CHARS,
         ) + _where_am_i(data)
 
     # -- back / forward -----------------------------------------------------
