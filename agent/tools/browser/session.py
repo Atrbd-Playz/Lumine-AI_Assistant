@@ -799,14 +799,10 @@ async def _launch_persistent(playwright: Any, directory: Path) -> Any:
                 # assistant drives is not a browser that drops files on the
                 # user's disk without a conversation about it.
                 accept_downloads=False,
-                # Emulate nothing about the display. Playwright's defaults
-                # substitute a viewport and force the *light* colour scheme, so
-                # the window overflowed the screen and every site rendered
-                # light while the machine was set to dark -- which is why the
-                # browser looked unlike the user's own. `None` means "follow the
-                # OS", which is what any window the user opens does.
+                # There is no synthetic viewport: the browser window is the
+                # viewport, and its default appearance is explicitly dark.
                 no_viewport=True,
-                color_scheme=None,
+                color_scheme="dark",
                 args=_window_args()
                 # A DevTools endpoint, so another process can *join* this
                 # browser instead of failing against its lock. Port 0 lets the
@@ -967,82 +963,21 @@ def _discover_devtools_port(profile: Path, attempts: int = 40) -> int:
 
 #: Measured once per process. `tkinter.Tk()` opens a real window object, which is
 #: slow, and two LiveKit rooms reaching it at once is two windows fighting over the
-#: same display server. The answer cannot change while the process runs -- a user
-#: who changes resolution can restart the worker -- so it is asked once and kept.
-_SCREEN_CACHE: tuple[int, int] | None = None
-_SCREEN_LOCK = threading.Lock()
-
-
-def _screen_size() -> tuple[int, int]:
-    """The primary display's size in points, or a sane default.
-
-    Measured with ``tkinter`` because it is the one thing in the standard library
-    that talks to the window server on every platform Python runs on. A window that
-    cannot be measured is sized for a laptop, which is the least surprising default
-    there is.
-    """
-    global _SCREEN_CACHE
-    if _SCREEN_CACHE is not None:
-        return _SCREEN_CACHE
-    with _SCREEN_LOCK:
-        if _SCREEN_CACHE is not None:
-            return _SCREEN_CACHE
-        measured: tuple[int, int] | None = None
-        try:
-            import tkinter
-
-            root = tkinter.Tk()
-            try:
-                root.withdraw()
-                width = int(root.winfo_screenwidth())
-                height = int(root.winfo_screenheight())
-            finally:
-                try:
-                    root.destroy()
-                except Exception:  # noqa: BLE001
-                    pass
-            if width > 200 and height > 200:
-                measured = (width, height)
-        except Exception:  # noqa: BLE001 - no display, no Tk, or a locked session
-            measured = None
-        _SCREEN_CACHE = measured or (1440, 900)
-        return _SCREEN_CACHE
-
-
 def _window_args() -> list[str]:
-    """Chromium flags for a window that fits the screen and keeps the theme.
-
-    The last two flags are about a background tab that is *doing something*, and
-    they were added after measuring what Chromium actually does when a window
-    stops being in front.
-
+    """Chromium flags for the default browser size, dark theme and playback.
     Playwright already passes `--disable-background-timer-throttling`,
     `--disable-backgrounding-occluded-windows` and `--disable-renderer-backgrounding`
-    (read out of the driver's own switch list), so the usual throttling of a
-    background tab is off. What it does **not** pass is anything about
-    `CalculateNativeWinOcclusion`, which is Chromium asking the window server
-    whether this window is completely covered, and answering yes for a window that
-    is behind the Lumine app -- or minimized. An occluded window gets throttling
-    that the timer flags do not cover, and a video left playing in a tab the user
-    came back to is exactly what stops dead while it is stalled.
-
-    Repeated `--disable-features` are unioned by Chromium rather than replaced, so
-    adding our entry keeps Playwright's instead of dropping it.
+    (read out of the driver's own switch list). The media-suspend flag prevents
+    Chromium from suspending audio/video when its window loses focus.
     """
-    width, height = _screen_size()
-    # A small margin so the window is never flush against the bezel, which is what
-    # makes it read as "it overflowed my screen".
-    margin = 0
-    size = f"--window-size={max(640, width - margin)},{max(480, height - 60)}"
-    # Positioned at the primary display's origin rather than left wherever the
-    # previous window happened to be, which on a multi-monitor machine is how a
-    # window ends up partly on a screen that is not there.
     return [
-        size,
+        "--window-size=960,680",
         "--window-position=0,0",
         "--disable-features=CalculateNativeWinOcclusion",
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
+        "--disable-background-media-suspend",
+        "--force-dark-mode",
     ]
 
 

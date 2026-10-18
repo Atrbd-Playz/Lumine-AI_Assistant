@@ -301,10 +301,10 @@ that live messages enter through the **callbacks `Home.tsx` wires in**, not thro
 panel that knows where they came from. The seam is the right place for a future
 text-turn backend; it is not where the existing one goes.
 
-The one thing that must not cross it is a tool payload. Those go to a toast via
-`onToolResult`, never through `ConversationToolEvent` — a retrieved page rendered
-inline in the transcript reads as though the model had been handed it by the user,
-which is the shape a prompt injection wants.
+The one thing that must not cross it is a tool payload. Those go to the **stage
+ledger** via `onToolResult`, never through `ConversationToolEvent` — a retrieved
+page rendered inline in the transcript reads as though the model had been handed
+it by the user, which is the shape a prompt injection wants.
 
 ### The transcript follows the tail, and only when the reader is there
 
@@ -347,6 +347,46 @@ Three decisions are load-bearing and none of them is cosmetic.
   passes a content-derived id, and base-ui's `toast.add` treats a repeat id as an
   update — so a failure circuit that emits the same line per turn gets one card
   with a restarting timer rather than a column of identical ones.
+
+## Where tool activity lives: the stage ledger, not a toast
+
+`features/stage/stageActivity.ts` is a module-level store, rendered by
+`pages/home/components/StageLedger.tsx` on the **left of the avatar**. It holds a
+task block (a `run_task` plan: header, live narration line, one row per declared
+step) and up to four loose tool rows. It renders null when empty, so the stage is
+the avatar the rest of the time.
+
+Five rules carry it, and none are cosmetic:
+
+- **Routing is two fields, not a new record type.** Everything arrives on
+  `tool_status` from `lumine.tool`: `taskId` present → a plan step; `name ===
+  "run_task"` with no `taskId` → the plan's own bracket (header/status/duration)
+  or one of its internal narration steps (which update the block's *line* and are
+  never a row of their own); anything else → a tool row. The wire constant is
+  `TASK_TOOL` here and `TASK_TOOL` in `agent/tools/task_runner.py` — naming them
+  differently would silently split a plan's steps into loose rows.
+- **Tool rows join to their steps by `name`, never by id.** A step's id is
+  `tool.action` and a call's is a call id, so no shared key exists; a step with no
+  running row of its name is correctly ignored, because a task's internal steps
+  have no bracket. `onToolActivity` fires for *every* raw record first, so the
+  ledger can show progress; `onToolResult` then sets the finished row's summary
+  line. Neither may send a payload to the transcript (above).
+- **Nothing here is permanent, and nothing is swept by hand.** Running entries
+  expire 90 s after their last activity (the worker's own task budget — a spinner
+  that outlives the work is the lie this surface exists to avoid), a finished tool
+  row after 12 s, a finished plan after 20 s. One `setTimeout` to the earliest
+  deadline drives it. `Home.tsx` calls `drain()` when `!session.isActive`, which
+  drops *running* entries only — the worker is gone and can never finish them —
+  and leaves settled rows to their normal TTL.
+- **The container query hides it, not a media query.** Opening the transcript
+  removes a grid track without changing a pixel of viewport, so `@container
+  (max-width: 460px)` is what makes the ledger disappear beside the avatar rather
+  than overlap it. Mirrors `.vision-deck` on the right: two corners, two questions
+  ("what is Lumine looking at" / "what is Lumine doing").
+- **The toast stack keeps errors and warnings only.** `handleToolResult` no longer
+  calls `notify`; `toolToast.ts` survives as the *reducer* (`summarizeToolResult`
+  gives the one readable line both the ledger row and any future surface draw),
+  and `check:tool-toast` still asserts it.
 
 ## Lazy loading, and why only two pages still use it
 
@@ -503,7 +543,7 @@ Already built:
 
 The frontend invokes Tauri agent lifecycle commands and listens for high-level
 runtime events. `useLumineVoice` drives a real LiveKit session; the transcript,
-emotion, notice and tool events reach the panel and the toasts.
+emotion, notice and tool events reach the panel, the stage ledger and the toasts.
 
 `npm run tauri build` completes and writes `src-tauri/target/release/lumine.exe`,
 with the Windows icon and version resources correctly embedded.

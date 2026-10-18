@@ -42,6 +42,13 @@ crash recovery, coordinate actions, file transfers, task intervention/replan, or
 an activity panel. Those are the proposed phases below, not claims about current
 behavior. Live-site evidence and limitations are recorded in `TEST_PLAN.md`.
 
+Search results are included in the search tool's bounded report, so a follow-up
+can act on a title already present rather than repeat the search. Submitting the
+same query while its results URL is still open reuses that page. The isolated
+browser launches at 960×680 with a dark appearance and background media
+suspension disabled; these launch defaults apply when Lumine owns a new browser,
+not when it joins an already-running Chromium process.
+
 ## Component map (what grows, what is added)
 
 ```text

@@ -70,14 +70,26 @@ export type VoiceToolEvent = {
    */
   index?: number;
   total?: number;
+  /**
+   * The task a `run_task` step belongs to, when this record is one.
+   *
+   * Present only on the steps of a multi-step task, and it is what groups them:
+   * `action` numbers a step *within* its call, and two tasks in a session would
+   * otherwise both produce a `step1`. The block's own header, status and
+   * duration come from the `run_task` call bracket, which carries no `taskId` —
+   * so "this is a task step" is `taskId !== undefined`, exactly as "this is a
+   * step rather than the call" is `action !== undefined`.
+   */
+  taskId?: string;
   /** A short status for the transcript. Never the tool's payload. */
   message: string;
   /**
-   * The tool's actual output, for a transient toast.
+   * The tool's actual output, for the transient surface that shows it.
    *
-   * Separate from `message` on purpose: the transcript accumulates and the toast
-   * does not, and the payload is the model's input rather than something said
-   * out loud. This is the one surface where showing it costs nothing and helps.
+   * Separate from `message` on purpose: the transcript accumulates and the
+   * stage ledger does not, and the payload is the model's input rather than
+   * something said out loud. This is the one surface where showing it costs
+   * nothing and helps.
    */
   payload?: string;
   timestamp: Date;
@@ -344,6 +356,8 @@ type ToolStatusPayload = {
   action?: string;
   index?: number;
   total?: number;
+  /** The task a `run_task` step belongs to. Named `task` on the wire. */
+  task?: string;
   message?: string;
   summary?: string;
   /** The payload, kept separate from `summary` so the transcript never shows it. */
@@ -545,6 +559,10 @@ function parseToolStatus(payload: unknown, sessionId: string): VoiceToolEvent | 
     durationMs: typeof event.duration_ms === "number" ? event.duration_ms : undefined,
     index: typeof event.index === "number" ? event.index : undefined,
     total: typeof event.total === "number" ? event.total : undefined,
+    // `task` is what the worker calls it; `taskId` is what this side calls it,
+    // because a field named `task` next to a `task` object in the store would be
+    // one name for two things.
+    taskId: typeof event.task === "string" && event.task.trim() ? event.task.trim() : undefined,
   };
 }
 

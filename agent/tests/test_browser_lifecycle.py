@@ -305,7 +305,7 @@ class LaunchPersistentTests(unittest.IsolatedAsyncioTestCase):
                 await session._launch_persistent(playwright, Path("C:/profile"))
         self.assertEqual(playwright.chromium.launch_persistent_context.await_count, 1)
 
-    async def test_the_launch_still_refuses_to_emulate_a_display(self):
+    async def test_the_launch_keeps_the_browser_defaults_and_no_viewport(self):
         """The flags moved with the retry, and this is what keeps them here.
 
         A source grep would go green while the flags were gone from the *call*;
@@ -313,16 +313,17 @@ class LaunchPersistentTests(unittest.IsolatedAsyncioTestCase):
         """
         context = object()
         playwright = self._playwright([context])
-        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
-                mock.patch.object(session, "_screen_size", return_value=(1366, 768)):
+        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0):
             await session._launch_persistent(playwright, Path("C:/profile"))
 
         _, kwargs = playwright.chromium.launch_persistent_context.await_args
         args = kwargs["args"]
         self.assertTrue(kwargs["no_viewport"])
-        self.assertIsNone(kwargs["color_scheme"])
+        self.assertEqual(kwargs["color_scheme"], "dark")
         self.assertFalse(kwargs["accept_downloads"])
         self.assertIn("--remote-debugging-port=0", args)
+        self.assertIn("--window-size=960,680", args)
+        self.assertIn("--disable-background-media-suspend", args)
         # The directory is positional, so it is in the args tuple not the
         # kwargs -- and compared as the code builds it, `str(Path(...))`, since
         # a forward-slash literal comes back with the platform's separators.

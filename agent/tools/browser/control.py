@@ -897,6 +897,19 @@ async def web_control(
             "url": clip(str(outcome.data.get("url") or snapshot.url), 90),
             "generation": snapshot.generation,
         }
+        if outcome.status == verification.OBSERVED:
+            try:
+                result_snapshot = snapshot if outcome.data.get("reused") else await _observe(
+                    engine_obj, gate=gate
+                )
+                payload["results"] = search.result_items(result_snapshot)
+                payload["generation"] = result_snapshot.generation
+            except Exception as exc:  # noqa: BLE001 - do not downgrade a verified search
+                logger.warning(
+                    "[web_control] search succeeded but result cards could not be read: %s",
+                    exc,
+                )
+                payload["results_error"] = clip(str(exc), 100)
         fields = outcome.data.get("fields")
         if fields:
             # A refusal that names something is retryable; one that says "there is

@@ -1,4 +1,4 @@
-"""One browser, many agents -- and a window that fits the screen.
+"""One browser, many agents -- and the user's display defaults.
 
 Two problems, both reported from using it rather than from reading it.
 
@@ -9,11 +9,8 @@ being signed into WhatsApp is the entire reason the browser exists -- so the loc
 cannot be avoided. It is worked with instead: the browser publishes a DevTools
 endpoint, and a later process *joins* it.
 
-**"The window looks odd -- it changes the theme and overflows my screen."** Measured
-rather than guessed: this machine's screen is 1366x768 and the page reported a
-viewport of 1422x800. Playwright substitutes a viewport and forces
-``color_scheme="light"``, so the window was genuinely larger than the display and
-every site rendered light on a machine set to dark.
+**"The window is too large and too bright."** The default is now 960x680 and dark,
+regardless of screen resolution or OS appearance.
 """
 
 from __future__ import annotations
@@ -35,45 +32,23 @@ def _free_port() -> int:
 
 
 class WindowGeometryTests(unittest.TestCase):
-    """The window has to fit the screen it is on."""
+    """The isolated browser opens at the requested default size."""
 
-    def test_the_window_is_sized_from_the_screen_not_from_a_default(self):
-        with mock.patch.object(session, "_screen_size", return_value=(1920, 1080)):
-            args = session._window_args()
+    def test_the_window_uses_the_960_by_680_default(self):
+        args = session._window_args()
         joined = " ".join(args)
-        self.assertIn("--window-size=1920,1020", joined)
+        self.assertIn("--window-size=960,680", joined)
         self.assertIn("--window-position=0,0", joined)
 
-    def test_the_height_leaves_room_for_the_taskbar(self):
-        # Flush against the bezel is what reads as "it overflows my screen".
-        with mock.patch.object(session, "_screen_size", return_value=(1366, 768)):
-            args = session._window_args()
-        size = next(a for a in args if a.startswith("--window-size="))[len("--window-size="):]
-        _, _, height = size.partition(",")
-        self.assertLess(int(height), 768)
-        self.assertGreater(int(height), 480)
-
-    def test_an_unknowable_screen_still_yields_a_usable_window(self):
-        with mock.patch.object(session, "_screen_size", return_value=(0, 0)):
-            args = " ".join(session._window_args())
-        width = int(args.split("--window-size=")[1].split(",")[0])
-        self.assertGreaterEqual(width, 640)
-
-    def test_no_viewport_and_no_forced_colour_scheme(self):
-        """The theme complaint, and the overflow, have one cause each.
-
-        Playwright's defaults substitute a viewport and force light. Both have to
-        be turned off explicitly -- ``None`` means "emulate nothing", which is what
-        any window the user opens does.
-        """
+    def test_the_browser_starts_dark_and_does_not_emulate_a_viewport(self):
         import inspect
 
-        # The launch arguments live in `_launch_persistent`, which `_start` calls:
-        # they moved there with the bounded retry for a profile lock, and a test
-        # that grepped `_start` would have gone green while the flags were gone.
         source = inspect.getsource(session._launch_persistent)
         self.assertIn("no_viewport=True", source)
-        self.assertIn("color_scheme=None", source)
+        self.assertIn('color_scheme="dark"', source)
+        flags = " ".join(session._window_args())
+        self.assertIn("--force-dark-mode", flags)
+        self.assertIn("--disable-background-media-suspend", flags)
         self.assertIn("_launch_persistent(", inspect.getsource(session._Browser._start))
 
 

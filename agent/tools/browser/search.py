@@ -134,6 +134,20 @@ def normalize_query(raw: object) -> str:
     return text[:MAX_QUERY_CHARS]
 
 
+def result_items(snapshot: state.Snapshot, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Return visible result titles needed to choose without searching again."""
+    return [
+        {
+            "index": item.index,
+            "kind": item.kind,
+            "title": item.title[:140],
+            **({"price": item.price[:60]} if item.price else {}),
+            **({"url": item.href[:200]} if item.href else {}),
+        }
+        for item in snapshot.items[: max(0, limit)]
+    ]
+
+
 def find_search_field(
     snapshot: state.Snapshot, payload: Any = None
 ) -> SearchField | None:
@@ -284,6 +298,22 @@ async def run_search(
         return verification.failed("search", "there was nothing to search for")
 
     where = hostname_of(snapshot.url) or "this page"
+    entry = sites.site_for(snapshot.url)
+    current = sites.current_query(snapshot.url)
+    if (
+        entry is not None
+        and sites.results_moved(snapshot.url, "", entry)
+        and current
+        and " ".join(current.casefold().split()) == " ".join(text.casefold().split())
+    ):
+        return verification.observed(
+            "search",
+            f"Already showing results for {text[:30]}",
+            evidence="the current results URL carries the same search query",
+            url=snapshot.url[:120],
+            typed=False,
+            reused=True,
+        )
 
     found = find_search_field(snapshot)
     if found is None:
@@ -379,5 +409,4 @@ async def run_search(
         url=after_url[:120],
         typed=True,
     )
-
 

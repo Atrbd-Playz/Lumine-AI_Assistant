@@ -279,8 +279,8 @@ function classifyConfig(event: AgentRuntimeEvent): ActivityEntry {
  * result text in it — that is what it is for. The `result` field is present in
  * this payload and is deliberately not read: a retrieved page rendered in a
  * timeline reads as though the model had been handed it, which is the shape a
- * prompt injection wants. The payload goes to the toast, which is transient and
- * not rendered.
+ * prompt injection wants. The payload goes to the stage ledger — transient,
+ * one line, and gone on its own — and never here, which accumulates.
  */
 function classifyTool(event: AgentRuntimeEvent): ActivityEntry {
   const status = text(event, "status") ?? "started";

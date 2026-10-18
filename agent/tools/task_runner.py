@@ -47,9 +47,9 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 
 try:
-    from ..runtime import router, task_engine, task_model, verification
+    from ..runtime import progress, router, task_engine, task_model, verification
 except ImportError:  # running as a top-level script with agent/ on sys.path
-    from runtime import router, task_engine, task_model, verification
+    from runtime import progress, router, task_engine, task_model, verification  # type: ignore[no-redef]
 
 try:
     from ..runtime import latency as latency_module
@@ -123,6 +123,18 @@ MAX_STEPS = 8
 #: facts it is handed.
 DEFAULT_BROWSER_VAR = "LUMINE_DEFAULT_BROWSER"
 OWN_BROWSER_VAR = "LUMINE_PREFER_OWN_BROWSER"
+
+#: The tool id whose call brackets a whole task, and the name every step record
+#: is published under.
+#:
+#: Two different things share one constant on purpose. The desktop app keys the
+#: step ledger's block off the `tool_status` record for *this* tool's call --
+#: its header, its status and its duration come from that bracket -- while the
+#: steps inside it carry `tool=TASK_TOOL` too so the app never has to decide
+#: whether a stray step belongs to the block it is drawing. The steps
+#: themselves are distinguished from the bracket by their `action`, exactly as
+#: a WhatsApp send's steps are from its own call.
+TASK_TOOL = "run_task"
 
 
 # -- machine facts ------------------------------------------------------------
@@ -647,6 +659,33 @@ async def _step_browser_search(ctx: StepContext) -> StepResult:
         # than the context the tool was handed.
         context=ctx.session,
     )
+    if outcome.status == verification.OBSERVED:
+        try:
+            result_payload = payload if outcome.data.get("reused") else await engine_obj.observe()
+            result_snapshot = (
+                gate.stamp(result_payload)
+                if gate is not None
+                else state.snapshot_from_script(snapshot.generation + 1, result_payload)
+            )
+            outcome = verification.observed(
+                outcome.action,
+                outcome.detail,
+                evidence=outcome.evidence,
+                **outcome.data,
+                results=browser_search.result_items(result_snapshot),
+            )
+        except Exception as exc:  # noqa: BLE001 - the search itself remains verified
+            logger.warning(
+                "[Task] search succeeded but its result cards could not be read: %s",
+                exc,
+            )
+            outcome = verification.observed(
+                outcome.action,
+                outcome.detail,
+                evidence=outcome.evidence,
+                **outcome.data,
+                results_error=clip(str(exc), 100),
+            )
     return StepResult(outcome, {"url": str(outcome.data.get("url") or "")})
 
 
@@ -1083,6 +1122,12 @@ def _plan_browser(route: router.Route, request: str, *, browser_open: bool = Fal
 
     found = _step("find_element", "Find the control", target, depends_on=depends)
     steps.append(found)
+    if re.search(r"\b(?:find|locate)\b", request, flags=re.IGNORECASE) and not re.search(
+        r"\b(?:open|click|press|choose|select|tap)\b",
+        request,
+        flags=re.IGNORECASE,
+    ):
+        return Plan(steps=steps, note="found the requested control on the current page")
     steps.append(
         _step(
             "browser_act",
@@ -1111,6 +1156,23 @@ def _search_query(request: str) -> str:
     if not match:
         return ""
     value = match.group(1).strip(" .?!\"'")
+    explicit_search = re.search(
+        r"\b(?:search\s+for|search\s+(?!box\b|field\b|bar\b|button\b|control\b|input\b)|look\s+up)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # "Find the search box" is a control lookup, while "search for a box" is a
+    # submitted query. When the target parser resolves a control, keep it on-page.
+    if _control_target(text) and not explicit_search:
+        return ""
+    # "search result(s), titled ..." refers to content already on the page, not
+    # a query to submit into its search box.
+    if re.match(
+        r"^(?:the\s+)?results?(?:\s*[,;:]|\s+(?:titled|called|named)\b)",
+        value,
+        flags=re.IGNORECASE,
+    ):
+        return ""
     # A trailing "on <site>" belongs to the *route*, not to the query. Leaving it
     # in would search YouTube for "a song on youtube".
     value = re.sub(
@@ -1175,24 +1237,34 @@ def _control_target(request: str) -> dict[str, Any]:
     text = str(request or "").strip()
     lowered = text.casefold()
 
+    quoted = re.search(r"[\"“”']([^\"“”']{2,80})[\"“”']", text)
+    if quoted:
+        return {"strategy": "text", "name": clip(quoted.group(1).strip(), 80)}
+
+    titled = re.search(
+        r"\b(?:title(?:d)?(?:\s+is)?|named|called)\s*[:,-]?\s*(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if titled:
+        name = titled.group(1).strip(" .?!\"'“”")
+        if name:
+            return {"strategy": "text", "name": clip(name, 80)}
+
     ordinal = _ordinal_words(lowered)
     if ordinal:
         # "video", "result", "link", "item", "row" are what people call the
         # things in a results column. A link is the honest role: a video result
         # on every site this product drives is a link.
         noun = next(
-            (word for word in ("video", "result", "link", "row", "item") if word in lowered),
+            (word for word in ("video", "result", "link", "row", "item", "one") if word in lowered),
             None,
         )
         if noun:
             return {"role": "link", "position": ordinal}
 
-    quoted = re.search(r"[\"“”']([^\"“”']{2,80})[\"“”']", text)
-    if quoted:
-        return {"strategy": "text", "name": clip(quoted.group(1).strip(), 80)}
-
     named = re.search(
-        r"\b(?:click|press|choose|select|open|tap)\s+(?:on\s+)?(?:the\s+)?([A-Za-z][\w '-]{1,40}?)\s*(?:button|link|field|box|tab|option|menu)\b",
+        r"\b(?:click|press|choose|select|open|tap|find)\s+(?:on\s+)?(?:the\s+)?([A-Za-z][\w '-]{1,40}?)\s*(?:button|link|field|box|tab|option|menu)\b",
         text,
         flags=re.IGNORECASE,
     )
@@ -1327,7 +1399,7 @@ async def execute(
             return result.outcome
         return result
 
-    observer = _observer(narration)
+    observer = _observer(narration, session)
     engine = task_engine.TaskEngine(runner, observer=observer)
 
     live = LiveTask(task=task, context=session, outputs=outputs)
@@ -1344,15 +1416,26 @@ async def execute(
     return task
 
 
-def _observer(narration: list[str] | None):
-    """Collect a handful of progress lines. Brief, because this is a voice turn.
+def _observer(narration: list[str] | None, session: Any = None):
+    """Collect a handful of progress lines, and publish every step as it moves.
 
-    Only steps that *acted* are narrated, and only the first few: a person
-    listening to a conversation does not want a running commentary on every
-    verification read, and the tool result carries the detail for anyone who looks.
+    Brief on the narration side, because this is a voice turn: only steps that
+    *acted* are narrated, and only the first few -- a person listening to a
+    conversation does not want a running commentary on every verification read,
+    and the tool result carries the detail for anyone who looks.
+
+    The publish side is not filtered like that. The desktop app draws a step
+    ledger on Lumine's stage while a task runs, and a ledger that showed three
+    of its six rows would be a list the reader cannot trust -- so every step is
+    sent, read steps included, with its position and the task it belongs to.
+    `session` is what reaches `progress.publish_step`; with none registered
+    there the publish is a no-op, which is the same guarantee every other tool's
+    steps have.
     """
 
     async def observe(event: str, task: task_model.Task, step: task_model.Step | None) -> None:
+        if step is not None:
+            _publish_task_step(session, task, step, event)
         if narration is None or step is None:
             return
         if event == "task_started":
@@ -1367,6 +1450,87 @@ def _observer(narration: list[str] | None):
             narration.append(f"{step.description or step.tool}: {step.error}")
 
     return observe
+
+
+#: Engine event -> the status the app's ledger understands.
+#:
+#: The engine's vocabulary is its own (`succeeded`, `cancelled`, `retry`) and
+#: the wire's is `progress`'s -- `started` / `done` / `failed`, the same three a
+#: tool call's steps already use, so one renderer reads a task's steps and a
+#: WhatsApp send's steps without a second mapping. `step_retry` maps to
+#: `started` rather than to its own status because a retry *is* the step running
+#: again; giving it a fourth status would draw a row nothing else produces.
+_TASK_STEP_STATUS: dict[str, str] = {
+    "step_started": "started",
+    "step_retry": "started",
+    "step_succeeded": "done",
+    "step_failed": "failed",
+    "step_cancelled": "failed",
+}
+
+
+def _publish_task_step(
+    session: Any, task: task_model.Task, step: task_model.Step, event: str
+) -> None:
+    """One step's movement, as a `tool_status` record on `lumine.tool`.
+
+    Never raises: this is called from inside the engine's observer, and a
+    telemetry line that could end a task is worse than no telemetry -- which is
+    the argument `progress` itself is built on, and `_notify` wraps this call
+    besides.
+
+    Three fields are what make the ledger possible rather than merely
+    possible-looking:
+
+    - ``action`` is ``step<n>``, 1-based *by identity* against ``task.steps``.
+      Steps are concurrent for reads, so the order records arrive in is not the
+      order they were planned in, and a counter maintained here would credit the
+      wrong row. The position is a fact about the plan; it is looked up, not
+      counted.
+    - ``total`` is the plan's whole length, so the app can draw the steps that
+      have not started yet as pending instead of growing the list under the
+      reader one row at a time.
+    - ``task`` is the task's id, which is what groups the rows into one block
+      and ties them to the `run_task` call bracketing the whole run.
+
+    ``duration_ms`` is passed only once the step has really ended -- ``0.0`` is
+    falsy and becomes ``None``, so a running step never claims to have taken no
+    time, which would read as "instant" rather than as "not yet".
+    """
+    status = _TASK_STEP_STATUS.get(event)
+    if status is None:
+        # `task_started` / `task_finished` carry no step, so this is only ever
+        # an event the table above deliberately does not draw.
+        return
+    index = 0
+    for position, item in enumerate(task.steps, start=1):
+        if item is step or item.id == step.id:
+            index = position
+            break
+    if not index:
+        # A step from some other plan. Drawing it without a position would put
+        # an unnumbered row in a numbered list, so it is dropped instead.
+        return
+    label = step.description or step.tool
+    if event == "step_retry":
+        message = f"{label} -- retrying"
+    elif event == "step_cancelled":
+        message = f"{label} -- cancelled"
+    elif event == "step_failed" and step.error:
+        message = f"{label}: {step.error}"
+    else:
+        message = label
+    progress.publish_step(
+        session,
+        tool=TASK_TOOL,
+        action=f"step{index}",
+        message=message,
+        index=index,
+        total=len(task.steps),
+        status=status,
+        duration_ms=step.duration_ms or None,
+        task=task.id,
+    )
 
 
 # -- reporting -----------------------------------------------------------------
@@ -1397,6 +1561,7 @@ async def measure_route(session: Any, brief: str) -> tuple[router.Route, router.
     facts = await machine_facts()
     facts_ms = (time.monotonic() - started) * 1000
     route = router.classify(brief, facts, tools=set(tools_permission.enabled_tool_ids()))
+    route = prefer_open_browser_for_control(route, facts, brief)
     total_ms = (time.monotonic() - started) * 1000
     _emit_latency(
         session,
@@ -1407,6 +1572,38 @@ async def measure_route(session: Any, brief: str) -> tuple[router.Route, router.
         facts_ms=round(facts_ms, 1),
     )
     return route, facts, total_ms
+
+
+def prefer_open_browser_for_control(
+    route: router.Route, facts: router.MachineFacts, request: str
+) -> router.Route:
+    """Keep a page-target request in the browser when its title trips window routing."""
+    if (
+        route.environment != router.DESKTOP
+        or route.reason != "asked to arrange or close a window"
+        or not facts.browser_open
+        or not _control_target(request)
+        or not re.search(r"\b(?:open|click|select|choose|tap|play|watch)\b", request, re.IGNORECASE)
+        or re.search(
+            r"\b(?:on|in)\s+(?:my|the|our)\s+(?:desktop|computer|laptop|pc|mac|machine)\b",
+            request,
+            flags=re.IGNORECASE,
+        )
+    ):
+        return route
+
+    enabled = set(tools_permission.enabled_tool_ids())
+    browser_tool = next((tool for tool in ("browse", "web_control") if tool in enabled), "")
+    if not browser_tool:
+        return route
+
+    return router.Route(
+        router.BROWSER,
+        tool=browser_tool,
+        reason="the request targets a control on the page already open",
+        alternatives=(router.DESKTOP,),
+        notes={"reused_open_page": True},
+    )
 
 
 # -- reporting -----------------------------------------------------------------
@@ -1427,6 +1624,18 @@ def report(task: task_model.Task, route: router.Route) -> str:
                 "status": step.status,
                 "verified": step.outcome.status if step.outcome else "requested",
                 **({"note": clip(step.error or step.outcome.detail, 80)} if (step.error or (step.outcome and step.outcome.detail)) else {}),
+                **(
+                    {
+                        "results": step.outcome.data.get("results", []),
+                        **(
+                            {"results_error": clip(step.outcome.data["results_error"], 100)}
+                            if step.outcome.data.get("results_error")
+                            else {}
+                        ),
+                    }
+                    if step.tool == "browser_search" and step.outcome is not None
+                    else {}
+                ),
             }
             for step in task.steps
         ],
