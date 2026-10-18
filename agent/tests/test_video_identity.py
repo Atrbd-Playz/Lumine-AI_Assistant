@@ -243,12 +243,13 @@ class RememberTests(unittest.IsolatedAsyncioTestCase):
                 "title": "a song - YouTube",
                 "url": "https://www.youtube.com/results?search_query=a+song",
                 "text": "",
-                "controls": [
-                    {"ref": "r1", "tag": "a", "href": watch(REAL_ID)},
-                    {"ref": "r2", "tag": "a", "href": watch(INVENTED_ID)},
-                    {"ref": "r3", "tag": "button", "href": ""},
-                    {"ref": "r4", "tag": "a", "href": "https://example.com/other"},
+                "candidates": [
+                    {"ref": "r1", "tag": "a", "detail": {"href": watch(REAL_ID)}},
+                    {"ref": "r2", "tag": "a", "detail": {"href": watch(INVENTED_ID)}},
+                    {"ref": "r3", "tag": "button", "detail": {"href": ""}},
+                    {"ref": "r4", "tag": "a", "detail": {"href": "https://example.com/other"}},
                 ],
+                "items": [],
             }
 
         page.evaluate = _evaluate

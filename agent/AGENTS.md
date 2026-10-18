@@ -560,12 +560,10 @@ Platform-specific considerations that should be isolated later include:
 - [x] `close_others` is its own operation, and tab numbers identify a tab rather than
       counting the list — `close 1` leaves 2 and 3, so a stale number cannot come to
       mean a different page
-- [x] `_window_args()` disables `CalculateNativeWinOcclusion`. Chromium asks the
-      window server whether a window is fully covered and answers yes for one
-      behind the Lumine app; occluded windows get throttling the timer flags do
-      not cover. Playwright already passes the timer, occluded-window and
-      renderer backgrounding switches — read out of the driver's own switch list —
-      but nothing about native occlusion
+- [x] A Lumine-owned browser starts at `960x680` with a dark appearance and
+      `--disable-background-media-suspend`, alongside the renderer/occlusion
+      throttling flags. These launch defaults do not alter a Chromium instance
+      Lumine joins over CDP.
 - [x] The browser has **tabs**, and each keeps the references it was read with.
       `_Browser._tabs` holds every page the model may look at; the old rule adopted a
       new page and closed the previous one, so a popup was a *replacement* and "open

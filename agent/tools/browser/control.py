@@ -54,7 +54,7 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
     from runtime.permission_gate import require_approval
 
 try:
-    from ..tool_results import as_payload, wrap_untrusted
+    from ..tool_results import MAX_PAGE_READ_CHARS, as_payload, wrap_untrusted
     from ..tools_compat import RunContext, ToolError, function_tool
     from ..tools_text import clip
     from . import locators, preview, search, session as browser_session, state
@@ -68,11 +68,14 @@ try:
         hostname_of,
         is_search_control,
         normalize_key,
+        normalize_scroll,
         normalize_url,
+        observe_payload,
+        unknown_action_message,
     )
     from .engine import EngineAction, EngineError, GenerationGate, build_engine
 except ImportError:  # running as a top-level script with agent/ on sys.path
-    from tool_results import as_payload, wrap_untrusted
+    from tool_results import MAX_PAGE_READ_CHARS, as_payload, wrap_untrusted  # type: ignore[no-redef]
     from tools_compat import RunContext, ToolError, function_tool
     from tools_text import clip
     from browser import locators, preview, search, session as browser_session, state
@@ -86,7 +89,10 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
         hostname_of,
         is_search_control,
         normalize_key,
+        normalize_scroll,
         normalize_url,
+        observe_payload,
+        unknown_action_message,
     )
     from browser.engine import EngineAction, EngineError, GenerationGate, build_engine
 
@@ -112,6 +118,7 @@ ACTIONS: tuple[str, ...] = (
     "check",
     "uncheck",
     "drag",
+    "scroll",     # move the viewport; no control, no reference
     "back",
     "forward",
     "reload",
@@ -129,11 +136,31 @@ ACTIONS: tuple[str, ...] = (
 #: `tab` now covers the browser's, and `tabs` is kept as an alias for the page's
 #: rather than silently becoming the other one: a caller that still says "tabs"
 #: gets what it used to get, and the collision is gone rather than moved.
-VERB_ALIASES: dict[str, str] = {"tabs": "pagetabs"}
+#:
+#: The rest are words a model reaches for before it reaches for ours, and every
+#: one of them is a *refusal* it has to recover from on a voice turn. "goto" and
+#: "navigate" are `open`; "look" and "inspect" are `read`; "choose" and "pick"
+#: are `select`. Aliases rather than removals, so a verb nobody has to learn
+#: still lands on the one that exists.
+VERB_ALIASES: dict[str, str] = {
+    "tabs": "pagetabs",
+    "goto": "open",
+    "navigate": "open",
+    "visit": "open",
+    "go_to": "open",
+    "extract": "read",
+    "get": "read",
+    "look": "read",
+    "inspect": "read",
+    "choose": "select",
+    "pick": "select",
+}
 
 #: Verbs that only read. Everything here changes no state on the page, so it is
-#: ``read`` by the same argument `browse` uses for `open`.
-READ_ACTIONS = frozenset({"open", "read", "find", "back", "forward", "reload", "tab", "pagetabs", "state", "screenshot"})
+#: ``read`` by the same argument `browse` uses for `open`. `scroll` belongs here
+#: for the same reason `back` and `forward` do: it moves the *viewport*, which is
+#: the reader's own position, and nothing on the page changes.
+READ_ACTIONS = frozenset({"open", "read", "find", "scroll", "back", "forward", "reload", "tab", "pagetabs", "state", "screenshot"})
 
 #: `search` is absent from `READ_ACTIONS` on purpose, and it is the only verb
 #: whose class is computed rather than fixed: typing and submitting a query moves
@@ -156,7 +183,20 @@ ELEMENT_ACTIONS = frozenset({"click", "double_click", "right_click", "press", "s
 #: returned as a description plus the bytes -- never as an unbounded payload.
 SCREENSHOT_CHARS = 120
 
+#: How a `read` splits its one budget between the page's text and its controls.
+#: Both are here rather than inline because the two numbers are not independent:
+#: they have to add up under `MAX_PAGE_READ_CHARS`, and two call sites that each
+#: chose "a reasonable amount" were how the payload arrived cut through the
+#: middle of the control list. The text half leads because it is where the
+#: region read puts the thing the user actually asked about -- the price -- and
+#: the control half is what the model needs to *act* on the page afterwards.
+#: 1,200 + 20 controls at ~60 characters is comfortably inside the ceiling, so
+#: `as_payload` has to cut neither.
+MAX_READ_CONTROLS = 20
+READ_TEXT_CHARS = 1200
+
 MSG_BAD_ACTION = "Tell me one of: " + ", ".join(ACTIONS) + "."
+MSG_BAD_SCROLL = "Tell me where to scroll: down, up, top, or bottom. Nothing moved."
 MSG_NO_URL = "Tell me which page to open."
 MSG_BAD_URL = "I can only open web addresses (http or https) -- I won't open that. Nothing was shown."
 MSG_BAD_QUERY = "Tell me which control: its name, or a role and a name."
@@ -212,7 +252,16 @@ def _tab_sentence(op: str, data: dict, rows: list[dict]) -> str:
 
 
 def _payload(**fields: Any) -> str:
-    return wrap_untrusted(as_payload(fields))
+    """A page read, under the *page* ceiling rather than the global one.
+
+    Every result here is a read of a page, and the global 800-character ceiling
+    was cutting them mid-structure: `read` alone asks for text plus a control
+    list, and `as_payload` answered by halving the list, so the model received
+    four controls and no way to know there were twenty. The larger ceiling is
+    still a ceiling -- a read joins the context permanently and is re-billed on
+    every later turn -- so it applies to this path and nothing else.
+    """
+    return wrap_untrusted(as_payload(fields, max_chars=MAX_PAGE_READ_CHARS))
 
 
 def _failure(action: str, detail: str) -> ToolError:
@@ -351,8 +400,8 @@ async def web_control(
     question: this starts a real browser window.
 
     Actions: open, read, find, search, click, double_click, right_click, hover,
-    focus, fill, clear, type, press, select, check, uncheck, drag, back, forward,
-    reload, tab, pagetabs, state, screenshot, close.
+    focus, fill, clear, type, press, select, check, uncheck, drag, scroll, back,
+    forward, reload, tab, pagetabs, state, screenshot, close.
 
     "tab" is the browser's own tabs, same as `browse`: say nothing to list them,
     "new" to open one (give the address in url), a tab's number to switch to it,
@@ -364,6 +413,13 @@ async def web_control(
     **"open" reuses the tab in use; "tab new" adds one.** When the user wants to
     keep what is on screen, use "tab new" with the url -- "open" navigates the
     current tab and throws the page away.
+
+    **"read" shows the part of the page in view, not the top of it**, and its
+    payload's `scroll` says how far down you are and how much page is left. To
+    read further down: scroll, then read again. A read whose text *and*
+    `scroll.y` match the last one means nothing moved -- scroll further rather
+    than reading it again; what the user asked about (a price, a spec, a date)
+    is usually below the fold.
 
     Every read says which tab it read, so you never have to ask.
 
@@ -380,8 +436,9 @@ async def web_control(
         role: What kind of control: button, link, textbox, searchbox, checkbox,
             radio, combobox, listbox, option, tab, menuitem, heading, image,
             video, slider.
-        text: What to search for on action "search", or the text to type, fill,
-            choose, or drag direction ("down 300").
+        text: What to search for on action "search", the text to type, fill,
+            choose, or drag direction ("down 300"), or where to scroll on action
+            "scroll" -- "down", "up", "top", or "bottom".
         key: The key to press, for action "press".
         strategy: How to read `name`: label, placeholder, alt, title, text,
             value, or css. Defaults to label.
@@ -401,7 +458,11 @@ async def web_control(
     normalized = str(action or "").strip().lower().replace(" ", "_").replace("-", "_")
     normalized = VERB_ALIASES.get(normalized, normalized)
     if normalized not in ACTIONS:
-        raise ToolError(MSG_BAD_ACTION)
+        # The dynamic sentence rather than the constant: it names the likely
+        # verb first (`scoll` is `scroll`), which is the half a model can act on
+        # during a voice turn. `MSG_BAD_ACTION` stays the module's own record of
+        # the surface and is still what the tool documents.
+        raise ToolError(unknown_action_message(action, ACTIONS))
 
     engine_obj = engine()
     gate = getattr(engine_obj, "gate", None)
@@ -459,13 +520,34 @@ async def web_control(
         raw = await engine_obj.observe()
         snapshot = _stamp(raw, gate)
         if normalized == "read":
+            # Text and controls are budgeted *together*, on purpose. The read
+            # ceiling is one number for the whole payload, so clipping the text
+            # to 300 and the controls to 8 was two independently-reasonable
+            # choices that summed to a page nobody could act on: the region read
+            # put the price in the text and the clip threw it away, and eight
+            # controls was a page's header. These two numbers add up under the
+            # ceiling, so `as_payload` has to cut neither.
             return _payload(
                 title=clip(snapshot.title, 70),
                 url=clip(snapshot.url, 90),
-                text=clip(snapshot.text, 300),
+                text=clip(snapshot.text, READ_TEXT_CHARS),
                 generation=snapshot.generation,
-                controls=[item.to_dict() for item in snapshot.candidates[:8]],
+                controls=[item.to_dict() for item in snapshot.candidates[:MAX_READ_CONTROLS]],
                 count=len(snapshot.candidates),
+                items=[item.to_dict() for item in snapshot.items[:8]],
+                # The per-site extraction, when the page's own map has one. A
+                # price under a stable name rather than a number inside a
+                # paragraph -- see `site_map`.
+                **({"fields": snapshot.fields} if snapshot.fields else {}),
+                # Where the windowed text was read from. `read` is the same
+                # windowed read `browse observe` makes, and a text with no
+                # position beside it cannot be followed up with "scroll and
+                # read again" -- the model has no number to check moved.
+                **(
+                    {"scroll": raw["scroll"]}
+                    if isinstance(raw.get("scroll"), dict)
+                    else {}
+                ),
                 **(await _tabs_note(engine_obj)),
             )
         query = _query(
@@ -511,6 +593,52 @@ async def web_control(
             url=clip(str(page.get("url") or ""), 90),
             generation=snapshot.generation,
         )
+
+    # -- scroll ---------------------------------------------------------------
+    #
+    # A read by the rule that makes `back` and `forward` reads: it moves the
+    # *viewport*, which is the reader's own position, and nothing on the page
+    # changes. It belongs here rather than in `browse` only because a model
+    # already inside `web_control` had no way to move down a page at all -- it
+    # reached for `open` (destroying the page) or re-read the same viewport and
+    # got the same answer twice, which is the reported failure.
+    if normalized == "scroll":
+        try:
+            direction = normalize_scroll(text)
+        except ValueError:
+            raise ToolError(MSG_BAD_SCROLL) from None
+        await require_approval(
+            context,
+            tool="web_control",
+            action="scroll",
+            action_class="read",
+            summary=f"Scroll the page {direction}",
+        )
+        try:
+            data = await browser_session.scroll_page(direction)
+        except ToolError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - translated by the tool
+            raise EngineError(f"I could not scroll: {str(exc)[:120]}") from None
+        if not data.get("scrolled"):
+            # Honest about a page that has nothing below it. "Scrolled" about a
+            # page that never moved is a claim with nothing behind it, and the
+            # model would re-ask instead of reading what is already on screen.
+            return _payload(scrolled=False, note="That page fits on screen -- there is nothing to scroll.")
+        landed = int(data.get("y") or 0)
+        limit = int(data.get("max") or 0)
+        note = {
+            "top": "Scrolled to the top of the page.",
+            "bottom": "Scrolled to the bottom of the page.",
+            "up": "Scrolled up." + (" That is the top of the page." if landed <= 0 else ""),
+        }.get(direction)
+        if note is None:
+            note = "Scrolled down." + (" That is the bottom of the page." if landed >= limit else "")
+        # The generation is *not* bumped and no new snapshot is taken: the
+        # document is unchanged, so every reference the model already holds is
+        # still valid. That is the whole reason this is its own verb rather than
+        # something the model fakes with a re-read.
+        return _payload(scrolled=True, at=int(landed), max=int(limit), note=note)
 
     if normalized == "pagetabs":
         await require_approval(
@@ -769,6 +897,19 @@ async def web_control(
             "url": clip(str(outcome.data.get("url") or snapshot.url), 90),
             "generation": snapshot.generation,
         }
+        if outcome.status == verification.OBSERVED:
+            try:
+                result_snapshot = snapshot if outcome.data.get("reused") else await _observe(
+                    engine_obj, gate=gate
+                )
+                payload["results"] = search.result_items(result_snapshot)
+                payload["generation"] = result_snapshot.generation
+            except Exception as exc:  # noqa: BLE001 - do not downgrade a verified search
+                logger.warning(
+                    "[web_control] search succeeded but result cards could not be read: %s",
+                    exc,
+                )
+                payload["results_error"] = clip(str(exc), 100)
         fields = outcome.data.get("fields")
         if fields:
             # A refusal that names something is retryable; one that says "there is

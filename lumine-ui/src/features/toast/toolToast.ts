@@ -9,16 +9,19 @@
  * it. Two toasts for one action reads as two things happening, and the second one
  * covered the first before it could be read.
  *
- * So the status toast is gone and this is the only one. That is a deliberate
- * reduction, not a formatting tweak: the remaining toast has one job, which is to
- * say what the tool was and give one line of what came back.
+ * Both toasts are gone now, and the surface is the **stage ledger** — the left
+ * of the avatar, where a live list updates in place. This module is still the
+ * reducer, because the question is unchanged: what is the one line a person
+ * should read for this call? The ledger draws it on the call's own row; the
+ * toast stack keeps only errors and warnings, which are the things that
+ * actually interrupt.
  *
  * ## Why the payload is reduced rather than shown
  *
  * A tool result is keyed JSON, and the worker's own cap is 800 characters, because
- * the result is re-sent to the model on every later turn. Rendering it verbatim in
- * a toast puts a wall of machine syntax in front of someone who asked a question
- * in a sentence, and it is a wall they cannot act on — the answer is in there
+ * the result is re-sent to the model on every later turn. Rendering it verbatim
+ * puts a wall of machine syntax in front of someone who asked a question in a
+ * sentence, and it is a wall they cannot act on — the answer is in there
  * somewhere, but they would have to read past the wrapper to find it.
  *
  * ## What is stripped

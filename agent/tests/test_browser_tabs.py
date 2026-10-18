@@ -172,6 +172,33 @@ class TabRequestTests(unittest.TestCase):
 
 
 class TabRegistryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_joining_does_not_navigate_an_existing_page_to_blank(self):
+        existing = FakePage("https://www.youtube.com/")
+        new_page = FakePage()
+        context = SimpleNamespace(
+            pages=[existing],
+            new_page=mock.AsyncMock(return_value=new_page),
+        )
+
+        selected = await session._joined_start_page(context)
+
+        self.assertIs(selected, new_page)
+        self.assertEqual(existing.url, "https://www.youtube.com/")
+        self.assertEqual(existing.navigations, [])
+        context.new_page.assert_awaited_once_with()
+
+    async def test_joining_reuses_an_existing_blank_tab(self):
+        existing = FakePage()
+        context = SimpleNamespace(
+            pages=[FakePage("https://www.youtube.com/"), existing],
+            new_page=mock.AsyncMock(),
+        )
+
+        selected = await session._joined_start_page(context)
+
+        self.assertIs(selected, existing)
+        context.new_page.assert_not_awaited()
+
     async def test_a_second_tab_gets_its_own_number_and_its_own_document(self):
         browser = _browser_with(FakePage("https://one.example/"))
         first = browser._active

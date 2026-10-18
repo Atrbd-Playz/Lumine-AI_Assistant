@@ -21,6 +21,8 @@ into a filter box that was never a search box.
 * ``submit`` -- a selector for the control that runs the search, tried second.
 * ``results`` -- a substring or host fragment the *results* URL is known to
   carry, used only to confirm the search actually went somewhere.
+* ``query_param`` -- the URL parameter that identifies a search already showing,
+  so an identical request can reuse the live results page.
 
 No entry constructs a search URL. The whole point is that the search runs through
 the page's own UI, so what comes back is what a person would have got.
@@ -35,6 +37,7 @@ nothing. A caller gets a list and decides.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import parse_qs, urlsplit
 
 #: Markers in a control's label that mean "this is where you search". Ordered by
 #: strength: an exact match is a search box, and a word inside a longer label is
@@ -55,6 +58,7 @@ class SiteSearch:
     #: A fragment the results URL is known to contain. Empty means "the URL
     #: changed, which is all we will claim".
     results: str = ""
+    query_param: str = ""
 
 
 SITES: tuple[SiteSearch, ...] = (
@@ -67,6 +71,7 @@ SITES: tuple[SiteSearch, ...] = (
         input='input[name="search_query"]',
         submit='button[aria-label*="Search" i], button[title*="Search" i], form[role="search"] button',
         results="/results",
+        query_param="search_query",
     ),
     SiteSearch(
         name="google",
@@ -74,6 +79,7 @@ SITES: tuple[SiteSearch, ...] = (
         input='textarea[name="q"], input[name="q"]',
         # Google has no search button: Enter is the only submit there is.
         results="q=",
+        query_param="q",
     ),
     SiteSearch(
         name="maps",
@@ -90,6 +96,7 @@ SITES: tuple[SiteSearch, ...] = (
         input='#twotabsearchtextbox, input[name="field-keywords"]',
         submit='#nav-search-submit-button, input[name="go"]',
         results="/s?",
+        query_param="k",
     ),
     SiteSearch(
         name="reddit",
@@ -97,12 +104,14 @@ SITES: tuple[SiteSearch, ...] = (
         input='input[name="q"], input[placeholder*="Search" i]',
         submit='button[type="submit"]',
         results="/search",
+        query_param="q",
     ),
     SiteSearch(
         name="github",
         hosts=("github.com",),
         input='input[name="q"], input[data-target*="search"]',
         results="?q=",
+        query_param="q",
     ),
     SiteSearch(
         name="wikipedia",
@@ -110,12 +119,14 @@ SITES: tuple[SiteSearch, ...] = (
         input='#searchInput, input[name="search"]',
         submit='button[type="submit"]',
         results="?search=",
+        query_param="search",
     ),
     SiteSearch(
         name="x",
         hosts=("x.com", "twitter.com"),
         input='input[data-testid="SearchBox_Search_Input"], input[placeholder*="Search" i]',
         submit='button[data-testid="SearchBox_Search_Button"]',
+        query_param="q",
     ),
 )
 
@@ -185,3 +196,16 @@ def results_moved(url: object, before_url: object, entry: SiteSearch | None) -> 
     if was and after and was != after:
         return True
     return not was and bool(after)
+
+
+def current_query(url: object) -> str:
+    """Read the search query from a known site's results URL, if available."""
+    text = str(url or "")
+    entry = site_for(text)
+    if entry is None or not entry.query_param:
+        return ""
+    try:
+        values = parse_qs(urlsplit(text).query).get(entry.query_param, ())
+    except ValueError:
+        return ""
+    return " ".join(str(values[0]).split()) if values else ""

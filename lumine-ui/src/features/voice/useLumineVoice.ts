@@ -92,7 +92,7 @@ export type VoiceToolResult = {
   name: string;
   status: "completed" | "failed";
   /**
-   * The tool's actual output. Goes to a toast, never into the transcript.
+   * The tool's actual output. Goes to the stage ledger, never into the transcript.
    *
    * Empty for a failure that produced none, which is why this is delivered for
    * every finished call rather than only the ones that carry data.
@@ -108,10 +108,30 @@ export type UseLumineVoiceOptions = {
   onEmotion?: (emotion: LumineEmotionIntent) => void;
   onToolEvent?: (event: ConversationToolEvent) => void;
   /**
+   * Every `tool_status` record as it arrives, before anything decides what it
+   * is for.
+   *
+   * The third of three callbacks, and the difference between this one and the
+   * other two is *when* it fires, not *what* it carries:
+   *
+   * - `onToolEvent` fires once per record with the payload already stripped,
+   *   and only for what the transcript draws.
+   * - `onToolResult` fires once per *finished call* — never per step, so a
+   *   six-step send reports itself once.
+   * - `onToolActivity` fires for **every** record: started, done, failed, and
+   *   every step in between, carrying the full `VoiceToolEvent`.
+   *
+   * The stage's step ledger needs exactly that: a running step has no payload
+   * and is not a finished call, so neither of the other two would ever deliver
+   * it. Deliberately *not* given the payload separately either — `VoiceToolEvent`
+   * already has it, and this consumer decides on its own whether to read it.
+   */
+  onToolActivity?: (event: VoiceToolEvent) => void;
+  /**
    * A tool's output, delivered separately from `onToolEvent`.
    *
    * Two callbacks rather than one wider event because the two go to different
-   * places: the transcript accumulates and the toast does not, and the payload is
+   * places: the transcript accumulates and the ledger does not, and the payload is
    * the model's input rather than something anyone said. Keeping `payload` off
    * `ConversationToolEvent` leaves no path by which it reaches the transcript by
    * accident.
@@ -152,16 +172,20 @@ export type UseLumineVoiceOptions = {
   onError: (message: string) => void;
 };
 
-export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEvent, onToolResult, onNotice, onPermission, onBrowserPreview, onScreenState, interruptionMode = DEFAULT_INTERRUPTION_MODE, onError }: UseLumineVoiceOptions) {
+export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEvent, onToolActivity, onToolResult, onNotice, onPermission, onBrowserPreview, onScreenState, interruptionMode = DEFAULT_INTERRUPTION_MODE, onError }: UseLumineVoiceOptions) {
   const managerRef = useRef<LumineVoiceManager | null>(null);
   const interruptionModeRef = useRef(interruptionMode);
   const onToolResultRef = useRef(onToolResult);
+  const onToolActivityRef = useRef(onToolActivity);
   const onPermissionRef = useRef(onPermission);
   const onBrowserPreviewRef = useRef(onBrowserPreview);
   const onScreenStateRef = useRef(onScreenState);
   useEffect(() => {
     onToolResultRef.current = onToolResult;
   }, [onToolResult]);
+  useEffect(() => {
+    onToolActivityRef.current = onToolActivity;
+  }, [onToolActivity]);
   useEffect(() => {
     onPermissionRef.current = onPermission;
   }, [onPermission]);
@@ -192,6 +216,12 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
         onUpdateMessage: (id, changes) => onUpdateMessage(id, changes as Partial<Omit<ConversationMessage, "id">>),
         onEmotion: (nextEmotion) => { setEmotion(nextEmotion); onEmotion?.(nextEmotion); },
         onToolEvent: (event: VoiceToolEvent) => {
+          // First, unfiltered: the stage's ledger draws every record — the
+          // started, the running step, the finished call — and it is the one
+          // consumer that must not be narrowed before it sees them. Read from
+          // the ref because the manager is constructed once and a first-render
+          // closure would deliver the task to whoever the component was then.
+          onToolActivityRef.current?.(event);
           // A progress step reuses `started`/`failed` and closes with its own
           // `done`, so it is mapped onto the three statuses this surface knows
           // before it goes anywhere. Steps reach the activity timeline — which
@@ -207,16 +237,17 @@ export function useLumineVoice({ onMessage, onUpdateMessage, onEmotion, onToolEv
             durationMs: event.durationMs,
           };
           onToolEvent?.(conversationEvent);
-          // Only a whole call raises a toast. A six-step send would raise six,
-          // which is the "two signals for one action" problem below at six times
-          // the scale — and the payload belongs to the call, not to a step.
+          // Only a whole call reports a result. A six-step send would report
+          // six, which is the "two signals for one action" problem below at six
+          // times the scale — and the payload belongs to the call, not to a step.
           if (!event.action && event.status !== "started") {
             // Fires for every finished call, payload or not.
             //
             // It used to fire only when a payload was present, which left a failed
             // tool with no payload reporting itself nowhere. The fix is here rather
             // than at the call site so that exactly one signal per tool call exists
-            // to report: two signals is what produced two toasts for one action.
+            // to report: two signals is what produced two notifications for one
+            // action.
             onToolResultRef.current?.({
               name: event.name,
               status: toFinishedStatus(event),

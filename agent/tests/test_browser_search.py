@@ -244,6 +244,24 @@ class RunSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(outcome.data["typed"])
         self.assertFalse(verification.succeeded(outcome.status))
 
+    async def test_the_same_query_on_the_current_results_page_is_reused(self):
+        url = "https://www.youtube.com/results?search_query=lo-fi+focus"
+        engine = FakeEngine(FakePage(url))
+        snap = snapshot(url, [candidate(1, "search")])
+        outcome = await search.run_search(engine, snap, "Lo-Fi Focus")
+        self.assertEqual(outcome.status, verification.OBSERVED)
+        self.assertTrue(outcome.data["reused"])
+        self.assertFalse(outcome.data["typed"])
+        self.assertEqual(engine.acted, [])
+
+    async def test_a_different_query_on_the_current_results_page_is_not_reused(self):
+        url = "https://www.youtube.com/results?search_query=lo-fi+focus"
+        engine = FakeEngine(FakePage(url))
+        snap = snapshot(url, [candidate(1, "search")])
+        outcome = await search.run_search(engine, snap, "ambient rain")
+        self.assertFalse(outcome.data.get("reused", False))
+        self.assertTrue(engine.acted)
+
     async def test_the_generation_is_carried_so_a_moved_page_refuses(self):
         engine = FakeEngine(FakePage("https://example.com/"))
         snap = snapshot("https://example.com/", [candidate(1, "search")], generation=42)

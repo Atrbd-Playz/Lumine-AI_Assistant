@@ -26,6 +26,13 @@ tauri-plugin-opener = "2"
 # a different process -- cannot use. No capability is granted to the frontend;
 # `media.rs` calls it from Rust and exposes an ordinary command.
 tauri-plugin-dialog = "2"
+# System notifications for approval questions, so an approval reaches a person
+# who is looking somewhere else. The buttons are the reason: an action type is
+# registered and its Allow / Not now press comes back on the plugin's `action`
+# event with the request id in `extra`, which is the same `approve` / `deny`
+# answer the in-app card sends -- the worker cannot tell them apart, and does not
+# need to.
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Credential storage for the AI Control Center. Default features select

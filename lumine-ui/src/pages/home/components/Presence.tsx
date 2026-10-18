@@ -6,6 +6,7 @@ import { recommendedEyeMode } from "../../../components/avatar/expressiveEyePath
 import { expressionSpec } from "../../../components/avatar/expressions";
 import { ExpressionEffects } from "../../../components/avatar/ExpressionEffects";
 import type { LumineActivity, LumineEmotion, LumineEmotionIntent } from "../../../components/avatar/avatarTypes";
+import type { ExpressionEffect } from "../../../components/avatar/expressions";
 import type { LumineState } from "../types";
 import { clamp } from "../utils";
 
@@ -31,16 +32,78 @@ const DEFAULT_REACTION_HOLD_MS = 3000;
  * begun working. `error` is a downcast rather than a neutral, because a failed
  * call that looks exactly like a resting one is indistinguishable from a call
  * nobody made.
+ *
+ * The other two are the ones a person actually spends the session in, and both
+ * used to be `neutral` — which is the identity pose, so *listening* and
+ * *speaking* were the two states with no face at all. They are the states the
+ * complaint was about. `listening` is now `alert`: wide eyes, lifted, the
+ * attentive face, which is what a person does when they are waiting for the rest
+ * of a sentence. `speaking` is `amused` — a soft smile under an open eye, so the
+ * mouth's work is not the only expression on screen while she talks.
  */
 const stateEmotion: Record<LumineState, LumineEmotion> = {
   idle: "neutral",
   connecting: "curious",
   online: "happy",
-  listening: "neutral",
+  listening: "alert",
   thinking: "thinking",
-  speaking: "neutral",
+  speaking: "amused",
   error: "worried",
 };
+
+/**
+ * Which manpu floats over the face for a *held state*, as opposed to a reaction.
+ *
+ * An emotion carries its own effect — `curious` has a question mark, `worried` a
+ * sweat drop — and for a *reaction* that is exactly right: the agent said
+ * something, and its symbol arrives with it and leaves with it. A state is held
+ * for the length of a room, though, and a symbol that never leaves stops being
+ * punctuation and becomes furniture.
+ *
+ * Worse, some of them *lie when held*. `alert`'s `!` is a startle; a listening
+ * face wearing one permanently says she is permanently startled. A question mark
+ * beside an attentive face reads as confusion, and confusion is the one thing
+ * being understood is not.
+ *
+ * So a state gets its own table, and `null` is the common answer: the resting
+ * state carries no floating symbol at all, and the four that keep one are the
+ * four whose symbol *is* the state — she is searching (question), she has
+ * arrived (sparkle), she is working on it (thought cloud), something has gone
+ * wrong (sweat drop). `null` renders nothing; the face carries the rest.
+ */
+const stateArtifact: Record<LumineState, ExpressionEffect | null> = {
+  idle: null,
+  connecting: "question",
+  online: "sparkle",
+  listening: null,
+  thinking: "thoughts",
+  speaking: null,
+  error: "sweat",
+};
+
+/**
+ * How strong the face is when nobody has asked it for anything.
+ *
+ * This is not a taste value; it is the fix for the reason nothing showed. The
+ * face was being handed `reaction?.intensity ?? 0`, and with no reaction held
+ * that is a hard `0` — and `blendExpression(expression, 0)` is, by construction,
+ * the neutral pose exactly. So *every* entry in the table above — `online`'s
+ * smile, `thinking`'s look-up, `error`'s downcast, the whole of the resting
+ * vocabulary — was rendered as a face with no expression at all, on every
+ * screen, all the time. The only expression that could ever appear was a held
+ * reaction, and the agent emits those rarely. "The expressions don't show that
+ * much" was a literal description of the code.
+ *
+ * The floor matters more than the value itself, because of where the producer's
+ * own numbers land: the LLM defaults an intensity to `0.5`, and the heuristic
+ * scorer in `agent/runtime/emotion_contract.py` produces `0.35 + score * 0.08`,
+ * so a genuine reaction arrives at 0.35–0.5. Un-floored, that lands *below* the
+ * resting face — an emotion arriving would visibly *relax* her. The face's
+ * intensity is therefore `max(resting, reaction)`: below the floor the reaction
+ * still reads, because what changed is the pose it is aiming at, and the pose is
+ * the whole of the signal.
+ */
+const RESTING_FACE_INTENSITY = 0.8;
 
 const stateActivity: Record<LumineState, LumineActivity> = {
   idle: "none",
@@ -80,6 +143,11 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
   const [reaction, setReaction] = useState<LumineEmotionIntent | null>(null);
   const emotion = reaction?.primary ?? stateEmotion[state];
   const activity = stateActivity[state];
+  // See `RESTING_FACE_INTENSITY`: a reaction is a floor-raiser, never a
+  // floor-lowerer, so a 0.4 from the scorer cannot relax a face that was already
+  // resting at 0.8.
+  const faceIntensity = reaction ? Math.max(RESTING_FACE_INTENSITY, reaction.intensity) : RESTING_FACE_INTENSITY;
+  const artifact: ExpressionEffect = reaction ? expressionSpec(reaction.primary).effect : stateArtifact[state] ?? "none";
 
   useEffect(() => {
     const avatar = avatarRef.current;
@@ -200,8 +268,8 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
    * `setFace` batches them and renders once.
    */
   useEffect(() => {
-    engineRef.current?.setFace(emotion, reaction?.intensity ?? 0, activity, recommendedEyeMode(emotion));
-  }, [emotion, activity, state, reaction?.intensity]);
+    engineRef.current?.setFace(emotion, faceIntensity, activity, recommendedEyeMode(emotion));
+  }, [emotion, activity, state, faceIntensity]);
 
   /**
    * The audio channel, and why it is a subscription rather than a prop.
@@ -258,7 +326,7 @@ export function Presence({ state, cursorGaze, showAvatarColor, emotion: emotionI
   return <div role="img" className={`presence presence--${state} ${showAvatarColor ? "" : "presence--no-color"}`} aria-label={`Lumine is ${state}`}>
     <div className="presence-halo halo-one" /><div className="presence-halo halo-two" />
     <div className="presence-orbit orbit-one" /><div className="presence-orbit orbit-two" />
-    <div className="presence-body"><object ref={avatarRef} data={lumineAvatar} type="image/svg+xml" aria-label="Lumine's animated avatar" /><ExpressionEffects effect={expressionSpec(emotion).effect} intensity={reaction?.intensity ?? 0} /><div className="presence-glass absolute z-[2] inset-px hidden pointer-events-none" /></div>
+    <div className="presence-body"><object ref={avatarRef} data={lumineAvatar} type="image/svg+xml" aria-label="Lumine's animated avatar" /><ExpressionEffects effect={artifact} intensity={faceIntensity} /><div className="presence-glass absolute z-[2] inset-px hidden pointer-events-none" /></div>
     {showEmotionDebug && <div className="emotion-debug-overlay"><strong>Emotion: {(reaction?.primary ?? "neutral").toUpperCase()}</strong><span>Intensity: {(reaction?.intensity ?? 0).toFixed(2)}</span><span>Source: {reaction?.source ?? "system"}</span><span>Connection: {state}</span><span>Voice: {activity}</span><span>Last event: {emotionIntent ? "lumine.emotion" : "none"}</span></div>}
   </div>;
 }

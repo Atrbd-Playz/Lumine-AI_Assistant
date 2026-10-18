@@ -56,13 +56,20 @@ class FakeGate:
         self.current = None
 
 
-def page(candidates: list[dict], *, url: str = "https://www.youtube.com/results", title: str = "YouTube") -> dict:
+def page(
+    candidates: list[dict],
+    *,
+    url: str = "https://www.youtube.com/results",
+    title: str = "YouTube",
+    items: list[dict] | None = None,
+) -> dict:
     return {
         "url": url,
         "title": title,
         "text": "page text",
         "ready": "complete",
         "candidates": candidates,
+        "items": list(items or []),
         "tabs": [],
         "forms": [],
         "viewport": {},
@@ -158,6 +165,30 @@ class RoutingIntegrationTests(unittest.TestCase):
         route = router.classify("Open YouTube in your browser", facts, tools=self.TOOLS)
         self.assertEqual(route.environment, router.BROWSER)
 
+    def test_a_title_word_that_sounds_like_a_window_command_stays_on_the_open_page(self):
+        request = "Open the second one. The title is Breathe Lo-Fi Deep Focus Study."
+        facts = router.MachineFacts.build(browser_open=True)
+        initially = router.classify(request, facts, tools=self.TOOLS)
+        self.assertEqual(initially.environment, router.DESKTOP)
+        self.assertEqual(initially.reason, "asked to arrange or close a window")
+
+        route = task_runner.prefer_open_browser_for_control(initially, facts, request)
+        self.assertEqual(route.environment, router.BROWSER)
+        self.assertEqual(route.tool, "browse")
+        plan = plan_for(route, request, browser_open=facts.browser_open)
+        self.assertEqual([step.tool for step in plan.steps], ["find_element", "browser_act"])
+        self.assertEqual(
+            plan.steps[0].args,
+            {"strategy": "text", "name": "Breathe Lo-Fi Deep Focus Study"},
+        )
+
+    def test_an_explicit_desktop_request_is_not_moved_to_the_browser(self):
+        request = "Open the second one on my desktop. The title is Breathe Lo-Fi Deep Focus Study."
+        facts = router.MachineFacts.build(browser_open=True)
+        initially = router.classify(request, facts, tools=self.TOOLS)
+        route = task_runner.prefer_open_browser_for_control(initially, facts, request)
+        self.assertEqual(route.environment, router.DESKTOP)
+
 
 # -- planning ---------------------------------------------------------------------
 
@@ -209,6 +240,41 @@ class PlanningTests(unittest.TestCase):
         route = router.classify("Search for a cafe on maps", router.MachineFacts.build())
         plan = plan_for(route, "Search for a cafe on maps")
         self.assertEqual(plan.steps[-1].args["query"], "a cafe")
+
+    def test_a_reference_to_search_results_is_not_planned_as_a_new_search(self):
+        request = "Open the search results, titled Breathe Lo-Fi Deep Focus Study"
+        self.assertEqual(task_runner._search_query(request), "")
+
+    def test_finding_an_existing_result_or_control_is_not_a_search(self):
+        self.assertEqual(task_runner._search_query("Find the second video"), "")
+        self.assertEqual(task_runner._search_query("Find the search box"), "")
+        plan = plan_for(
+            router.Route(router.BROWSER),
+            "Find the search box",
+            browser_open=True,
+        )
+        self.assertEqual([step.tool for step in plan.steps], ["find_element"])
+
+    def test_a_title_and_ordinal_request_targets_the_existing_page_item(self):
+        request = "Open the second one. The title is Breathe Lo-Fi Deep Focus Study."
+        self.assertEqual(
+            task_runner._control_target(request),
+            {"strategy": "text", "name": "Breathe Lo-Fi Deep Focus Study"},
+        )
+        plan = plan_for(
+            router.Route(router.BROWSER),
+            request,
+            browser_open=True,
+        )
+        self.assertEqual([step.tool for step in plan.steps], ["find_element", "browser_act"])
+        self.assertEqual(
+            plan.steps[0].args,
+            {"strategy": "text", "name": "Breathe Lo-Fi Deep Focus Study"},
+        )
+        self.assertEqual(
+            task_runner._control_target("Open the second one"),
+            {"role": "link", "position": "second"},
+        )
 
     def test_acting_on_the_page_already_open_needs_no_address(self):
         # "Click the second video" names no address. Answering that with "no
@@ -407,6 +473,53 @@ class BrowserStepTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.outputs["element"]["name"], "Bath Song")
         self.assertTrue(result.outputs["generation"])
 
+    async def test_browser_search_returns_visible_result_titles(self):
+        from agent.tools.browser import search as browser_search
+
+        engine = FakeEngine(
+            initial=[
+                page(
+                    [],
+                    items=[
+                        {
+                            "index": 1,
+                            "kind": "video",
+                            "title": "Breathe Lo-Fi Deep Focus Study",
+                            "text": "Breathe Lo-Fi Deep Focus Study video",
+                            "href": "https://www.youtube.com/watch?v=fixture",
+                        }
+                    ],
+                )
+            ]
+        )
+        outcome = verification.observed(
+            "search", "Searched for lo-fi", evidence="the results page moved", url="https://www.youtube.com/results?search_query=lo-fi"
+        )
+        step = task_model.build_step(
+            "search", "browser_search", {"query": "lo-fi"}
+        )
+        ctx = task_runner.StepContext(
+            step=step,
+            route=router.Route(router.BROWSER),
+            request="search for lo-fi",
+            outputs={},
+            approve=approve,
+        )
+        with mock.patch.object(task_runner.control, "engine", return_value=engine), \
+                mock.patch.object(browser_search, "run_search", new=mock.AsyncMock(return_value=outcome)):
+            result = await task_runner.STEP_IMPLEMENTATIONS["browser_search"](ctx)
+        self.assertEqual(
+            result.outcome.data["results"],
+            [
+                {
+                    "index": 1,
+                    "kind": "video",
+                    "title": "Breathe Lo-Fi Deep Focus Study",
+                    "url": "https://www.youtube.com/watch?v=fixture",
+                }
+            ],
+        )
+
     async def test_finding_something_absent_fails_and_lists_what_is_there(self):
         engine = FakeEngine(initial=[page([control(1, "Baby Shark")])])
         step = task_model.build_step("find", "find_element", {"role": "button", "name": "Subscribe"})
@@ -517,6 +630,134 @@ class ExecuteTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(task_runner, "_search", new=mock.AsyncMock(return_value=[("A", "u")])):
             await task_runner.execute(task, approve=approve, request="x", route=route, session=session)
         self.assertIsNone(task_runner.for_session(session))
+
+
+# -- the stage's step ledger --------------------------------------------------
+
+
+class FakeSession:
+    """A session the weak-keyed publisher registry can hold.
+
+    `SimpleNamespace` cannot be weakly referenced, so registering one is silently
+    dropped and every publish test would fail for the wrong reason -- a test that
+    passes because its own fixture was ignored is the worst kind of passing.
+    """
+
+    def __init__(self, name: str = "fake") -> None:
+        self.name = name
+
+
+class _Recorder:
+    """A publisher that keeps the progress records instead of sending them."""
+
+    def __init__(self, sink: list[dict]) -> None:
+        self.sink = sink
+
+    def emit_and_publish(self, topic: str, record: dict) -> dict:
+        self.sink.append({"topic": topic, **record})
+        return record
+
+
+class TaskStepLedgerTests(unittest.IsolatedAsyncioTestCase):
+    """A task publishes its steps, so the stage can draw a ledger while it runs.
+
+    The narration in `_observer` is deliberately filtered -- a voice turn does not
+    want a commentary on every verification read -- and the ledger cannot be,
+    because a list showing three of its six rows is a list the reader cannot
+    trust. These tests exist so the publish side cannot quietly inherit the
+    narration side's filter, which is the shape of the mistake that would be made
+    here: one `if` in the wrong place and the ledger shows only the steps that
+    acted.
+    """
+
+    def setUp(self):
+        from agent.runtime import progress
+
+        self.progress = progress
+        self.session = FakeSession()
+        self.records: list[dict] = []
+        progress.register_publisher(self.session, _Recorder(self.records))
+        self.addCleanup(progress.unregister_publisher, self.session)
+
+    def _steps(self) -> list[dict]:
+        return [r for r in self.records if r.get("action", "").startswith("step")]
+
+    async def test_every_step_of_a_run_is_published_with_its_position(self):
+        route = router.classify("find the price of a drawing tablet", router.MachineFacts.build())
+        plan = plan_for(route, "find the price of a drawing tablet")
+        task = task_model.make_task("find the price of a drawing tablet", plan.steps)
+        with mock.patch.object(task_runner, "_search", new=mock.AsyncMock(return_value=[("A", "https://a.test")])):
+            await task_runner.execute(
+                task, approve=approve, request=task.request, route=route, session=self.session
+            )
+
+        steps = self._steps()
+        total = len(task.steps)
+        self.assertTrue(steps, "a completed task published no steps at all")
+        # `total` is what lets the app draw the rows that have not started yet as
+        # pending; without it the list grows under the reader one row at a time.
+        self.assertTrue(all(r["total"] == total for r in steps))
+        self.assertTrue(all(r["tool"] == task_runner.TASK_TOOL for r in steps))
+        self.assertTrue(all(r["task"] == task.id for r in steps))
+        self.assertTrue(all(r["status"] in ("started", "done", "failed") for r in steps))
+        # 1-based positions against the *plan*, not a counter kept while
+        # publishing: read steps run concurrently, so arrival order is not
+        # plan order and a maintained counter would credit the wrong row.
+        for record in steps:
+            index = int(record["action"][len("step"):])
+            self.assertGreaterEqual(index, 1)
+            self.assertLessEqual(index, total)
+            self.assertEqual(record["index"], index)
+        started = {r["action"] for r in steps if r["status"] == "started"}
+        done = {r["action"] for r in steps if r["status"] == "done"}
+        self.assertTrue(done, "a finished task left every row open")
+        self.assertTrue(started >= done, "a step finished without ever starting")
+
+    async def test_a_step_that_never_started_publishes_nothing_for_it(self):
+        route = router.classify("find a tablet price", router.MachineFacts.build())
+        plan = plan_for(route, "find a tablet price")
+        task = task_model.make_task("x", plan.steps)
+        # Cancelled before it runs: the engine settles the rest as skipped and
+        # never notifies per step, so the ledger's pending rows are the honest
+        # reading and a record for them would claim a step that never moved.
+        task.cancel("stopped")
+        with mock.patch.object(task_runner, "_search", new=mock.AsyncMock()):
+            await task_runner.execute(
+                task, approve=approve, request="x", route=route, session=self.session
+            )
+        self.assertEqual(self._steps(), [])
+
+    def test_a_retry_is_published_as_the_step_running_again(self):
+        task = task_model.make_task("x", [task_model.build_step("look up", "search_web", ident="a")])
+        step = task.steps[0]
+        task_runner._publish_task_step(self.session, task, step, "step_retry")
+        self.assertEqual(self._steps()[0]["status"], "started")
+        self.assertIn("retrying", self._steps()[0]["summary"])
+
+    def test_a_failure_carries_the_reason_and_no_duration(self):
+        task = task_model.make_task("x", [task_model.build_step("look up", "search_web", ident="a")])
+        step = task.steps[0]
+        step.status = task_model.FAILED
+        step.error = "the page never loaded"
+        task_runner._publish_task_step(self.session, task, step, "step_failed")
+        record = self._steps()[0]
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("the page never loaded", record["summary"])
+        # `started_at`/`ended_at` are both zero, so `duration_ms` is falsy and
+        # dropped: a failed step that claims 0ms reads as "instant" rather than
+        # as "never measured".
+        self.assertNotIn("duration_ms", record)
+
+    def test_a_step_from_another_plan_is_dropped_rather_than_numbered(self):
+        task = task_model.make_task("x", [task_model.build_step("look up", "search_web", ident="a")])
+        stray = task_model.build_step("elsewhere", "search_web", ident="z")
+        task_runner._publish_task_step(self.session, task, stray, "step_started")
+        self.assertEqual(self._steps(), [])
+
+    def test_an_event_with_no_step_publishes_nothing(self):
+        task = task_model.make_task("x", [task_model.build_step("look up", "search_web", ident="a")])
+        task_runner._publish_task_step(self.session, task, task.steps[0], "task_started")
+        self.assertEqual(self._steps(), [])
 
 
 class CancellationToolTests(unittest.IsolatedAsyncioTestCase):
@@ -632,6 +873,18 @@ class ReportTests(unittest.TestCase):
         task.steps[1].status = task_model.SKIPPED
         payload = task_runner.report(task, router.Route(router.DESKTOP))
         self.assertIn("skipped", payload)
+
+    def test_browser_search_results_are_available_to_the_next_decision(self):
+        step = task_model.build_step("search", "browser_search", {"query": "lo-fi"})
+        step.outcome = verification.observed(
+            "browser_search",
+            "Searched",
+            results=[{"index": 1, "kind": "video", "title": "Breathe Lo-Fi"}],
+        )
+        payload = task_runner.report(
+            task_model.make_task("search", [step]), router.Route(router.BROWSER)
+        )
+        self.assertIn('"results":[{"index":1,"kind":"video","title":"Breathe Lo-Fi"}]', payload)
 
 
 if __name__ == "__main__":

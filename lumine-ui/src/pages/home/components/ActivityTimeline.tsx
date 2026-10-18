@@ -1,45 +1,45 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./Icon";
 import { CLOCK_FORMAT } from "../utils";
 import { TabStrip, type TabStripItem } from "../../../components/ui/tabstrip";
 import type { ActivityEntry, ActivityKind, ActivityTone } from "../../../features/activity/activityFeed";
 
 /**
- * The activity timeline.
+ * The activity timeline, as a table.
  *
  * ## What replaced what
  *
- * This draws a hardcoded three-row list — a "morning standup", "3 tasks", "12
- * notes indexed" — with the worker's own `LUMINE_EVENT` stream. Those rows were
- * invented in the component, so they were not stale, they were *fiction*: they
- * could not be wrong because they were never about anything.
+ * This draws the worker's own `LUMINE_EVENT` stream. The page it replaced drew
+ * a hardcoded three-row list — a "morning standup", "3 tasks", "12 notes
+ * indexed" — whose rows were invented in the component, so they were not stale,
+ * they were *fiction*: they could not be wrong because they were never about
+ * anything. An empty timeline is genuinely empty, on purpose.
  *
- * The replacement is worse in one specific way, on purpose: an empty timeline is
- * genuinely empty, and a person looking at one learns that the panel reports
- * facts. A panel that always has three rows in it teaches the opposite.
+ * ## Why a table, and why newest first
  *
- * ## Why the page is shaped the way it is
+ * A log is read three ways — scanned for the one thing that went wrong,
+ * filtered down to one kind of event, and read through when something was slow
+ * and you want to know what was around it. A wall of undifferentiated rows
+ * served none of the three.
  *
- * A log is read three ways and they want three different surfaces:
+ * A table serves the first two structurally: fixed columns mean the eye can run
+ * down **OUTCOME** looking for red without reading a single title, and
+ * **DURATION** is a column of tabular figures where 40 ms is visibly a
+ * different length from 400 ms. Newest first serves the third question people
+ * actually arrive with — *what just happened* — without a scroll, and it is
+ * what lets the old "jump to latest" machinery be deleted outright: the answer
+ * is already at the top.
  *
- * - **scanned** for the one thing that went wrong,
- * - **filtered** down to one kind of event when a question is specific,
- * - **read through** in order when something was slow and you want to know what
- *   was around it.
+ * The rows above the table (counters, filter chips, search, the count line)
+ * exist for the scan and the filter; the table itself is the read-through.
  *
- * So: a counter row across the top for the scan, a category strip for the filter,
- * and dated rows in wall-clock order for the read-through. What it used to be was
- * one undifferentiated list of 200 rows with the newest at the bottom, which
- * served none of the three — and it carried the day's answer in a heading that
- * said nothing, next to a two-word empty state.
+ * ## The columns are dropped by width, not by breakpoint
  *
- * ## Live, with a pause
- *
- * New entries appear as the worker emits them, and a call in progress
- * generates them faster than anyone reads. So the list stops moving the moment
- * the reader scrolls away from the bottom, and says so with a button — the same
- * rule the transcript uses, for the same reason. An auto-scrolling log is
- * unreadable while you are reading it.
+ * `.activity-page` is a CSS container, so the table collapses against *its own*
+ * width — the rail folding and the panel opening are both invisible to a media
+ * query and are the two things that actually change how much room this page
+ * has. KIND goes first (the title says it), then DURATION (the duration is
+ * repeated inline under the title so it is never simply lost).
  */
 
 type ActivityTimelineProps = {
@@ -47,40 +47,19 @@ type ActivityTimelineProps = {
   onClear?: () => void;
 };
 
-/** One glyph per kind. `fallback` is the one thing every kind shares. */
-const GLYPH: Record<ActivityKind, Parameters<typeof Icon>[0]["name"]> = {
-  session: "waveform",
-  config: "settings",
-  tool: "tools",
-  latency: "clock",
-  failure: "info",
-  note: "chat",
-};
-
 /**
  * Tone is a *word* here rather than a Tailwind class string.
  *
  * Mapping colour by interpolating class names is how a `bg-${tone}-soft` ends up
  * emitting a class that does not exist, and it cannot be checked. Four literal
- * Tailwind class strings, selected from a total `Record` over the tone union, is
- * checked by the compiler and readable in the source.
+ * class strings, selected from a total `Record` over the tone union, are checked
+ * by the compiler and readable in the source.
  */
-const TONE_TEXT: Record<ActivityTone, string> = {
-  neutral: "text-muted-foreground",
-  good: "text-ok",
-  // Every tone now has a foreground of its own. `warn` was `--color-text` —
-  // the same colour as the row beside it — so of the three colours two were
-  // colours and one was an absence, and the amber only ever appeared as the
-  // 3px edge on the left.
-  warn: "text-warn",
-  bad: "text-danger",
-};
-
-const TONE_EDGE: Record<ActivityTone, string> = {
-  neutral: "bg-[var(--color-border)]",
-  good: "bg-ok",
-  warn: "bg-warn",
-  bad: "bg-danger",
+const TONE_CLASS: Record<ActivityTone, string> = {
+  neutral: "is-neutral",
+  good: "is-good",
+  warn: "is-warn",
+  bad: "is-bad",
 };
 
 /** The one row of labels above the counters, so the counters have names. */
@@ -93,31 +72,50 @@ const KIND_LABEL: Record<ActivityKind, string> = {
   note: "Note",
 };
 
+/** How a row ended, in the one word the OUTCOME column can hold. */
+const OUTCOME_LABEL: Record<ActivityTone, string> = {
+  neutral: "Info",
+  good: "Done",
+  warn: "Attention",
+  bad: "Failed",
+};
+
+/**
+ * The word for a row's outcome, which is not always its tone.
+ *
+ * `warn` is two different things wearing one colour: a measurement that took
+ * long enough to feel, and something worth a second look that has no timing at
+ * all. "Slow" and "Attention" tell them apart; the colour does not, and a page
+ * where the only signal is a hue is a page that fails for anyone who cannot
+ * see it.
+ */
+function outcomeOf(entry: ActivityEntry): string {
+  return entry.tone === "warn" && entry.ms !== undefined ? "Slow" : OUTCOME_LABEL[entry.tone];
+}
+
 /** Above this, agent-side work is slow enough that a person would have noticed. */
 const SLOW_MS = 1000;
 
 /**
  * The filters. Declared rather than derived, because each one is a question
- * somebody arrives with, and the set of questions does not change when a new event
- * type is added.
+ * somebody arrives with, and the set of questions does not change when a new
+ * event type is added.
  *
  * `Problems` is the union of the two tones that mean something is wrong, so the
  * tab a person reaches for after a bad call is one click rather than a choice
- * between "failed" and "slow" — and the strip stays at five entries, which is as
- * many as fit on the label at the width this page has. A sixth was tried and
- * arrived truncated as `Probl…`.
+ * between "failed" and "slow".
  */
 const ALL = "__all__";
 const FILTERS = [
-  { id: ALL, label: "All", help: "Everything the worker reported, oldest first." },
+  { id: ALL, label: "All", help: "Everything the worker reported, newest first." },
   { id: "problems", label: "Problems", help: "What failed, and what took long enough to be noticed." },
-  { id: "session", label: "Calls", help: "Rooms opening and closing." },
+  { id: "session", label: "Calls", help: "Rooms opening and closing, and what they shared." },
   { id: "tool", label: "Tools", help: "Tool calls, one row per call and per step inside it." },
   { id: "latency", label: "Timing", help: "The worker's own stage measurements, with their measurements." },
 ] as const;
 
 /** Which entries a filter id selects. */
-function matches(filter: string, entry: ActivityEntry): boolean {
+function matchesFilter(filter: string, entry: ActivityEntry): boolean {
   switch (filter) {
     case ALL:
       return true;
@@ -128,12 +126,16 @@ function matches(filter: string, entry: ActivityEntry): boolean {
   }
 }
 
+/** Everything the search box can find in a row. Lowercased once per query. */
+function haystack(entry: ActivityEntry): string {
+  return `${entry.title}\n${entry.detail ?? ""}\n${KIND_LABEL[entry.kind]}`.toLowerCase();
+}
+
 /**
  * One `Intl.DateTimeFormat` for the whole list, built once.
  *
- * The previous version called `formatClock` per row, and that builds a fresh
- * formatter every call — two hundred of them per render of a full feed, for a
- * column of times that are all the same format by construction.
+ * A fresh formatter per row is two hundred formatters per render of a full feed,
+ * for a column of times that are all the same format by construction.
  */
 const ENTRY_CLOCK = new Intl.DateTimeFormat(undefined, { ...CLOCK_FORMAT, second: "2-digit" });
 
@@ -142,9 +144,9 @@ const ENTRY_CLOCK = new Intl.DateTimeFormat(undefined, { ...CLOCK_FORMAT, second
  *
  * Deliberately not a relative "3m ago". A latency timeline is read against the
  * clock — you want to know whether the 900 ms stutter was before or after the
- * thing you did — and relative times destroy exactly that. They also re-render on
- * a timer, which for a list that is already live would double its update rate for
- * no information.
+ * thing you did — and relative times destroy exactly that. They also re-render
+ * on a timer, which for a list that is already live would double its update
+ * rate for no information.
  */
 function formatEntryClock(at: number): string {
   const date = new Date(at);
@@ -161,8 +163,7 @@ function dayKey(at: number): number {
  * `Today`, `Yesterday`, or the date.
  *
  * Named rather than formatted, because "today" is a fact about the reader's day
- * and not something a fixed date string can say. The fallback is deliberately
- * compact: this is a separator in a scrolling list, not a headline.
+ * and not something a fixed date string can say.
  */
 function dayLabel(at: number): string {
   const start = dayKey(at);
@@ -184,33 +185,36 @@ function formatMs(ms: number): string {
   return `${Math.round(ms)} ms`;
 }
 
-export function ActivityTimeline({ entries, onClear }: ActivityTimelineProps) {
-  const scrollRef = useRef<HTMLOListElement>(null);
-  const [pinned, setPinned] = useState(true);
-  const pinnedRef = useRef(true);
-  /**
-   * How many entries have actually been on screen, so `unread` is a delta.
-   *
-   * It was `pinned ? 0 : entries.length` — either nothing or *everything the
-   * session has ever logged*. Scroll up once during a long run and the button
-   * claims fifty new rows, forty-nine of which the reader watched arrive. This
-   * is the baseline, and it advances only while the tail is visible, because
-   * that is the one moment "everything so far" is genuinely "everything seen".
-   */
-  const [seen, setSeen] = useState(0);
-  const [filter, setFilter] = useState<string>(ALL);
+/**
+ * A mark's offset from session start: `+2h 14m`.
+ *
+ * The leading plus is doing real work. This column is headed DURATION, and a
+ * bare `2h 14m` in it would read as "this took two hours" — the exact mistake
+ * this page used to make with the same number. A milestone says when it
+ * happened, and the `+` is how that is visible without a second column.
+ */
+function formatSince(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours > 0) return `+${hours}h ${minutes}m`;
+  if (minutes > 0) return `+${minutes}m ${total % 60}s`;
+  return `+${total}s`;
+}
 
-  const setFollowing = useCallback((next: boolean) => {
-    pinnedRef.current = next;
-    setPinned(next);
-  }, []);
+export function ActivityTimeline({ entries, onClear }: ActivityTimelineProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const [filter, setFilter] = useState<string>(ALL);
+  const [query, setQuery] = useState("");
 
   /**
    * The counters, over the *unfiltered* window.
    *
    * Over the filtered list instead would make the row a summary of the tab you
    * happen to be on, which is the one thing a summary row must not be: "3
-   * problems" has to mean three problems whether or not you are looking at them.
+   * problems" has to mean three problems whether or not you are looking at
+   * them. `Over 1 s` counts only rows carrying a real measurement, since a
+   * milestone's offset is not a cost.
    */
   const counts = useMemo(() => {
     let problems = 0;
@@ -226,18 +230,40 @@ export function ActivityTimeline({ entries, onClear }: ActivityTimelineProps) {
     return { problems, calls, tools, slow };
   }, [entries]);
 
-  const shown = useMemo(() => (filter === ALL ? entries : entries.filter((entry) => matches(filter, entry))), [entries, filter]);
+  /**
+   * Newest first, in one pass.
+   *
+   * The feed appends (prepending is O(n) per event and events arrive in
+   * bursts), so the view is built by walking backwards. That is one allocation
+   * per change of the feed rather than a reverse plus two filters, and the
+   * order is decided here rather than trusted to CSS.
+   */
+  const searched = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const out: ActivityEntry[] = [];
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index];
+      if (needle && !haystack(entry).includes(needle)) continue;
+      out.push(entry);
+    }
+    return out;
+  }, [entries, query]);
+
+  const shown = useMemo(
+    () => (filter === ALL ? searched : searched.filter((entry) => matchesFilter(filter, entry))),
+    [searched, filter],
+  );
 
   /**
-   * The list as days, each day holding all of its own rows.
+   * The list as days, each day holding its own rows, newest first within it.
    *
-   * The grouping is the reason a day label can stick. `position: sticky` moves an
-   * element only while its **containing block** is in the scrollport, and a
-   * containing block is its parent — so with one `<li>` per row and the label
-   * inside the first of them, the label held for exactly one row's height and then
-   * scrolled away with it. Every day here is a single `<li>` containing its label
-   * and its rows, which is the whole difference between a date you can read while
-   * you scroll and a date you saw once.
+   * One `<tbody>` per day, with the day as a `<th scope="rowgroup">` spanning the
+   * table — which is what tells a screen reader that the rows below it belong to
+   * that date. It was built for a sticky day label and became a *semantic*
+   * decision instead, because measured in Chromium a sticky table cell is bounded
+   * by the **table** and not by its row group, so every day's label piled up on
+   * the same pixels under the column header. The separator survives; the
+   * measurement is recorded with the rule in `index.css`.
    */
   const days = useMemo(() => {
     const groups: { day: number; entries: ActivityEntry[] }[] = [];
@@ -251,50 +277,17 @@ export function ActivityTimeline({ entries, onClear }: ActivityTimelineProps) {
   }, [shown]);
 
   /**
-   * Follow the tail only while the reader is already there. Re-runs on every entry
-   * because that is the moment the list actually changed height.
+   * A filter or a search replaces the whole table, so the reader is at the top
+   * of a list they have just asked for and has no reason to be anywhere else.
+   *
+   * This is the only thing that moves the reader. Live arrivals deliberately do
+   * not: rows are inserted at the top, and Chromium's scroll anchoring keeps a
+   * reader who has scrolled down looking at the rows they were looking at.
    */
   useEffect(() => {
-    if (!pinnedRef.current) return;
-    const element = scrollRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [shown]);
-
-  // A filter change replaces the whole list, so the reader is at the tail of a
-  // list they have just asked for and has no reason to be anywhere else. This is
-  // the one exception to the "never move a reader" rule above, and it is why the
-  // rule needs to be a rule rather than a default.
-  useEffect(() => {
-    setSeen(0);
-    const element = scrollRef.current;
-    if (!element) return;
-    const frame = requestAnimationFrame(() => {
-      element.scrollTop = element.scrollHeight;
-      setFollowing(true);
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [filter, setFollowing]);
-
-  // Same condition, same trigger: pinned means the tail is rendered, so the
-  // count of things the reader is behind on goes back to zero.
-  useEffect(() => {
-    if (pinned) setSeen(shown.length);
-  }, [pinned, shown.length]);
-
-  // A new arrival while the reader has scrolled up is a "there is something
-  // below" signal, not something to yank them back down for.
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (!element) return;
-    const onScroll = () => {
-      const distance = element.scrollHeight - element.scrollTop - element.clientHeight;
-      setFollowing(distance < 32);
-    };
-    element.addEventListener("scroll", onScroll, { passive: true });
-    return () => element.removeEventListener("scroll", onScroll);
-  }, [setFollowing]);
-
-  const unread = pinned ? 0 : Math.max(0, shown.length - seen);
+    const element = listRef.current;
+    if (element) element.scrollTop = 0;
+  }, [filter, query]);
 
   const tabs = useMemo<TabStripItem[]>(
     () =>
@@ -302,10 +295,15 @@ export function ActivityTimeline({ entries, onClear }: ActivityTimelineProps) {
         id: candidate.id,
         label: candidate.label,
         help: candidate.help,
-        count: candidate.id === ALL ? entries.length : entries.filter((entry) => matches(candidate.id, entry)).length,
+        count:
+          candidate.id === ALL
+            ? searched.length
+            : searched.filter((entry) => matchesFilter(candidate.id, entry)).length,
       })).filter((item) => item.count > 0 || item.id === filter),
-    [entries, filter],
+    [searched, filter],
   );
+
+  const trimmed = query.trim();
 
   return (
     <main className="workspace-view is-column" aria-labelledby="activity-title">
@@ -351,57 +349,110 @@ export function ActivityTimeline({ entries, onClear }: ActivityTimelineProps) {
                 />
               </ul>
 
-              <div>
-                <TabStrip items={tabs} value={filter} onChange={setFilter} label="Activity categories" hintSide="bottom" />
+              <div className="activity-controls">
+                <TabStrip
+                  items={tabs}
+                  value={filter}
+                  onChange={setFilter}
+                  label="Activity categories"
+                  hintSide="bottom"
+                />
+
+                <label className="activity-search">
+                  <Icon name="search" size={13} aria-hidden />
+                  <input
+                    type="text"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Search events"
+                    aria-label="Search the activity timeline"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                  {query !== "" && (
+                    <button
+                      type="button"
+                      className="activity-search-clear"
+                      onClick={() => setQuery("")}
+                      aria-label="Clear the search"
+                    >
+                      <Icon name="close" size={11} />
+                    </button>
+                  )}
+                </label>
+
+                {/* The size of the table below, so a filter that matched nothing
+                    and a table that is merely long are never confused. */}
+                <p className="activity-count" aria-live="polite">
+                  {shown.length.toLocaleString()} {shown.length === 1 ? "entry" : "entries"} · newest first
+                  {trimmed ? ` · matching “${trimmed}”` : ""}
+                </p>
               </div>
 
               {shown.length === 0 ? (
-                <p className="tools-note">Nothing in this group.</p>
+                <p className="activity-none">
+                  {trimmed ? `Nothing matches “${trimmed}”.` : "Nothing in this group."}{" "}
+                  {trimmed && (
+                    <button type="button" className="activity-none-reset" onClick={() => setQuery("")}>
+                      Clear the search
+                    </button>
+                  )}
+                </p>
               ) : (
                 /*
                   The scroll region, and the flex chain that makes it one.
 
                   This wrapper is a **column flex box**, not a plain block: it is
-                  what lets the list below take the page's leftover height and be
-                  smaller than its own contents. As a block it sized to its
-                  content, so `overflow-y: auto` on the list had nothing to
-                  overflow against and the log simply ran as long as it liked —
-                  which is exactly the "the page shows every row" symptom.
-
-                  `relative` is load-bearing too: the "jump to latest" pill inside
-                  is absolutely positioned against it.
+                  what lets the table below take the page's leftover height and
+                  be smaller than its own contents. As a block it sized to its
+                  content, so `overflow-y: auto` had nothing to overflow against
+                  and the log ran as long as it liked — which is exactly the "the
+                  page shows every row" symptom.
                 */
-                <div className="activity-scroll-region relative mt-2 flex min-h-0 flex-1 flex-col">
-                  <ol
-                    ref={scrollRef}
-                    className="activity-list flex min-h-0 flex-1 flex-col"
+                <div className="activity-scroll-region mt-2 flex min-h-0 flex-1 flex-col">
+                  <div
+                    ref={listRef}
+                    className="activity-list"
                     tabIndex={0}
-                    aria-label="Timeline of worker events, oldest first"
+                    role="region"
+                    aria-label="Timeline of worker events, newest first"
                   >
-                    {days.map((group) => (
-                      <li key={group.day} className="activity-day-group">
-                        <h2 className="activity-day">
-                          <span>{dayLabel(group.day)}</span>
-                        </h2>
-                        {group.entries.map((entry) => (
-                          <ActivityRow key={entry.id} entry={entry} />
-                        ))}
-                      </li>
-                    ))}
-                  </ol>
-
-                  {!pinned && (
-                    <button
-                      className="activity-jump"
-                      onClick={() => {
-                        setFollowing(true);
-                        const element = scrollRef.current;
-                        if (element) element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
-                      }}
-                    >
-                      {unread > 0 ? `${unread} new · jump to latest` : "jump to latest"}
-                    </button>
-                  )}
+                    <table className="activity-table">
+                      <thead>
+                        <tr>
+                          <th scope="col" className="activity-col-time">
+                            Time
+                          </th>
+                          <th scope="col" className="activity-col-kind">
+                            Kind
+                          </th>
+                          <th scope="col" className="activity-col-what">
+                            What happened
+                          </th>
+                          <th scope="col" className="activity-col-outcome">
+                            Outcome
+                          </th>
+                          <th scope="col" className="activity-col-ms">
+                            Duration
+                          </th>
+                        </tr>
+                      </thead>
+                      {days.map((group) => (
+                        <tbody key={group.day}>
+                          <tr className="activity-day-row">
+                            <th scope="rowgroup" colSpan={5} className="activity-day-cell">
+                              <span className="activity-day">
+                                <span>{dayLabel(group.day)}</span>
+                              </span>
+                            </th>
+                          </tr>
+                          {group.entries.map((entry) => (
+                            <ActivityRow key={entry.id} entry={entry} />
+                          ))}
+                        </tbody>
+                      ))}
+                    </table>
+                  </div>
                 </div>
               )}
             </>
@@ -416,54 +467,72 @@ export function ActivityTimeline({ entries, onClear }: ActivityTimelineProps) {
  * One event.
  *
  * Its own component for a reason that has nothing to do with reuse: a log grows
- * every time the worker reports something, and a single element with a hundred
- * children is re-created wholesale on every one of those. A memoised row means a
- * burst of tool steps re-renders the rows that actually changed and leaves the rest
- * of the timeline's DOM — and the scroll offsets that depend on it — alone.
+ * every time the worker reports something, and a table with a thousand cells is
+ * re-created wholesale on every one of those. A memoised row means a burst of
+ * tool steps re-renders the rows that actually changed and leaves the rest of
+ * the table's DOM — and the scroll position that depends on it — alone.
  */
 const ActivityRow = memo(function ActivityRow({ entry }: { entry: ActivityEntry }) {
+  const isDuration = entry.ms !== undefined;
+  const isMark = entry.since !== undefined;
+  const durationText = isDuration ? formatMs(entry.ms!) : isMark ? formatSince(entry.since!) : "—";
+  const durationTitle = isDuration
+    ? `${Math.round(entry.ms!)} milliseconds`
+    : isMark
+      ? "When this happened, measured from the start of the session — not a duration"
+      : "";
+
   return (
-    <div className="activity-row">
-      <span
-        aria-hidden="true"
-        className={`absolute left-1 top-[11px] bottom-[11px] w-[2px] rounded-0.5 ${TONE_EDGE[entry.tone]}`}
-      />
-      <span className={`activity-row-glyph grid size-6 shrink-0 place-items-center ${TONE_TEXT[entry.tone]}`}>
-        <Icon name={GLYPH[entry.kind]} size={13} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="flex items-baseline gap-2">
-          <span className="shrink-0 font-mono text-[9px] tracking-[0.08em] uppercase text-faint">
-            {KIND_LABEL[entry.kind]}
-          </span>
-          {/* `title` as well as `truncate`. A truncated row that cannot be hovered
-              to see the rest is a row whose detail is gone; these are provider
-              strings and step labels, and both are longer than the column. */}
-          <span className="truncate text-[13px] leading-snug text-foreground" title={entry.title}>
+    <tr className="activity-row">
+      <td className="activity-cell-time">
+        <time dateTime={new Date(entry.at).toISOString()}>{formatEntryClock(entry.at)}</time>
+      </td>
+
+      <td className="activity-cell-kind">
+        <span className="activity-kind">{KIND_LABEL[entry.kind]}</span>
+      </td>
+
+      <td className="activity-cell-what">
+        <span className="activity-what-line">
+          {/* `title` as well as `truncate`. A truncated row that cannot be
+              hovered to see the rest is a row whose detail is gone; these are
+              provider strings and step labels, and both are longer than the
+              column. */}
+          <span className="activity-what-title" title={entry.title}>
             {entry.title}
           </span>
+          {/* The duration again, inline — the only copy of it that survives the
+              DURATION column collapsing on a narrow page. `display: none` by
+              default, so it is never announced twice. */}
+          {isDuration && <span className="activity-what-ms">{formatMs(entry.ms!)}</span>}
         </span>
         {entry.detail && (
-          <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-faint" title={entry.detail}>
+          <span className="activity-what-detail" title={entry.detail}>
             {entry.detail}
           </span>
         )}
-      </span>
-      {entry.ms !== undefined && (
-        <span
-          className={`activity-row-ms${entry.ms > SLOW_MS ? " is-slow" : ""}`}
-          title={`${Math.round(entry.ms)} milliseconds`}
-        >
-          {formatMs(entry.ms)}
+      </td>
+
+      <td className="activity-cell-outcome">
+        <span className={`activity-outcome ${TONE_CLASS[entry.tone]}`}>
+          <span className="activity-outcome-dot" aria-hidden="true" />
+          {outcomeOf(entry)}
         </span>
-      )}
-      <time
-        className="shrink-0 pt-px font-mono text-[10.5px] tabular-nums text-faint"
-        dateTime={new Date(entry.at).toISOString()}
-      >
-        {formatEntryClock(entry.at)}
-      </time>
-    </div>
+      </td>
+
+      <td className="activity-cell-ms">
+        {/* `is-empty` is a class rather than a `:empty` selector because the
+            cell always renders *something* — the dash is the row's own statement
+            that it has no measurement, and it should not carry the same weight
+            as one that does. */}
+        <span
+          className={`activity-ms${!isDuration && !isMark ? " is-empty" : ""}`}
+          title={durationTitle}
+        >
+          {durationText}
+        </span>
+      </td>
+    </tr>
   );
 });
 

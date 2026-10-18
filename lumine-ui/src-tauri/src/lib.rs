@@ -576,6 +576,11 @@ pub fn run() {
         // the webview, so the Music screen asks for a folder through an ordinary
         // command and no capability has to be granted to the frontend.
         .plugin(tauri_plugin_dialog::init())
+        // Approval questions as OS toasts. Registered from the webview side only
+        // for sending and listening; there is no Rust command here, because the
+        // request id already travels in the payload and the answer goes back the
+        // way every other permission answer does.
+        .plugin(tauri_plugin_notification::init())
         .manage(Mutex::new(AgentManager::default()))
         .invoke_handler(tauri::generate_handler![
             start_agent,

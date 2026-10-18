@@ -21,11 +21,15 @@ Two properties every read here keeps:
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from . import locators
+
+logger = logging.getLogger("lumine")
 
 # The ceiling every tool result is held to, imported here rather than passed in.
 # `state` is the module that decides how much of a page fits in a payload, and it
@@ -34,15 +38,39 @@ from . import locators
 # relative import inside a function body passes every other test and then crashes
 # the first real session.
 try:
-    from ..tool_results import MAX_RESULT_CHARS
+    from ..tool_results import MAX_PAGE_READ_CHARS
 except ImportError:  # running as a top-level script with agent/ on sys.path
-    from tool_results import MAX_RESULT_CHARS  # type: ignore[no-redef]
+    from tool_results import MAX_PAGE_READ_CHARS  # type: ignore[no-redef]
+
+# The per-site selector map comes in the same way, and for the same reason. It
+# used to be imported *inside* `read_region`, which passes every other test and
+# then fails the first real session -- `test_import_shapes` flags a function-level
+# relative import precisely because `python agent/agent.py` loads this module
+# through a different package path than the tests do.
+try:
+    from . import site_map
+except ImportError:  # running as a top-level script with agent/ on sys.path
+    import site_map  # type: ignore[no-redef]
 
 # -- bounds -------------------------------------------------------------------
 
-MAX_TEXT = 1500
+#: How much of a page's *text* one read carries. Deliberately the same number as
+#: the browser path's result ceiling (`MAX_PAGE_READ_CHARS`) rather than the
+#: global one: a read that stops at 800 characters ends mid-sentence on the very
+#: thing the read was for -- on a product page that is the price, which is why
+#: the reported failure was "she read the page and could not tell me what it
+#: costs". This is still a ceiling, not a target: it is re-billed on every later
+#: turn, so it is raised only for the browser path and never globally.
+MAX_TEXT = MAX_PAGE_READ_CHARS
 MAX_CANDIDATES = locators.MAX_CANDIDATES
 MAX_TABS = 12
+MAX_PAGE_ITEMS = 20
+
+#: How many controls one collection reports. Raised alongside `MAX_TEXT` for the
+#: same reason: 8 was a page's header, and a model asked to find "the second
+#: result" was choosing among the eight controls a marketing banner happened to
+#: own. Still bounded -- a single-page app can render thousands.
+MAX_REPORTED_CONTROLS = 60
 
 #: One screenshot, as PNG bytes. Capped because a screenshot is the largest thing
 #: this layer can produce and a model reads it as an image every time.
@@ -73,6 +101,34 @@ MODEL_IMAGE_QUALITY = 70
 
 
 @dataclass(frozen=True)
+class PageItem:
+    """A visible result/product card grounded in its current page snapshot."""
+
+    index: int
+    kind: str
+    title: str
+    text: str
+    ref: str = ""
+    href: str = ""
+    price: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        item: dict[str, Any] = {
+            "index": self.index,
+            "kind": self.kind,
+            "title": self.title,
+            "text": self.text,
+        }
+        if self.ref:
+            item["ref"] = self.ref
+        if self.href:
+            item["href"] = self.href
+        if self.price:
+            item["price"] = self.price
+        return item
+
+
+@dataclass(frozen=True)
 class Snapshot:
     """One observation, with the generation that identifies it.
 
@@ -87,22 +143,35 @@ class Snapshot:
     title: str = ""
     text: str = ""
     candidates: tuple[locators.Candidate, ...] = ()
+    items: tuple[PageItem, ...] = ()
     tab_count: int = 0
     ready: str = "loading"
+    #: Named fields pulled out of the page's *content* region by the site map
+    #: (`site_map.yaml`). A page read that only returns prose still cannot answer
+    #: "what does this cost?" without the model re-reading a paragraph hoping the
+    #: number is in it; a field is the same fact under a stable name, so the
+    #: result can say `price` instead of a sentence containing a currency glyph.
+    #: Empty for a page no entry claims, which is the honest state -- there is no
+    #: schema to guess at.
+    fields: dict[str, str] = field(default_factory=dict)
     observed_at: float = field(default_factory=time.time)
 
     def candidate_list(self) -> list[locators.Candidate]:
         return list(self.candidates)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out = {
             "generation": self.generation,
             "url": self.url,
             "title": self.title,
             "ready": self.ready,
             "text": self.text,
             "candidates": [item.to_dict() for item in self.candidates],
+            "items": [item.to_dict() for item in self.items],
         }
+        if self.fields:
+            out["fields"] = dict(self.fields)
+        return out
 
 
 @dataclass
@@ -142,14 +211,223 @@ class SnapshotStore:
 # the page and emits every candidate it can see, so `locators.rank` can choose
 # among them in Python rather than by a CSS selector we guessed.
 
-_JS_COLLECT = """
-() => {
+# -- what the reader is actually looking at -----------------------------------
+#
+# Every read here used to return the **head** of the document or of the content
+# region, whatever the reader had scrolled to, so scrolling changed nothing about
+# what came back. Measured on one product page: six `observe` calls and four
+# scrolls, all returning the same 127 words of header text, and a turn that ended
+# "I couldn't find the current price". The price was not in the head, and no
+# budget fixes that -- a bigger budget reads *more header*.
+#
+# So a read is the text whose box meets the viewport, expanded by half a screen
+# above and a screen below so it is not cut at the fold. Two rules carry it:
+#
+# * **It returns `''` rather than guessing** whenever this environment cannot
+#   answer -- a document with no layout yet, a detached frame, the stub DOM the
+#   suite executes the scripts against. The caller then keeps the head it read
+#   before this existed, which is still a read rather than an error.
+# * **Geometry is a second reading, never the whole answer.** The walk is in
+#   document order and capped, so a page with ten thousand nodes costs a bounded
+#   number of layout reads; and a text node's *line boxes* are what decide, not
+#   its ancestor's box, because a `<div>` spanning the whole page would
+#   otherwise qualify at every scroll position -- which is the bug in a new hat.
+#
+#: Inlined into `_JS_COLLECT`, `_JS_REGION_TEMPLATE` and `session._JS_OBSERVE`,
+#: because all three read a page for the model and none of them may answer the
+#: question differently. It is a fragment: it declares, it never returns at the
+#: top level, and it is spliced into an arrow body -- see `js_script_shape`.
+_JS_VIEWPORT_FN = """
+const onScreenText = (root, cap) => {
+  try {
+    if (!root || typeof window === 'undefined' || typeof document === 'undefined') return '';
+    const height = window.innerHeight || 0;
+    if (!height) return '';
+    if (typeof document.createTreeWalker !== 'function') return '';
+    const top = (window.scrollY || document.documentElement.scrollTop || 0) - height * 0.5;
+    const bottom = top + height * 2;
+    const walker = document.createTreeWalker(root, 4); // NodeFilter.SHOW_TEXT
+    const range = typeof document.createRange === 'function' ? document.createRange() : null;
+    const parts = [];
+    let chars = 0;
+    let scanned = 0;
+    let node = walker.nextNode();
+    while (node && scanned < 3000) {
+      scanned += 1;
+      const value = (node.nodeValue || '').replace(/\\s+/g, ' ').trim();
+      if (!value) { node = walker.nextNode(); continue; }
+      let rects = null;
+      if (range) {
+        try {
+          range.selectNode(node);
+          rects = range.getClientRects();
+        } catch (err) {
+          rects = null;
+        }
+      }
+      let hit = false;
+      if (rects && rects.length) {
+        for (let i = 0; i < rects.length; i += 1) {
+          if (rects[i].bottom > top && rects[i].top < bottom) { hit = true; break; }
+        }
+      } else {
+        const el = node.parentElement;
+        const box = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        hit = !!(box && box.height > 0 && box.bottom > top && box.top < bottom);
+      }
+      // The walk advances here, after this node has been judged -- advancing
+      // at the top of the loop made the parent-element fallback read the
+      // *next* node, and the last one read `null`, so the helper threw and
+      // answered '' on every page.
+      node = walker.nextNode();
+      if (!hit) continue;
+      parts.push(value);
+      chars += value.length + 1;
+      if (cap && chars >= cap) break;
+    }
+    return parts.join(' ');
+  } catch (err) {
+    return '';
+  }
+};
+const scrollPosition = () => {
+  try {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return null;
+    const root = document.scrollingElement || document.documentElement;
+    const max = Math.max(0, (root.scrollHeight || 0) - window.innerHeight);
+    return { y: Math.round(window.scrollY || root.scrollTop || 0), max: Math.round(max) };
+  } catch (err) {
+    return null;
+  }
+};
+"""
+
+# Nearby item text lets a control keep the identity of the card it belongs to:
+# a thumbnail link may only be labelled "Play", while its video title lives in
+# the surrounding renderer; a product button may only say "Add to cart".
+_JS_ITEM_CONTEXT_FN = """
+const itemContext = (el) => {
+  const isItem = (node) => {
+    if (!node || !node.tagName) return false;
+    const tag = node.tagName.toLowerCase();
+    const role = (node.getAttribute('role') || '').toLowerCase();
+    if (['article', 'li', 'tr', 'ytd-video-renderer', 'ytd-rich-item-renderer'].includes(tag)
+        || role === 'listitem') return true;
+    const markers = [
+      node.getAttribute('data-testid') || '',
+      node.getAttribute('data-component-type') || '',
+      node.getAttribute('class') || ''
+    ].join(' ');
+    return /(^|[\\s_-])(product|item|result|card|video)([\\s_-]|$)/i.test(markers);
+  };
+  for (let node = el && el.parentElement, depth = 0;
+       node && node !== document.body && depth < 8;
+       node = node.parentElement, depth += 1) {
+    if (!isItem(node)) continue;
+    const text = String(node.innerText || node.textContent || '')
+      .replace(/\\s+/g, ' ').trim();
+    if (text.length >= 12 && text.length <= 800) return text.slice(0, 180);
+  }
+  return '';
+};
+"""
+
+_JS_PAGE_ITEMS_FN = r"""
+const pageItems = () => {
+  const clean = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = typeof window === 'undefined' ? null : window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 &&
+      (!style || (style.display !== 'none' && style.visibility !== 'hidden'));
+  };
+  // Site-identified cards must be collected before generic list items: large
+  // shops commonly put dozens of navigation `<li>` nodes before their products.
+  const selectors = [
+    'ytd-video-renderer', 'ytd-rich-item-renderer',
+    '[data-component-type="s-search-result"]',
+    '[data-testid*="product" i]', '[class*="product-card" i]',
+    '[class*="video-card" i]', 'article', '[role="listitem"]', 'li'
+  ];
+  const nodes = new Set();
+  for (const selector of selectors) {
+    try {
+      for (const node of document.querySelectorAll(selector)) nodes.add(node);
+    } catch (err) {
+      // A browser-supported selector failure must not break the page read.
+    }
+  }
+  const money = /(?:[$€£¥₹৳]\s?\d[\d,.]*(?:\s?(?:USD|EUR|GBP|BDT|INR))?|\b(?:USD|EUR|GBP|BDT|INR)\s?\d[\d,.]*)/i;
+  const seen = new Set();
+  const out = [];
+  for (const node of nodes) {
+    if (out.length >= 20 || !visible(node)) continue;
+    const text = clean(node.innerText || node.textContent);
+    if (text.length < 12) continue;
+    const titleNode = Array.from(node.querySelectorAll(
+      '[itemprop="name"], [id*="video-title"], [data-testid*="title" i], h1, h2, h3, h4, a[title]'
+    )).find(visible);
+    const links = Array.from(node.querySelectorAll('a[href]')).filter(visible);
+    const title = clean(
+      (titleNode && (titleNode.getAttribute('content') || titleNode.getAttribute('title') ||
+        titleNode.innerText || titleNode.textContent)) ||
+      (links[0] && (links[0].getAttribute('title') || links[0].getAttribute('aria-label') ||
+        links[0].innerText || links[0].textContent)) ||
+      text.split(/[.!?]\s/)[0]
+    ).slice(0, 140);
+    if (title.length < 3) continue;
+    const link = links.find((entry) => {
+      const label = clean(entry.getAttribute('title') || entry.getAttribute('aria-label') ||
+        entry.innerText || entry.textContent);
+      return label.toLowerCase().includes(title.toLowerCase()) ||
+        title.toLowerCase().includes(label.toLowerCase());
+    }) || links[0];
+    const href = link ? String(link.href || '').slice(0, 240) : '';
+    const identity = title.toLowerCase() + '|' + href;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const priceNode = Array.from(node.querySelectorAll(
+      '[itemprop="price"], meta[itemprop="price"], [class*="price" i], [data-testid*="price" i]'
+    )).find(visible);
+    const candidatePrice = priceNode
+      ? clean(priceNode.getAttribute('content') || priceNode.innerText || priceNode.textContent)
+      : '';
+    const price = (candidatePrice.match(money) || text.match(money) || [])[0] || '';
+    const isVideo = /ytd-video|video-card/i.test(node.tagName + ' ' + (node.className || '')) ||
+      /\/watch\?/.test(href);
+    const isProduct = !!price || /product|s-search-result/i.test(
+      node.tagName + ' ' + (node.className || '') + ' ' + (node.getAttribute('data-testid') || '')
+    );
+    const target = link && link.getAttribute('data-lumine-ref')
+      ? link.getAttribute('data-lumine-ref')
+      : '';
+    out.push({
+      index: out.length + 1,
+      kind: isVideo ? 'video' : (isProduct ? 'product' : 'result'),
+      title: title,
+      text: text.slice(0, 300),
+      ref: target,
+      href: href,
+      price: price.slice(0, 60)
+    });
+  }
+  return out;
+};
+"""
+
+_JS_COLLECT = """(generation) => {
+""" + _JS_VIEWPORT_FN + """
+""" + _JS_ITEM_CONTEXT_FN + """
+""" + _JS_PAGE_ITEMS_FN + """
   // Stale markers from a previous collection are cleared first. Leaving them
   // behind would mean an action that presents an old reference resolves against
   // a node this run never looked at -- which is exactly the "clicked something
   // else" failure the generation check exists to prevent.
   for (const old of document.querySelectorAll('[data-lumine-ref]')) {
     old.removeAttribute('data-lumine-ref');
+  }
+  if (generation !== undefined && generation !== null && document.documentElement) {
+    document.documentElement.setAttribute('data-lumine-gen', String(generation));
   }
   const visible = (el) => {
     const rect = el.getBoundingClientRect();
@@ -209,9 +487,15 @@ _JS_COLLECT = """
     return tag;
   };
   const selectors = [
-    'a[href]', 'button', 'input', 'select', 'textarea', 'video', 'summary',
+    'a[href]', 'button', 'input', 'select', 'textarea', 'video', 'summary', 'img',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     '[role="button"]', '[role="link"]', '[role="tab"]', '[role="menuitem"]',
     '[role="option"]', '[role="checkbox"]', '[role="switch"]', '[contenteditable="true"]',
+    '[role="radiogroup"]', '[role="radio"]', '[role="combobox"]', '[role="listbox"]',
+    '[role="slider"]', '[role="spinbutton"]', '[role="dialog"]', '[role="alertdialog"]',
+    '[role="searchbox"]', '[role="textbox"]', '[role="togglebutton"]',
+    '[role="menuitemcheckbox"]', '[role="row"]', '[role="cell"]', '[role="heading"]',
+    '[role="figure"]', '[role="listitem"]',
     'details > summary'
   ];
   // A control that is the *only* place you can type inside a form. Search boxes
@@ -238,20 +522,38 @@ _JS_COLLECT = """
     if (seen.has(node)) continue;
     seen.add(node);
     if (!visible(node)) continue;
-    const name = labelFor(node);
-    if (!name) continue;
+    const role = roleOf(node);
     index += 1;
+    const raw = labelFor(node);
+    // A control with no name at all is still a control. The rule here used to be
+    // `if (!name) continue`, so a page of icon buttons and unlabelled headings
+    // reported *no controls at all* -- a state indistinguishable, to the model,
+    // from "this site has nothing on it", and the reason an image-heavy product
+    // page offered nothing to click. It is given the role and its position
+    // instead, and flagged, so a caller can tell an invented name from one the
+    // page itself chose rather than having to guess.
+    const name = raw || (role + ' ' + index);
     // A marker, minted on the node the ranking chose. This is what makes the
     // action hit *this* element rather than the nth match of a selector we
     // rebuilt after the page had already changed underneath us.
     const ref = 'r' + index;
     node.setAttribute('data-lumine-ref', ref);
-    const role = roleOf(node);
     const detail = {};
+    if (!raw) detail.synthesizedName = true;
     const href = node.getAttribute('href') || '';
     if (href && role === 'link') detail.href = href.slice(0, 200);
     const type = (node.getAttribute('type') || '').toLowerCase();
     if (type === 'checkbox' || type === 'radio') detail.checked = node.checked === true;
+    if (node.tagName.toLowerCase() === 'select') {
+      detail.options = Array.from(node.options)
+        .map((option) => (option.textContent || '').replace(/\\s+/g, ' ').trim())
+        .filter(Boolean)
+        .slice(0, 20);
+      if (node.selectedIndex >= 0) {
+        detail.selectedOption = (node.options[node.selectedIndex].textContent || '')
+          .replace(/\\s+/g, ' ').trim().slice(0, 80);
+      }
+    }
     const value = node.getAttribute('value');
     if (value) detail.value = value.slice(0, 80);
     if (soleFieldOfForm(node)) detail.soleField = true;
@@ -296,18 +598,31 @@ _JS_COLLECT = """
       checked: (type === 'checkbox' || type === 'radio') ? (node.checked === true) : null,
       detail: detail,
       // The nearest row-ish ancestor, so a caller can describe "the third result".
-      rowText: (node.closest('li, [role="listitem"], article, ytd-video-renderer, tr') || {}).textContent
-        ? (node.closest('li, [role="listitem"], article, ytd-video-renderer, tr').textContent || '')
-            .replace(/\\s+/g, ' ').trim().slice(0, 300)
-        : ''
+      rowText: itemContext(node)
     });
   }
   return {
     title: document.title || '',
     url: location.href,
-    text: ((document.body && document.body.innerText) || '').replace(/\\s+/g, ' ').trim().slice(0, 1500),
+    // The whole body, clipped in-page so a single-page app with a million nodes
+    // does not ship a megabyte to Python for Python to throw away. The number
+    // matches `MAX_TEXT`; Python clips again, and the second clip is the one
+    // that is allowed to change -- this is a wire bound, not a policy.
+    //
+    // The *viewport window* leads and the head is the fallback, because a head
+    // slice answers nothing on the pages people ask about: it is the cookie
+    // banner and the navigation, and scrolling changed nothing about it. The
+    // fallback is kept rather than an empty string so a page with no layout yet
+    // still reads as a page instead of as an error.
+    text: (onScreenText(document.body, 2400) ||
+      ((document.body && document.body.innerText) || '').replace(/\\s+/g, ' ').trim()).slice(0, 2400),
+    // Where this read was taken from, so "scroll down and read again" is a
+    // sentence the model can act on and a repeat read at the same position can
+    // be recognised for what it is.
+    scroll: scrollPosition(),
     ready: document.readyState,
-    candidates: out
+    candidates: out,
+    items: pageItems()
   };
 }
 """
@@ -348,6 +663,223 @@ _JS_TABS = """
   }))
   .slice(0, 12)
 """
+
+# -- the content region -------------------------------------------------------
+#
+# A page read that returns the whole body is a read that answers nothing on the
+# pages people actually ask about: a product page's body text is a cookie
+# banner, a navigation drawer and a recommendation rail, and the price is
+# somewhere after all of it. Reading the *content region* is the difference
+# between "the page loaded" and "it costs $49".
+#
+# The ladder is ordered from most specific to least. Each selector is tried in
+# turn and the first that yields enough text wins; a selector that matches
+# nothing is skipped, which is what makes it safe to lead with a site-specific
+# entry that may have gone stale after a redesign.
+
+#: Content-region selectors, most specific first. The tail of this ladder is
+#: deliberately `body`: a page whose content none of the above claims is a page
+#: we know nothing about, and reading all of it is still better than refusing --
+#: but `region` is reported as empty for that case, so a caller can tell "this
+#: is the whole page" from "this is the part that mattered".
+REGION_LADDER: tuple[str, ...] = (
+    "main",
+    '[role="main"]',
+    "article",
+    '[role="article"]',
+    "#content",
+    "#main-content",
+    "#main",
+    ".main",
+    ".content",
+    '[itemprop="articleBody"]',
+    "body",
+)
+
+#: The least text a region must carry to be believed as *the* content. Below
+#: this it is a wrapper that happened to match -- an empty `<main>` around a
+#: canvas, or a landmark a framework renders before its children mount -- and
+#: believing it would return a blank read for a page that has plenty to say.
+#: 80 characters is two short sentences: not much, but clearly not nothing.
+REGION_MIN_CHARS = 80
+
+#: Longest a single field's value may be, before the payload's own ceiling is
+#: applied on top. A field is one fact, and a fact that needs two hundred
+#: characters is a paragraph that has not been recognised as one.
+MAX_FIELD_VALUE_CHARS = 200
+MAX_REGION_FIELDS = 12
+
+
+#: ``options`` is an array of CSS selectors, resolved in Python and passed in by
+#: :func:`read_region`. The page never chooses them, and no model-authored
+#: JavaScript ever reaches this call -- the selectors are validated in
+#: :mod:`.site_map` before they get here, and a selector the page's own engine
+#: rejects is skipped rather than raised, because a read that fails on one bad
+#: selector is worse than a read that skips it.
+_JS_REGION_TEMPLATE = """([selectors, fieldMap, charBudget]) => {
+""" + _JS_VIEWPORT_FN + """
+  const clean = (s) => (s || '').replace(/\\s+/g, ' ').trim();
+  const visibleEnough = (el) => {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    // A region may be taller than the viewport -- that is normal -- but one with
+    // no box at all is display:none, and its text is still in innerText on some
+    // engines while being invisible on the screen.
+    return rect.height > 0 || el === document.body;
+  };
+  let region = null;
+  let regionSelector = '';
+  // Named `charBudget`, never `budget`: the parameter and a `const` of the same
+  // name in one arrow-function scope is a SyntaxError, and Playwright reports it
+  // as a failed evaluate rather than a broken script. Measured -- this read threw
+  // on *every* call and the caller swallowed it into "no region", so the per-site
+  // map was silently doing nothing on every page. `ScriptShapeTests` now checks
+  // every browser script for the collision.
+  const budget = Math.max(200, Number(charBudget) || 2400);
+  for (const selector of selectors || []) {
+    let found = null;
+    try {
+      found = document.querySelector(selector);
+    } catch (err) {
+      // A selector the page's engine rejects is a selector we should skip, not
+      // a reason to fail the whole read.
+      found = null;
+    }
+    if (!found || !visibleEnough(found)) continue;
+    const text = clean(found.innerText || found.textContent || '');
+    // `body` is the last entry on the ladder and is allowed to win with less
+    // text than the others, because on a genuinely sparse page it is the only
+    // region there is. Anything else has to earn the claim.
+    const isBody = found === document.body || String(selector).toLowerCase() === 'body';
+    if (!isBody && text.length < 80) continue;
+    region = found;
+    regionSelector = String(selector);
+    break;
+  }
+  if (!region) {
+    return { text: '', fields: {}, region: '' };
+  }
+  const raw = clean(region.innerText || region.textContent || '');
+  const fields = {};
+  const entries = Object.entries(fieldMap || {});
+  for (const [name, selector] of entries.slice(0, 12)) {
+    let node = null;
+    try {
+      node = region.querySelector(selector);
+    } catch (err) {
+      node = null;
+    }
+    if (!node) {
+      // Fall back to the document, so an absolute selector in the map still
+      // works. A relative one is the norm, but refusing an absolute one would
+      // make the map less expressive for no safety gained -- the selector was
+      // validated in Python before it got here.
+      try {
+        node = document.querySelector(selector);
+      } catch (err) {
+        node = null;
+      }
+    }
+    if (!node) continue;
+    const value = clean(node.innerText || node.textContent || node.getAttribute('content') || '');
+    if (!value) continue;
+    fields[String(name)] = value.slice(0, 200);
+  }
+  return {
+    // The region's *on-screen* text leads, and the whole region is the
+    // fallback. A region taller than the viewport is the normal case for an
+    // article or a product page, and its head is the same header the body read
+    // already returned -- so a windowed read is what makes "scroll and read
+    // again" produce different text. `''` means this environment cannot answer
+    // (no layout, the suite's stub DOM), and the caller keeps the old answer
+    // rather than an error.
+    text: (onScreenText(region, budget) || raw).slice(0, budget),
+    fields: fields,
+    region: regionSelector
+  };
+}
+"""
+
+
+async def read_region(page: Any, *, url: object = "", budget: int = MAX_TEXT) -> dict[str, Any]:
+    """The page's content region: its text, its named fields, and which selector won.
+
+    Returns ``{"text", "fields", "region"}`` and never raises on a page that has
+    none of the above -- ``region`` is ``""`` in that case, which is the honest
+    answer and lets a caller say so rather than implying a region was found. The
+    failure this replaces was a body-text read that handed the model eight
+    hundred characters of navigation and no price.
+
+    The site map is asked once and its entry is used for *both* halves -- which
+    selectors to try, and which fields to extract -- because two lookups would
+    be two answers if the file changed between them, and the field selectors are
+    relative to the content region, so they only mean anything together.
+    """
+    entry = site_map.match(url)
+    if entry is not None and entry.content:
+        options: tuple[str, ...] = (entry.content,) + tuple(
+            item for item in REGION_LADDER if item != entry.content
+        )
+        field_map: dict[str, str] = dict(entry.fields)
+    else:
+        # No entry, or one that only names fields. The ladder leads, and the
+        # fields still apply -- a map may know where a site keeps its price
+        # without knowing better than `main` where its prose is.
+        options = REGION_LADDER
+        field_map = dict(entry.fields) if entry is not None else {}
+    try:
+        payload = await page.evaluate(
+            _JS_REGION_TEMPLATE,
+            [list(options), field_map, int(budget)],
+        )
+    except Exception as exc:  # noqa: BLE001 -- a read must not take the tool down
+        logger.warning("[browser] region read failed: %s", exc)
+        return {"text": "", "fields": {}, "region": ""}
+    if not isinstance(payload, dict):
+        return {"text": "", "fields": {}, "region": ""}
+    return {
+        "text": str(payload.get("text") or ""),
+        "fields": _bounded_fields(payload.get("fields")),
+        "region": str(payload.get("region") or ""),
+    }
+
+
+def _bounded_fields(raw: Any) -> dict[str, str]:
+    """Named fields from the page, bounded to something a payload can carry."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key).strip()[:60]
+        text = " ".join(str(value or "").split())
+        if name and text:
+            out[name] = text[:MAX_FIELD_VALUE_CHARS]
+        if len(out) >= MAX_REGION_FIELDS:
+            break
+    return out
+
+
+def apply_region(payload: Any, region: Any) -> Any:
+    """Merge a region read into a payload, without losing what it already had.
+
+    The region's text *replaces* the body text when it has something to say and
+    leaves it alone when it does not, because a caller that collected controls
+    from the full document should not lose them to a region that turned out to
+    be empty. ``fields`` merges rather than replaces, and a field the region did
+    not find is left exactly as it was.
+    """
+    if not isinstance(payload, dict) or not isinstance(region, dict):
+        return payload
+    text = str(region.get("text") or "")
+    if len(text.strip()) >= REGION_MIN_CHARS:
+        payload["text"] = text[:MAX_TEXT]
+        payload["region"] = str(region.get("region") or "")
+    fields = region.get("fields")
+    if isinstance(fields, dict) and fields:
+        merged = dict(payload.get("fields") or {})
+        merged.update(_bounded_fields(fields))
+        payload["fields"] = merged
+    return payload
 
 
 #: What the collection script reports for a control inside a ``<form>``. Asserted
@@ -398,6 +930,61 @@ def candidates_from_script(payload: Any) -> list[locators.Candidate]:
     return out
 
 
+def page_items_from_script(payload: Any) -> tuple[PageItem, ...]:
+    """Parse bounded, visible result cards without trusting page field types."""
+    rows = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return ()
+    out: list[PageItem] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title = " ".join(str(row.get("title") or "").split())[:140]
+        text = " ".join(str(row.get("text") or "").split())[:300]
+        if len(title) < 3 or not text:
+            continue
+        href = str(row.get("href") or "").strip()[:240]
+        if not href.startswith(("http://", "https://")):
+            href = ""
+        ref = str(row.get("ref") or "")
+        if not re.fullmatch(r"r\d{1,3}", ref):
+            ref = ""
+        identity = (title.casefold(), href)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        kind = str(row.get("kind") or "result")
+        if kind not in {"video", "product", "result"}:
+            kind = "result"
+        out.append(
+            PageItem(
+                index=len(out) + 1,
+                kind=kind,
+                title=title,
+                text=text,
+                ref=ref,
+                href=href,
+                price=" ".join(str(row.get("price") or "").split())[:60],
+            )
+        )
+        if len(out) >= MAX_PAGE_ITEMS:
+            break
+    return tuple(out)
+
+
+def ground_candidates(
+    candidates: Sequence[locators.Candidate], items: Sequence[PageItem]
+) -> list[locators.Candidate]:
+    """Attach a result's title to its primary link for semantic resolution."""
+    item_titles = {item.ref: item.title for item in items if item.ref}
+    for candidate in candidates:
+        title = item_titles.get(candidate.ref)
+        if title:
+            candidate.detail["itemTitle"] = title
+    return list(candidates)
+
+
 def snapshot_from_script(
     generation: int, payload: Any, *, tab_count: Any = None
 ) -> Snapshot:
@@ -412,19 +999,56 @@ def snapshot_from_script(
     """
     data = payload if isinstance(payload, dict) else {}
     count = data.get("tabs") if tab_count is None else tab_count
+    candidates = candidates_from_script(data)
+    items = page_items_from_script(data)
+    candidates = ground_candidates(candidates, items)
     return Snapshot(
         generation=generation,
         url=str(data.get("url") or ""),
         title=str(data.get("title") or ""),
         text=str(data.get("text") or "")[:MAX_TEXT],
-        candidates=tuple(candidates_from_script(data)),
+        candidates=tuple(candidates),
+        items=items,
         # Counted leniently on purpose. This is the one field whose argument can
         # arrive as a list rather than a number -- `tabs` holds a list everywhere
         # in this module's own vocabulary -- and it used to raise here, taking
         # every read on a multi-frame page down with it.
         tab_count=_as_count(count),
         ready=str(data.get("ready") or "loading"),
+        fields=fields_from_script(data),
     )
+
+
+def fields_from_script(payload: Any) -> dict[str, str]:
+    """Named fields from a script payload, bounded and always a plain dict.
+
+    Kept as its own function rather than inlined in :func:`snapshot_from_script`
+    so the region reader and the collector can both feed a snapshot without
+    either of them reaching into the other's output shape. A non-dict or a
+    non-string value is dropped rather than coerced: a field the page did not
+    actually state is worse than a field that is absent, because the model will
+    quote it back as a fact.
+    """
+    raw = payload.get("fields") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        name = str(key).strip()[:60]
+        text = " ".join(str(value or "").split())
+        if name and text:
+            out[name] = text[:MAX_FIELD_CHARS]
+        if len(out) >= MAX_PAGE_FIELDS:
+            break
+    return out
+
+
+#: Longest one named field may be, and how many a single read reports. Both are
+#: here rather than in `tool_results` because they are the shape of *this*
+#: payload and nothing else uses them: a field is one fact ("$49.00"), and a page
+#: with more than twelve named facts is a page whose region selector is wrong.
+MAX_FIELD_CHARS = 200
+MAX_PAGE_FIELDS = 12
 
 
 def _as_count(value: Any) -> int:
@@ -464,8 +1088,15 @@ MAX_FORM_ROWS = 12
 
 
 def _form_budget_chars() -> int:
-    """The result ceiling, read once at module import."""
-    return int(MAX_RESULT_CHARS)
+    """The result ceiling a form read is fitted to.
+
+    The browser path reads *more* than the global ceiling, so a form read has to
+    be measured against the budget that path actually has. Measuring against the
+    global one fitted a two-field form into 800 characters while the payload it
+    was being placed inside was allowed 2400, so the rows were dropped for no
+    reason the caller could see.
+    """
+    return int(MAX_PAGE_READ_CHARS)
 
 
 def _payload_fits(rows: list[dict[str, Any]], extra: int) -> bool:

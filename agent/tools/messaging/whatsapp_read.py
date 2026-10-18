@@ -142,10 +142,21 @@ def _messages_payload(rows: list[dict[str, Any]], *, chat: str, generation: int)
     contact's text. The preamble is the boundary.
     """
     out = []
-    for ref in refs.message_refs(rows, chat=chat, generation=generation):
-        entry = {"id": ref.handle, "mine": ref.outgoing}
+    message_references = refs.message_refs(rows, chat=chat, generation=generation)
+    for i, ref in enumerate(message_references):
+        entry: dict[str, Any] = {"id": ref.handle, "mine": ref.outgoing}
         if ref.kind != "text":
             entry["kind"] = ref.kind
+        if i < len(rows):
+            sender = rows[i].get("sender")
+            if sender:
+                entry["sender"] = sender
+            msg_time = rows[i].get("time")
+            if msg_time:
+                entry["time"] = msg_time
+            msg_date = rows[i].get("date")
+            if msg_date:
+                entry["date"] = msg_date
         text = ref.preview[:MESSAGE_CLIP]
         if text:
             entry["text"] = text
@@ -157,6 +168,36 @@ def _messages_payload(rows: list[dict[str, Any]], *, chat: str, generation: int)
                 "count": len(out),
                 "messages": out,
                 "note": "newest last; ids count back from the newest",
+            },
+            max_chars=HISTORY_BUDGET_CHARS,
+        ),
+        max_chars=HISTORY_BUDGET_CHARS,
+    )
+
+
+def _search_messages_payload(
+    hits: list[dict[str, Any]], *, query: str, generation: int
+) -> str:
+    """Message search results, clipped and wrapped untrusted."""
+    out = []
+    for hit in hits[:8]:
+        entry: dict[str, Any] = {
+            "chat": clip(str(hit.get("chat") or ""), 30),
+            "text": clip(str(hit.get("text") or ""), MESSAGE_CLIP),
+        }
+        if hit.get("time"):
+            entry["time"] = str(hit.get("time"))
+        if hit.get("date"):
+            entry["date"] = str(hit.get("date"))
+        if hit.get("sender"):
+            entry["sender"] = str(hit.get("sender"))
+        out.append(entry)
+    return wrap_untrusted(
+        as_payload(
+            {
+                "query": query,
+                "count": len(out),
+                "results": out,
             },
             max_chars=HISTORY_BUDGET_CHARS,
         ),
@@ -193,11 +234,16 @@ async def _resolve_chat(name: str) -> str:
     )
 
 @function_tool()
-async def whatsapp_read(context: RunContext, action: str, chat: str = "") -> str:
+async def whatsapp_read(
+    context: RunContext,
+    action: str,
+    chat: str = "",
+    query: str = "",
+) -> str:
     """Look at the user's WhatsApp without sending anything.
 
     Use this to answer a question about their messages -- who has been writing,
-    whether someone replied, what was said -- rather than to send anything.
+    whether someone replied, what was said, or search messages.
     Reading a chat's messages asks the user first, once per conversation, and it
     is the only action here that does.
 
@@ -206,16 +252,18 @@ async def whatsapp_read(context: RunContext, action: str, chat: str = "") -> str
     - ``unread``: only the chats with unread messages.
     - ``messages``: read the recent messages in one chat. Needs ``chat``.
     - ``find``: find chats by name. Needs ``chat`` as the name to look for.
+    - ``search_messages``: search for keywords across messages or in one chat. Give keyword in ``query`` or ``chat``.
     - ``contact``: read one contact's about text and whether they are online.
 
     Never use this to send, reply, or change anything -- that is
-    ``send_whatsapp``. Report what you read plainly, and do not guess at a
+    ``send_whatsapp`` or ``whatsapp_chats``. Report what you read plainly, and do not guess at a
     message that was not in the result.
 
     Args:
-        action: chats, unread, messages, find, or contact.
+        action: chats, unread, messages, find, search_messages, or contact.
         chat: The person's name or the chat to look at. Required for messages,
-            find and contact.
+            find and contact. Optional filter for search_messages.
+        query: Keywords to look for in search_messages.
     """
     verb = str(action or "").strip().lower().replace("-", "_")
     wanted = str(chat or "").strip()
@@ -241,6 +289,25 @@ async def whatsapp_read(context: RunContext, action: str, chat: str = "") -> str
             rows = await web.search_chats(wanted)
         generation = refs.store.bump("*")
         return _chat_rows_payload(rows[:DEFAULT_CHATS], generation=generation)
+
+    if verb in ("search_messages", "search"):
+        search_term = str(query or wanted).strip()
+        if not search_term:
+            raise ToolError(
+                "Tell me what to search for -- give me the keywords to look up."
+            )
+        target_chat = wanted if (query and wanted) else ""
+        with progress_step(
+            context,
+            ops.READ_TOOL,
+            "search_messages",
+            f"Searching for {clip(search_term, 24)}",
+            index=1,
+            total=2,
+        ):
+            hits = await web.search_messages(search_term, chat=target_chat)
+        generation = refs.store.bump("*")
+        return _search_messages_payload(hits, query=search_term, generation=generation)
 
     if verb == "messages":
         if not wanted:

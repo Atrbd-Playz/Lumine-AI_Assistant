@@ -43,7 +43,7 @@ from agent.tools.browser import actions, session
 from agent.tools.browser import tools as browse_module
 from agent.tools.browser.tools import browse
 from agent.tools.tools_compat import ToolError
-from agent.tools.tool_results import MAX_RESULT_CHARS, UNTRUSTED_OPEN
+from agent.tools.tool_results import MAX_PAGE_READ_CHARS, UNTRUSTED_OPEN
 from agent.tools.tools_permission import TOOL_ACTION_CLASS, permission_floor
 
 
@@ -403,6 +403,48 @@ class ObservePayloadTests(unittest.TestCase):
         parsed = json.loads(self._payload())
         self.assertEqual(parsed["controls"][0]["ref"], "r1")
 
+    def test_controls_keep_their_nearby_item_context(self):
+        parsed = json.loads(self._payload(controls=[{
+            "ref": "r1",
+            "tag": "a",
+            "type": "",
+            "label": "View item",
+            "context": "Wireless headphones - $79.99",
+            "href": "/headphones",
+        }]))
+        control = parsed["controls"][0]
+        self.assertEqual(control["context"], "Wireless headphones - $79.99")
+        self.assertNotIn("href", control)
+
+    def test_long_page_control_names_keep_enough_of_the_title_to_identify_it(self):
+        title = "A video title long enough to distinguish this result from another"
+        parsed = json.loads(self._payload(controls=[{
+            "ref": "r1", "tag": "a", "type": "", "label": title,
+        }]))
+        self.assertEqual(parsed["controls"][0]["label"], title)
+
+    def test_the_scroll_window_rides_along_when_the_page_reports_one(self):
+        # The text is windowed, so its position belongs beside it -- without
+        # the number "scroll down and read again" is a sentence the model
+        # cannot confirm it followed.
+        parsed = json.loads(self._payload(scroll={"y": 1400, "max": 4200}))
+        self.assertEqual(parsed["scroll"], {"y": 1400, "max": 4200})
+
+    def test_no_scroll_key_when_the_page_could_not_answer(self):
+        # Absent rather than null: a page with no layout reports nothing, and
+        # `scroll: null` reads as a position the model then reasons about.
+        for empty in (None, {}, {"y": "over", "max": 4}):
+            with self.subTest(scroll=empty):
+                self.assertNotIn("scroll", json.loads(self._payload(scroll=empty)))
+
+    def test_a_repeat_read_notice_rides_along_with_the_text_it_is_about(self):
+        parsed = json.loads(self._payload(notice="This is the same text you just read."))
+        self.assertIn("same text", parsed["notice"])
+
+    def test_no_notice_key_when_there_is_nothing_to_say(self):
+        self.assertNotIn("notice", json.loads(self._payload()))
+        self.assertNotIn("notice", json.loads(self._payload(notice="   ")))
+
     def test_controls_are_capped_and_bad_references_are_dropped(self):
         flood = [{"ref": f"r{i}", "tag": "a", "type": "", "label": f"Link {i}"} for i in range(30)]
         flood.append({"ref": 'x"]', "tag": "a", "type": "", "label": "not a ref"})
@@ -417,14 +459,19 @@ class ObservePayloadTests(unittest.TestCase):
             text="word " * 1000,
             controls=[{"ref": "r1", "tag": "input", "type": "submit", "label": "L" * 300}],
         )
-        self.assertLessEqual(len(payload), MAX_RESULT_CHARS)
+        # The browser path's own ceiling (`MAX_PAGE_READ_CHARS`), not the shared
+        # `MAX_RESULT_CHARS`: an observe exists to answer a question about *this*
+        # page, and 800 characters of a product page is its navigation rather than
+        # its price. The global number is deliberately untouched -- this budget is
+        # paid per call and only by the browser paths.
+        self.assertLessEqual(len(payload), MAX_PAGE_READ_CHARS)
         parsed = json.loads(payload)
         self.assertLessEqual(len(parsed["title"]), actions.TITLE_CHARS)
         self.assertLessEqual(len(parsed["text"]), actions.OBSERVE_TEXT_CHARS)
         self.assertEqual(parsed["controls"][0]["kind"], "input:submit")
 
     def test_a_full_result_that_exceeds_the_budget_says_it_was_cut(self):
-        # Eight max-length controls plus full text do not fit the shared
+        # A full page of max-length controls plus full text does not fit the
         # ceiling, and a model told a list is complete answers as though it
         # were -- so the cut is named, not silent.
         #
@@ -442,7 +489,7 @@ class ObservePayloadTests(unittest.TestCase):
             text="word " * (actions.OBSERVE_TEXT_CHARS * 3),
             controls=flood,
         )
-        self.assertLessEqual(len(payload), MAX_RESULT_CHARS)
+        self.assertLessEqual(len(payload), MAX_PAGE_READ_CHARS)
         parsed = json.loads(payload)
         self.assertTrue(parsed.get("truncated") or parsed.get("omitted"), "a cut list must say so")
         # And the part that survived is readable, which is the whole point.
@@ -607,7 +654,13 @@ class ScrollFlowTests(AuditRedirect):
         scroll.assert_called_once_with("down")
         self.assertEqual(approval.call_args.kwargs["action"], "scroll")
         self.assertEqual(approval.call_args.kwargs["action_class"], "read")
-        self.assertEqual(result, "Scrolled down.")
+        self.assertTrue(result.startswith("Scrolled down."))
+        # The position is *in* the sentence, and that is the point of the
+        # change: reads are windowed, so the model compares this number
+        # against the next read's `scroll.y`. A scroll that reports "down"
+        # while landing on the same line is then visible as the no-op it is,
+        # rather than as another identical read.
+        self.assertIn("Now at 400 of 4000.", result)
 
     def test_reaching_the_bottom_says_so(self):
         with mock.patch.object(
@@ -649,6 +702,17 @@ class ScrollFlowTests(AuditRedirect):
         ):
             result = run_browse("scroll")
         self.assertEqual(result, "That page fits on screen -- there is nothing to scroll.")
+
+    def test_scrolling_up_mid_page_reports_where_it_landed(self):
+        # The same number matters in both directions: "scrolled up" from
+        # 1400 lands somewhere specific, and a model reading the next
+        # window's `scroll.y` has something to check it against.
+        with mock.patch.object(
+            browse_module, "scroll_page", return_value={"scrolled": True, "y": 600, "max": 4000}
+        ):
+            result = run_browse("scroll", text="up")
+        self.assertTrue(result.startswith("Scrolled up."))
+        self.assertIn("Now at 600 of 4000.", result)
 
     def test_a_direction_that_does_not_exist_never_reaches_the_browser(self):
         with mock.patch.object(

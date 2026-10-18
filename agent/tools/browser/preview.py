@@ -164,7 +164,24 @@ def show_to_model(context: Any, data: bytes, *, caption: str = "") -> str:
             return "That picture could not be prepared."
 
         session = getattr(context, "session", None)
-        chat_ctx = getattr(session, "chat_ctx", None)
+        # `history`, then `chat_ctx`.
+        #
+        # The live `AgentSession` has **`history`** -- a property returning
+        # `self._chat_ctx` -- and does not expose `chat_ctx` at all. Reading only
+        # `chat_ctx` meant `getattr` answered `None` on every real session, so
+        # `for_model=true` returned "I can't show myself a picture" on every
+        # build while every unit test passed: each one faked the attribute the
+        # code asked for rather than the one the library provides. That is the
+        # whole of "the screenshot command failed".
+        #
+        # `chat_ctx` stays as the fallback for the older shape and for anything
+        # that wraps the session, so this widens rather than moves.
+        chat_ctx = None
+        for attribute in ("history", "chat_ctx"):
+            candidate = getattr(session, attribute, None)
+            if candidate is not None:
+                chat_ctx = candidate
+                break
         if chat_ctx is None:
             # `_ReadOnlyChatContext` exposes items but not add_message; the mutable
             # context is one level down on the agent. Reading it defensively here

@@ -6,6 +6,7 @@ import { Icon } from "./Icon";
 import { Presence } from "./Presence";
 import { CallBar } from "./CallBar";
 import { VisionDeck } from "./VisionDeck";
+import { StageLedger } from "./StageLedger";
 import { ConversationPanel, type PanelKind } from "./ConversationPanel";
 import { ConversationToggle, NotesToggle } from "./ConversationToggle";
 import { NotesPanel } from "./NotesPanel";
@@ -305,7 +306,7 @@ export function MainSpace({
           centers symmetrically. The fixed 256 existed to give the old inner
           preview a corner off the face; the preview now anchors to the stage.
         */}
-        <div className="stage-presence relative z-[1] grid place-items-center self-center min-h-0">
+        <div className="stage-presence relative z-1 grid place-items-center self-center min-h-0">
           <Presence
             state={state}
             cursorGaze={cursorGaze}
@@ -339,6 +340,19 @@ export function MainSpace({
           browserPreview={browserPreview}
           desktopState={desktopState}
         />
+
+        {/*
+          Live tool activity and a task's steps, on the left of the avatar.
+
+          This is where "Lumine is working" belongs to live: a ledger beside the
+          stage rather than a toast in the bottom-left stack, because the toast
+          stack is persistent and six calls in one turn bury the only line a
+          person needed. It renders null when there is nothing running, so the
+          stage stays the avatar and the greeting the rest of the time. The
+          store is module-level (features/stage/stageActivity), so this
+          component is pure presentation over a snapshot.
+        */}
+        <StageLedger />
 
         {/*
           The greeting, and only the greeting.

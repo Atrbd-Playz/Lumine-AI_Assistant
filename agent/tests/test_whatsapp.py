@@ -1055,8 +1055,6 @@ async def _stale(text: str) -> whatsapp.Observation:
     return whatsapp.Observation(True, time.monotonic() - 60.0)
 
 
-async def _answer(delivered: bool):
-    return whatsapp.Observation(delivered, time.monotonic())
 
 
 class _SendHarness(unittest.TestCase):
@@ -1263,6 +1261,13 @@ class SendSequenceTests(_SendHarness):
             run_tool("Nobody", "hello")
         self.assertEqual(self.order, ["check", "open"])
         self.assertEqual(self.sends_asked_for(), [])
+
+    def test_draft_only_types_composer_without_approval_or_sending(self):
+        result = run_tool("Alice", "draft text", draft_only=True)
+        self.assertEqual(self.order, ["check", "open", "draft"])
+        self.assertEqual(self.sends_asked_for(), [])
+        self.assertIn("Drafted message to Alice", result)
+        self.assertIn("draft text", result)
 
 
 # ---------------------------------------------------------------------------
@@ -1615,7 +1620,7 @@ class DuplicateSendIsSilentTests(_SendHarness):
         # other person's chat, and swallowing it is the failure this class exists
         # to prevent.
         self.use_backend(
-            delivery_seen=lambda text: _answer(False)
+            delivery_seen=_answer(False)
         )
         with self.assertRaises(ToolError):
             run_tool("Alice", "hello")

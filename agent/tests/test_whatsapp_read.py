@@ -95,9 +95,17 @@ class ReadToolTests(unittest.TestCase):
                 },
             )
         )
+        self.search_messages = self.stack.enter_context(
+            mock.patch.object(
+                reader.web,
+                "search_messages",
+                new_callable=mock.AsyncMock,
+                return_value=[{"chat": "Afia", "text": "let's meet at 6"}],
+            )
+        )
 
-    def call(self, action: str, chat: str = "") -> str:
-        return asyncio.run(reader.whatsapp_read(self.context, action, chat))
+    def call(self, action: str, chat: str = "", query: str = "") -> str:
+        return asyncio.run(reader.whatsapp_read(self.context, action, chat, query=query))
 
     # -- consent ------------------------------------------------------------
 
@@ -241,6 +249,37 @@ class ReadToolTests(unittest.TestCase):
             with self.subTest(action=action):
                 with self.assertRaisesRegex(ToolError, "which chat"):
                     self.call(action)
+
+    def test_search_messages_with_query_and_chat(self):
+        result = self.call("search_messages", chat="Afia", query="meet")
+        self.search_messages.assert_awaited_once_with("meet", chat="Afia")
+        payload = self.payload(result)
+        self.assertEqual(payload["query"], "meet")
+        self.assertEqual(len(payload["results"]), 1)
+        self.assertEqual(payload["results"][0]["chat"], "Afia")
+        self.assertIn("let's meet at 6", payload["results"][0]["text"])
+
+    def test_search_messages_global_without_chat(self):
+        result = self.call("search_messages", query="project")
+        self.search_messages.assert_awaited_once_with("project", chat="")
+        payload = self.payload(result)
+        self.assertEqual(payload["query"], "project")
+        self.assertEqual(len(payload["results"]), 1)
+
+    def test_search_messages_without_query_refuses(self):
+        with self.assertRaisesRegex(ToolError, "what to search for"):
+            self.call("search_messages", chat="", query="")
+
+    def test_group_message_sender_is_propagated_into_payload(self):
+        group_rows = [
+            {"text": "meeting starting now", "mine": False, "kind": "text", "sender": "Alice", "time": "10:00 AM"},
+            {"text": "joining", "mine": True, "kind": "text", "time": "10:01 AM"},
+        ]
+        self.read_messages.return_value = group_rows
+        payload = self.payload(self.call("messages", "Team"))
+        self.assertEqual(payload["messages"][0]["sender"], "Alice")
+        self.assertEqual(payload["messages"][0]["time"], "10:00 AM")
+        self.assertNotIn("sender", payload["messages"][1])
 
     @staticmethod
     def payload(result: str) -> dict:

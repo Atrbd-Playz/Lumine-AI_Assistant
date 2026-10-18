@@ -144,48 +144,185 @@ async def _delete(context: Any, chat: str, target: str) -> str:
     return f"Deleted that message in {title} for everyone."
 
 
+EMOJI_NAMES: dict[str, str] = {
+    "thumbs up": "👍",
+    "thumbsup": "👍",
+    "thumb up": "👍",
+    "like": "👍",
+    "heart": "❤️",
+    "love": "❤️",
+    "laugh": "😂",
+    "joy": "😂",
+    "funny": "😂",
+    "lol": "😂",
+    "surprised": "😮",
+    "surprise": "😮",
+    "wow": "😮",
+    "sad": "😢",
+    "cry": "😢",
+    "tear": "😢",
+    "pray": "🙏",
+    "thanks": "🙏",
+    "fire": "🔥",
+    "lit": "🔥",
+}
+
+
+async def _react(context: Any, chat: str, target: str, emoji: str) -> str:
+    title = await _resolve(chat)
+    index = refs.parse_handle(target)
+    if index < 1:
+        raise ToolError(
+            "Tell me which message to react to -- use the id from the messages you "
+            "read (e.g. m1). Nothing was changed."
+        )
+    emoji_clean = str(emoji or "").strip().lower()
+    emoji_char = EMOJI_NAMES.get(emoji_clean, str(emoji or "").strip()) or "👍"
+    await web.open_chat(title)
+    with progress_step(
+        context, ops.CHATS_TOOL, "react",
+        f"Reacting with {emoji_char} in {clip(title, 20)}", index=1, total=1,
+    ) as step_state:
+        if not await web.react(index, emoji_char):
+            raise ToolError(
+                f"I couldn't confirm the reaction was added in {title}, so I have "
+                "not tried again."
+            )
+        step_state["verified"] = "the reaction badge is on that message"
+    return f"Reacted with {emoji_char} to that message in {title}."
+
+
+async def _forward(context: Any, source_chat: str, target: str, dest_name: str) -> str:
+    if not dest_name:
+        raise ToolError(
+            "Tell me who to forward this message to -- give me the contact's name."
+        )
+    source_title = await _resolve(source_chat)
+    dest_title = await _resolve(dest_name)
+    index = refs.parse_handle(target)
+    if index < 1:
+        raise ToolError(
+            "Tell me which message to forward -- use the id from the messages you "
+            "read (e.g. m1). Nothing was forwarded."
+        )
+    await web.open_chat(source_title)
+    with progress_step(
+        context, ops.CHATS_TOOL, "forward",
+        f"Forwarding message from {clip(source_title, 16)} to {clip(dest_title, 16)}", index=1, total=1,
+    ) as step_state:
+        if not await web.forward(index, destination=dest_title):
+            raise ToolError(
+                f"I couldn't confirm the message was forwarded to {dest_title}. "
+                "Nothing was sent."
+            )
+        step_state["verified"] = "message forwarded into destination chat"
+    return f"Forwarded that message from {source_title} to {dest_title}."
+
+
+async def _clear_chat(context: Any, chat: str) -> str:
+    title = await _resolve(chat)
+    await web.open_chat(title)
+    with progress_step(
+        context, ops.CHATS_TOOL, "clear_chat",
+        f"Clearing messages in {clip(title, 20)}", index=1, total=1,
+    ) as step_state:
+        if not await web.clear_chat():
+            raise ToolError(
+                f"I couldn't clear the messages in {title}. Check WhatsApp."
+            )
+        step_state["verified"] = "conversation messages cleared"
+    return f"Cleared all messages in {title}."
+
+
+async def _clear_composer_action(context: Any, chat: str) -> str:
+    title = await _resolve(chat) if chat else await web.active_chat()
+    if title:
+        await web.open_chat(title)
+    with progress_step(
+        context, ops.CHATS_TOOL, "clear_composer",
+        f"Clearing composer for {clip(title or 'WhatsApp', 20)}", index=1, total=1,
+    ) as step_state:
+        if not await web.clear_composer():
+            raise ToolError(
+                f"I couldn't clear the message box for {title or 'WhatsApp'}. Check WhatsApp."
+            )
+        step_state["verified"] = "composer is empty"
+    return f"Cleared the composer in {title or 'WhatsApp'}."
+
+
 @function_tool()
 async def whatsapp_chats(
-    context: RunContext, action: str, chat: str = "", message: str = ""
+    context: RunContext,
+    action: str,
+    chat: str = "",
+    message: str = "",
+    emoji: str = "",
+    to: str = "",
 ) -> str:
-    """Arrange a WhatsApp chat: mark read, pin, mute, archive, star, delete.
+    """Arrange a WhatsApp chat: mark read, pin, mute, archive, star, delete, react, forward, clear_chat, clear_composer.
 
-    For changing a conversation, not for reading one and not for sending. If the
+    For changing a conversation, not for reading one and not for sending a new message. If the
     user wants to know what was said, use ``whatsapp_read``; if they want to
     message somebody, use ``send_whatsapp``.
 
     Actions on a chat: ``mark_read``, ``mark_unread``, ``pin``, ``unpin``,
-    ``mute``, ``unmute``, ``archive``, ``unarchive``. Give the person's name in
+    ``mute``, ``unmute``, ``archive``, ``unarchive``, ``clear_chat``, ``clear_composer``. Give the person's name in
     ``chat``.
 
+    ``clear_composer`` discards any unsent draft from the message box without affecting chat history.
+
     ``star`` marks one message -- give the person's name and the message id from
-    a previous read.
+    a previous read. ``unstar`` removes the star.
+
+    ``react`` adds an emoji reaction to a message. Give the person's name in ``chat``,
+    the message id in ``message``, and the emoji in ``emoji`` (e.g. 👍, ❤️, 😂).
+
+    ``forward`` sends a message to another contact. Give the source in ``chat``,
+    the message id in ``message``, and the destination contact in ``to``.
 
     ``delete`` removes one message for *everyone* in the chat. It is irreversible
     for the other person too, so the user always confirms it first with the
     message named. Never delete on your own initiative and never delete more than
     the one message the user named.
 
-    ``block`` stops a contact messaging you. Say what it does before confirming.
+    ``block`` stops a contact messaging you. ``unblock`` restores contact. Say what it does before confirming.
 
     Args:
         action: mark_read, mark_unread, pin, unpin, mute, unmute, archive,
-            unarchive, star, unstar, delete, or block.
+            unarchive, star, unstar, delete, block, unblock, react, forward, clear_chat, or clear_composer.
         chat: The person's name, as it appears in WhatsApp.
-        message: For star and delete, the message id a read gave you.
+        message: For star, delete, react and forward, the message id a read gave you (e.g. m1).
+        emoji: For react, the emoji character or name (e.g. ❤️, 👍, fire, laugh).
+        to: For forward, the destination contact name.
     """
     verb = str(action or "").strip().lower().replace("-", "_")
     wanted = str(chat or "").strip()
     target = str(message or "").strip()
 
-    if verb not in CHAT_VERBS and verb not in ("star", "unstar", "delete", "block", "unblock"):
+    valid_verbs = (
+        set(CHAT_VERBS)
+        | {"star", "unstar", "delete", "block", "unblock", "react", "forward", "clear_chat", "clear_composer", "clear_draft", "discard_draft"}
+    )
+    if verb not in valid_verbs:
         raise ToolError(MSG_UNKNOWN)
+
+    if verb in ("clear_composer", "clear_draft", "discard_draft"):
+        return await _clear_composer_action(context, wanted)
 
     if not wanted:
         raise ToolError(MSG_NEED_CHAT)
 
     if verb == "delete":
         return await _delete(context, wanted, target)
+
+    if verb == "react":
+        return await _react(context, wanted, target, emoji)
+
+    if verb == "forward":
+        return await _forward(context, wanted, target, to)
+
+    if verb == "clear_chat":
+        return await _clear_chat(context, wanted)
 
     if verb == "block":
         return await _block(context, wanted, block=True)

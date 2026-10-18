@@ -1,0 +1,75 @@
+# Where a site keeps its content, and what its fields are called.
+#
+# Read by agent/tools/browser/site_map.py. Each key is a host (or a URL -- both
+# spellings work) and each entry has:
+#
+#   content: a CSS selector for the region holding the page's substance
+#   fields:  a map of a NAME to a selector *inside that region*
+#
+# Everything here is optional. A site with no entry reads through the generic
+# ladder in state.py (main -> [role=main] -> article -> #content -> body), which
+# is a good answer on almost every site. An entry exists only where that ladder
+# is not good enough.
+#
+# The point of a field is that it comes back under a stable name. A price read
+# out of a paragraph is a sentence the model has to find a number in; a price
+# read from a selector is `{"price": "$49.00"}`, and the difference is the whole
+# of "she read the page but could not tell me what it costs".
+#
+# This file is NOT the search table. agent/tools/browser/sites.py answers "how do
+# I search here" -- which input gets the keystrokes. This one answers "what am I
+# looking at once I arrive". They share a host column and nothing else.
+#
+# A selector that no longer matches is skipped, not fatal: a site's redesign
+# costs one entry a fallback, not the tool its read.
+
+# -- ecommerce ---------------------------------------------------------------
+
+amazon.in:
+  content: "#dp-container, #centerCol, #productDescription_feature_div"
+  fields:
+    title: "#productTitle"
+    price: ".a-price .a-offscreen, #priceblock_ourprice, #price_inside_buybox"
+    rating: "#acrPopover .a-size-base"
+    reviewCount: "#acrCustomerReviewText"
+    availability: "#availability span"
+
+daraz.com.bd:
+  content: "[data-testid='pdp-content'], .pdp-product-details, #root"
+  fields:
+    title: "[data-testid='pdp-product-name'], h1"
+    price: "[data-testid='pdp-price'] .pdp-price_type_normal, [data-testid='pdp-price']"
+    rating: "[data-testid='pdp-rating']"
+    sold: "[data-testid='pdp-sold-count']"
+
+# -- video -------------------------------------------------------------------
+
+youtube.com:
+  # The watch page's description and title live in `ytd-watch-flexy`'s secondary
+  # column; the results page has no such wrapper, so `main` follows and wins
+  # there. This is why the ladder is tried in order rather than picked by one
+  # selector: one entry covers two very different pages.
+  content: "#secondary, ytd-watch-flexy #primary, ytd-rich-grid-renderer"
+  fields:
+    title: "h1.ytd-watch-metadata yt-formatted-string, h1.title"
+    channel: "#channel-name a, ytd-channel-name a"
+    views: "#info span.view-count, ytd-watch-info-text #info span"
+    likes: "ytd-toggle-button-renderer[aria-label*='like'] button"
+
+# -- reading -----------------------------------------------------------------
+
+wikipedia.org:
+  content: "#mw-content-text .mw-parser-output"
+  fields:
+    title: "#firstHeading"
+    summary: "#mw-content-text .mw-parser-output > p:not(.mw-empty-expr)"
+
+# -- search ------------------------------------------------------------------
+
+google.com:
+  # Search results are already the content, so the field that matters is the
+  # *stats line* -- how many results and how long they took -- which is the one
+  # fact a body-text read buries under the first ten links.
+  content: "#search, #rso"
+  fields:
+    stats: "#result-stats"

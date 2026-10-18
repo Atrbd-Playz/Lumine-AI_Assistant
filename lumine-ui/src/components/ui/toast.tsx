@@ -162,9 +162,10 @@ function ToastDescription({ className, ...props }: ToastPrimitive.Description.Pr
     <ToastPrimitive.Description
       data-slot="toast-description"
       // Clamped at three lines as a floor on card height. Nothing in the app
-      // writes a paragraph here — tool payloads are capped by `toolToast` and
-      // failures are one sentence from `categorizeError` — so this only ever
-      // catches a provider string that quoted its own body back at us.
+      // writes a paragraph here — tool payloads never reach this stack at
+      // all (they go to the stage ledger, one reduced line) and failures are
+      // one sentence from `categorizeError` — so this only ever catches a
+      // provider string that quoted its own body back at us.
       className={cn(
         "line-clamp-3 font-[var(--font-ui)] text-[0.71875rem] leading-[1.45] text-[var(--color-text-soft)] wrap-break-word",
         className

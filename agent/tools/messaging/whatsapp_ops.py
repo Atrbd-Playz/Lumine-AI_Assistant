@@ -232,6 +232,14 @@ OPERATIONS: tuple[Operation, ...] = (
         reads_history=True,
         summary="Read the most recent messages in one chat.",
     ),
+    Operation(
+        verb="search_messages",
+        tool=READ_TOOL,
+        action_class="read",
+        web=True,
+        verify="the search results WhatsApp renders matching the query",
+        summary="Search messages for keywords across or inside chats.",
+    ),
     # -- sending ------------------------------------------------------------
     Operation(
         verb="send_text",
@@ -260,20 +268,6 @@ OPERATIONS: tuple[Operation, ...] = (
         summary="Reply to one specific message, quoting it.",
     ),
     Operation(
-        # Implemented in `whatsapp_web.forward` and verified there, but no
-        # `send_whatsapp` parameter reaches it: the tool takes a recipient and a
-        # body, not a message to forward. Marked unselectable so it stays on the
-        # record without being a switch that can never be used.
-        verb="forward",
-        tool=SEND_TOOL,
-        action_class="destructive",
-        web=True,
-        verify="the forwarded bubble present in the destination chat",
-        hold_seconds=SEND_HOLD_SECONDS,
-        summary="Forward one message to somebody else.",
-        selectable=False,
-    ),
-    Operation(
         verb="attach",
         tool=SEND_TOOL,
         action_class="destructive",
@@ -281,17 +275,6 @@ OPERATIONS: tuple[Operation, ...] = (
         verify="the attachment bubble present with the right caption",
         hold_seconds=SEND_HOLD_SECONDS,
         summary="Send a file from this computer as a message.",
-    ),
-    Operation(
-        # Same shape as `forward`: working in the Web path, unreachable from the
-        # tool, so not a verb a settings key should be able to name.
-        verb="react",
-        tool=SEND_TOOL,
-        action_class="act",
-        web=True,
-        verify="the reaction badge on that specific message",
-        summary="React to one specific message with an emoji.",
-        selectable=False,
     ),
     Operation(
         verb="typing",
@@ -302,6 +285,44 @@ OPERATIONS: tuple[Operation, ...] = (
         summary="Show the typing indicator in a chat for a moment.",
     ),
     # -- chat management ----------------------------------------------------
+    Operation(
+        verb="react",
+        tool=CHATS_TOOL,
+        action_class="act",
+        web=True,
+        verify="the reaction badge on that specific message",
+        summary="React to one specific message with an emoji.",
+        selectable=True,
+    ),
+    Operation(
+        verb="forward",
+        tool=CHATS_TOOL,
+        action_class="destructive",
+        web=True,
+        verify="the forwarded bubble present in the destination chat",
+        hold_seconds=SEND_HOLD_SECONDS,
+        summary="Forward one message to somebody else.",
+        selectable=True,
+    ),
+    Operation(
+        verb="clear_chat",
+        tool=CHATS_TOOL,
+        action_class="destructive",
+        web=True,
+        verify="all messages removed from the open conversation",
+        hold_seconds=DELETE_HOLD_SECONDS,
+        summary="Clear all messages in a chat.",
+        selectable=True,
+    ),
+    Operation(
+        verb="clear_composer",
+        tool=CHATS_TOOL,
+        action_class="act",
+        web=True,
+        verify="the composer holding no text",
+        summary="Clear or discard any unsent draft in the message box.",
+        selectable=True,
+    ),
     Operation(
         verb="mark_read",
         tool=CHATS_TOOL,

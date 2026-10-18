@@ -27,11 +27,20 @@ import type { LumineAnimation } from "./avatarTypes";
  * ## Ordering is not meaningful; the weights are
  */
 const BEHAVIOURS: Record<LumineState, ReadonlyArray<readonly [LumineAnimation, number]>> = {
-  // Resting. Long, small, and mostly blinks. She is not performing, and the
-  // absence of motion is most of what "resting" means.
+  // Resting, and no longer "mostly blinks" — that note was written when the
+  // complaint was that the face fidgets, and the balance has since swung the
+  // other way: a resting face that only ever blinks is a screensaver with a
+  // heartbeat. Blinks still outnumber everything else, because a face that
+  // *doesn't* blink is the uncanny case, but the pool now reaches for the three
+  // body-led kawaii gestures — `curiousTilt`, `wiggle`, `softBounce` — that make
+  // her look like she is deciding what to do rather than waiting to be asked.
+  // All three are body-led and none of them is in `MOVES_EYES`, so they survive
+  // the cursor-gaze filter and the resting face is alive for pointer users too,
+  // which is the majority case: gaze is on by default.
   idle: [
-    ["blink", 30], ["slowBlink", 10], ["softBreeze", 14], ["microTilt", 10],
-    ["tinySway", 12], ["lookLeft", 8], ["lookRight", 8], ["exhale", 6],
+    ["blink", 26], ["slowBlink", 10], ["softBreeze", 12], ["microTilt", 10],
+    ["tinySway", 10], ["curiousTilt", 9], ["wiggle", 8], ["softBounce", 7],
+    ["lookLeft", 6], ["lookRight", 6], ["exhale", 5],
   ],
 
   // Connecting. Predominantly `reaching`, because searching for a room that has

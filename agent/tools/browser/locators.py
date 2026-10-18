@@ -69,19 +69,27 @@ ROLES: tuple[str, ...] = (
     "searchbox",
     "checkbox",
     "radio",
+    "radiogroup",
     "combobox",
     "listbox",
     "option",
     "menuitem",
+    "menuitemcheckbox",
+    "togglebutton",
     "tab",
     "heading",
     "image",
     "img",
+    "figure",
     "video",
-    "combobox",
     "slider",
     "spinbutton",
     "switch",
+    "dialog",
+    "alertdialog",
+    "row",
+    "cell",
+    "listitem",
 )
 
 #: Attribute-based strategies, in the order we try them. Each maps to a
@@ -130,6 +138,35 @@ ROLE_FAMILIES: dict[str, frozenset[str]] = {
     "combobox": frozenset({"combobox", "select", "textbox", "searchbox"}),
     "checkbox": frozenset({"checkbox", "switch"}),
     "heading": frozenset({"heading", "h1", "h2", "h3", "h4", "h5", "h6"}),
+    # Each of these is a *filter*, applied as `item.role in role_family(wanted)`,
+    # so a family that is too wide does not help a model find more things -- it
+    # makes one thing ambiguous against everything the family swallowed. A
+    # `listitem` is not an `option` and a `cell` is not a `row`; mapping them
+    # across would turn "the second option" on a results page into a page-wide
+    # ambiguity, which is the failure this table exists to prevent.
+    #
+    # What is here instead is each *spelling* of one control. `image` and `img`
+    # are the same element reached by two names -- Playwright's role engine says
+    # `image`, the collector reports the tag -- and before this a model asking
+    # for "the product image" matched nothing on a page of photographs, because
+    # the family contained only the name it was asked by.
+    "image": frozenset({"image", "img"}),
+    "img": frozenset({"img", "image"}),
+    # An alert dialog *is* a dialog, so asking for a dialog reaches either; the
+    # reverse is deliberately not true, because "the alert dialog" must not be
+    # answered by an ordinary one.
+    "dialog": frozenset({"dialog", "alertdialog"}),
+    "alertdialog": frozenset({"alertdialog"}),
+    # A group and the radios in it are different controls and stay different:
+    # "the second radio" means the button, never the container holding it.
+    "radio": frozenset({"radio"}),
+    "radiogroup": frozenset({"radiogroup"}),
+    "listbox": frozenset({"listbox"}),
+    "option": frozenset({"option"}),
+    "menuitem": frozenset({"menuitem", "menuitemcheckbox"}),
+    "row": frozenset({"row"}),
+    "cell": frozenset({"cell"}),
+    "listitem": frozenset({"listitem"}),
 }
 
 
@@ -340,7 +377,10 @@ class Candidate:
         if self.checked is not None:
             out["checked"] = self.checked
         if self.detail:
-            out["detail"] = self.detail
+            detail = dict(self.detail)
+            if "meta" in detail:
+                detail["context"] = detail.pop("meta")
+            out["detail"] = detail
         return out
 
 
@@ -362,6 +402,14 @@ def score(candidate: Candidate, query: ElementQuery) -> int:
         return 0
     if name == wanted:
         return 0
+    item_title = str(candidate.detail.get("itemTitle") or "").casefold()
+    if item_title:
+        if item_title == wanted:
+            return 1
+        if item_title.startswith(wanted):
+            return 2
+        if wanted in item_title:
+            return 3
     if query.qualifier:
         blob = " ".join(
             [name, candidate.role, str(candidate.detail.get("channel", "")), str(candidate.detail.get("meta", ""))]
@@ -372,13 +420,16 @@ def score(candidate: Candidate, query: ElementQuery) -> int:
         return 2
     if wanted in name:
         return 3
+    context = str(candidate.detail.get("meta", "")).casefold()
+    if context and wanted in context:
+        return 4
     return NO_MATCH
 
 
 #: A candidate the query's text does not touch at all. Kept only when the query
 #: named no text, because "the first button" is a real request and filtering on an
 #: empty name would answer nothing.
-NO_MATCH = 4
+NO_MATCH = 5
 
 
 def rank(candidates: Sequence[Candidate], query: ElementQuery, *, limit: int = MAX_CANDIDATES) -> list[Candidate]:

@@ -43,10 +43,10 @@ import type { ConversationBubbleVariant } from "../types";
  * through the callbacks `Home.tsx` wires in. That constraint is load-bearing and
  * it survived both rewrites.
  *
- * A tool payload still must never come through here. Those reach the user as a
- * toast via `onToolResult`, because a retrieved page rendered inline in the
- * transcript reads as though the model had been handed it by the user — which is
- * the shape a prompt injection wants.
+ * A tool payload still must never come through here. Those reach the user on
+ * the stage ledger via `onToolResult`, because a retrieved page rendered
+ * inline in the transcript reads as though the model had been handed it by
+ * the user — which is the shape a prompt injection wants.
  */
 
 const STATUS_COPY: Record<ConversationAgentStatus, string> = {

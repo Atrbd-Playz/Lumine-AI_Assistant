@@ -66,8 +66,25 @@ export type ActivityEntry = {
   title: string;
   /** The part that is actually worth reading. Absent rather than empty. */
   detail?: string;
-  /** Milliseconds, for the rows that have a measurement. */
+  /**
+   * A **duration**, in milliseconds: how long this took.
+   *
+   * Only ever written from the record's `duration_ms`, which only
+   * `LatencyTracker.emit_duration` writes. The distinction is the whole of the
+   * "300m 00s" bug: `mark()` also fills `elapsed_ms`, but that number is *time
+   * since the worker started*, and rendering it here produced rows like
+   * "agent state took 18000000 ms" several hours into a day — and, because
+   * `ms > 1000` is the slow band, quietly counted every one of them as a
+   * problem. See `classifyLatency`.
+   */
   ms?: number;
+  /**
+   * A **mark**, in milliseconds: how far into the session this happened.
+   *
+   * Rendered as `+2h 14m`, never as "took", and never coloured as slow — a
+   * milestone's offset from session start is not a measurement of anything.
+   */
+  since?: number;
   /** Epoch milliseconds. Local clock when the record carried none. */
   at: number;
 };
@@ -152,7 +169,13 @@ function isActivityEntry(value: unknown): value is ActivityEntry {
     typeof entry.id === "string" &&
     typeof entry.at === "number" &&
     typeof entry.kind === "string" &&
-    typeof entry.title === "string"
+    typeof entry.title === "string" &&
+    // Both measurements are optional, and are checked only when present: `since`
+    // arrived later than the rest of the shape, and a store written by the
+    // previous build must load every row it already had rather than be treated
+    // as corrupt.
+    (entry.ms === undefined || typeof entry.ms === "number") &&
+    (entry.since === undefined || typeof entry.since === "number")
   );
 }
 
@@ -256,8 +279,8 @@ function classifyConfig(event: AgentRuntimeEvent): ActivityEntry {
  * result text in it — that is what it is for. The `result` field is present in
  * this payload and is deliberately not read: a retrieved page rendered in a
  * timeline reads as though the model had been handed it, which is the shape a
- * prompt injection wants. The payload goes to the toast, which is transient and
- * not rendered.
+ * prompt injection wants. The payload goes to the stage ledger — transient,
+ * one line, and gone on its own — and never here, which accumulates.
  */
 function classifyTool(event: AgentRuntimeEvent): ActivityEntry {
   const status = text(event, "status") ?? "started";
@@ -296,33 +319,127 @@ function classifyTool(event: AgentRuntimeEvent): ActivityEntry {
 }
 
 /**
- * `latency` — the worker's own stage timings.
+ * `latency` — the worker's own stage records, which come in **two shapes that
+ * answer different questions**.
  *
- * This is the single most useful row in the panel and it is why the timeline is
- * worth building at all. Before this, a slow answer was indistinguishable from
- * a slow provider: the UI could see the request go out and the reply arrive, and
- * nothing in between.
+ * - `LatencyTracker.emit_duration` writes `duration_ms`: *how long did this
+ *   take.* That is a duration, it belongs in the DURATION column, and above a
+ *   second it is honestly slow.
+ * - `LatencyTracker.mark` writes `elapsed_ms`: *how far into the session this
+ *   is*, measured from the worker's start. It is a **milestone**, not a cost.
+ *
+ * They used to be read as one field, and that was the "300m 00s" bug. A mark
+ * eight hours into a day is 28,800,000 ms, so the timeline printed
+ * "agent state took 28800000 ms" as "480m 00s" — and, because every row over a
+ * second was banded as slow, each one also counted towards *Problems* and
+ * *Over 1 s*, so a long working day reported a hundred failures that had not
+ * happened. Two numbers that mean different things must not share one column,
+ * so a record is now a duration only when it actually carries `duration_ms`.
+ *
+ * The marks themselves are filtered too. `agent_state`, `user_state` and
+ * `speech_created` fire on every transition of the avatar and the transcript —
+ * the two things on screen that *are* the live display of them — so they were
+ * pure noise under a heading that promised "the things that cost time".
  */
 function classifyLatency(event: AgentRuntimeEvent): ActivityEntry | null {
   const stage = text(event, "stage") ?? "unknown";
-  const ms = num(event, "elapsed_ms");
-  // `mark` with no stage is a counter, not a duration — `latency.py` also emits
-  // marker events, and rendering a marker as "0 ms" invents a measurement.
-  if (ms === undefined) return null;
-  // Over a second of agent-side work is slow enough that a person would have
-  // noticed. The band is the point: a raw number nobody has a reference for is
-  // the same as no number.
-  const tone: ActivityTone = ms > 1000 ? "warn" : "neutral";
+  const at = stampFrom(event);
+
+  // --- a measured span ----------------------------------------------------
+  const duration = num(event, "duration_ms");
+  if (duration !== undefined) {
+    // `turn_open` is emitted with a duration of zero because it is a marker:
+    // the turn opening is the thing the user just did, and a row that always
+    // reads "0 ms" is a measurement of nothing.
+    if (DURATION_NOISE.has(stage)) return null;
+    return {
+      id: nextId(),
+      kind: "latency",
+      // Over a second of agent-side work is slow enough that a person would
+      // have noticed. The band is the point: a raw number nobody has a
+      // reference for is the same as no number.
+      tone: duration > 1000 ? "warn" : "neutral",
+      title: DURATION_TITLE[stage] ?? words(stage),
+      detail: join(
+        PHASE_LABEL[text(event, "phase") ?? ""],
+        text(event, "tool"),
+        event.cancelled === true ? "cancelled" : undefined,
+        event.interrupted === true ? "interrupted" : undefined,
+        text(event, "decision"),
+      ),
+      ms: duration,
+      at,
+    };
+  }
+
+  // --- a mark: an offset from session start, never a duration -------------
+  const elapsed = num(event, "elapsed_ms");
+  // A marker with no number at all renders nothing — `mark` without a stage is
+  // a counter, and rendering it would invent a measurement.
+  if (elapsed === undefined) return null;
+  if (MARK_NOISE.has(stage)) return null;
   return {
     id: nextId(),
-    kind: "latency",
-    tone,
-    title: `${stage.replace(/_/g, " ")} took ${ms} ms`,
+    kind: "note",
+    tone: "neutral",
+    title: MARK_TITLE[stage] ?? words(stage),
     detail: join(text(event, "state"), text(event, "profile"), text(event, "model")),
-    ms,
-    at: stampFrom(event),
+    since: elapsed,
+    at,
   };
 }
+
+/** `agent_state` / `user_state` / `speech_created` — already on screen elsewhere. */
+const MARK_NOISE = new Set(["agent_state", "user_state", "speech_created"]);
+
+/** `turn_open` carries a zero by construction; it is a marker, not a span. */
+const DURATION_NOISE = new Set(["turn_open"]);
+
+/** `stage` in wire form -> a line of plain words. Underscored fallback. */
+function words(stage: string): string {
+  return stage.replace(/_/g, " ");
+}
+
+/** Marks, whose stage names are process vocabulary rather than sentences. */
+const MARK_TITLE: Record<string, string> = {
+  entrypoint: "Room entered",
+  pipeline_error: "Pipeline failed to build",
+  pipeline_built: "Pipeline built",
+  session_started: "Session ready",
+  greeting_requested: "Greeting requested",
+  greeting_requested_done: "Greeting ready",
+};
+
+/** Measured stages worth naming rather than spelling out. */
+const DURATION_TITLE: Record<string, string> = {
+  llm_first_token: "First model token",
+  llm_request: "Model request",
+  llm_connect: "Model connect",
+  stt_request: "Speech recognition",
+  stt_connect: "Speech connect",
+  tts_first_audio: "First voice audio",
+  tts_request: "Voice synthesis",
+  turn_end_to_end: "Whole turn",
+  tool_exec: "Tool call",
+  permission_wait: "Approval wait",
+};
+
+/**
+ * `phase`, which exists so model time, tool time, waiting time and network time
+ * are never read as one number. Unknown phases fall through to `undefined` and
+ * are dropped from the line rather than printed as wire vocabulary.
+ */
+const PHASE_LABEL: Record<string, string | undefined> = {
+  stt: "speech to text",
+  model: "model",
+  tool: "tool",
+  permission: "waiting on approval",
+  network: "network",
+  tts: "voice synthesis",
+  visual: "vision",
+  local: "local work",
+  e2e: "whole turn",
+};
 
 /** `session_usage` — the token cost of the call, if the shape is one we can read. */
 function classifyUsage(event: AgentRuntimeEvent): ActivityEntry | null {

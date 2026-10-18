@@ -9,7 +9,7 @@ import { getReadableForeground, getReadableTextColor, fontStack } from "./home/u
 import { usePreferences } from "./home/hooks/usePreferences";
 import { useDocumentTheme } from "./home/hooks/useDocumentTheme";
 import { useNotify } from "../features/toast/useNotify";
-import { summarizeToolResult, toolToastText } from "../features/toast/toolToast";
+import { stageActivity } from "../features/stage/stageActivity";
 import { useAgentRuntime } from "../lib/agentRuntime";
 import { categorizeError } from "../lib/errors";
 import { SETTINGS_SECTIONS, type SettingsSection } from "./settings/SettingsNav";
@@ -20,8 +20,9 @@ import { useCommandHotkeys, describeBinding } from "../components/command/useCom
 import { buildCommands, type Command } from "../components/command/commands";
 import { useActivityFeed } from "../features/activity/activityFeed";
 import { useLumineVoice } from "../features/voice/useLumineVoice";
-import type { VoiceBrowserPreview, VoicePermissionRequest, VoiceScreenState } from "../features/voice/voice-manager";
+import type { VoiceBrowserPreview, VoicePermissionRequest, VoiceScreenState, VoiceToolEvent } from "../features/voice/voice-manager";
 import { useLocalMedia } from "../features/voice/useLocalMedia";
+import { useApprovalNotifications } from "../features/voice/approvalNotifications";
 import { DEFAULT_INTERRUPTION_MODE } from "../features/voice/interruption";
 import { CONFIG_VERSION } from "../features/settings/aiConfigTypes";
 import { useAiConfig } from "../features/settings/useAiConfig";
@@ -197,40 +198,45 @@ export default function Home() {
   /**
    * A tool call in the transcript. No toast.
    *
-   * The transcript accumulates and the notification does not, so a call's
-   * lifecycle belongs in one of them and not both. This used to raise a
-   * "get_weather done" toast here as well, which is why every tool produced two
-   * stacked notifications for a single action.
+   * The transcript accumulates and the ledger does not, so a call's lifecycle
+   * belongs in one of them and not both.
    *
    * The payload is deliberately not rendered here. A retrieved page sitting inline
    * in a conversation reads as though the model had been handed it by the user --
-   * which is the shape a prompt injection wants. It goes to a toast instead.
+   * which is the shape a prompt injection wants. It goes to the stage ledger
+   * instead, through the store below.
    */
   const handleToolEvent = (event: Parameters<typeof conversation.upsertToolEvent>[0]) => {
     conversation.upsertToolEvent(event);
   };
 
   /**
-   * A finished tool call, as exactly one toast.
+   * Every `tool_status` record, as it arrives, into the stage ledger's store.
    *
-   * The single notification for a tool call: what it was, one line of what came
-   * back, and how long it took. Short on purpose. A notification that has to be
-   * read before it can be dismissed is a document, and a tool call is neither
-   * rare enough to justify one nor important enough to want a paragraph.
+   * Fires for every record — running, failed, completed, and the per-step
+   * records `run_task` publishes — because the ledger is the one surface that
+   * has to show *progress*, not only outcomes. It is called ahead of
+   * `onToolResult` for the same call, so the store has already seen the
+   * bracket close by the time the result line arrives.
+   */
+  const handleToolActivity = (event: VoiceToolEvent) => {
+    stageActivity.ingest(event);
+  };
+
+  /**
+   * A finished tool call, as the ledger's summary line.
+   *
+   * Not a toast. This used to raise one per call — the same bottom-left stack
+   * that carries errors and permission warnings — and six calls in one turn
+   * buried the only message a person needed to read, while a finished lookup
+   * sat beside "Check the Python interpreter" for thirty seconds. The line
+   * lands on the ledger row instead: one line of what came back, on the row
+   * for the call it came back from.
+   *
+   * The payload still never reaches the transcript, for the reason above.
    */
   const handleToolResult = (result: { name: string; status: string; payload: string; durationMs?: number }) => {
-    const line = summarizeToolResult(result);
-    const text = toolToastText(line, result.durationMs);
-    // A failure is worth interrupting for; a routine lookup is not. A success
-    // with nothing to say is dropped entirely rather than shown as a bare "Done",
-    // which is a notification carrying no information.
-    if (line.tone === "success" && text === null) return;
-    notify({
-      tone: line.tone,
-      title: line.label,
-      ...(text ? { message: text } : { message: "No detail returned." }),
-      timeout: line.tone === "error" ? 8000 : 4000,
-    });
+    stageActivity.result(result);
   };
 
   /**
@@ -321,8 +327,11 @@ export default function Home() {
     const timer = window.setInterval(() => {
       const now = Date.now() / 1000;
       setPermissions((current) =>
-        current.some((entry) => entry.expiresAt <= now)
-          ? current.filter((entry) => entry.expiresAt > now)
+        // `expiresAt <= 0` is "this worker sent no deadline", not "expired": an
+        // older worker omits the field, and sweeping those would dismiss a
+        // question the worker is still waiting on the moment it appeared.
+        current.some((entry) => entry.expiresAt > 0 && entry.expiresAt <= now)
+          ? current.filter((entry) => entry.expiresAt <= 0 || entry.expiresAt > now)
           : current,
       );
     }, 1000);
@@ -353,7 +362,7 @@ export default function Home() {
     });
   }, [notify]);
 
-  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onToolEvent: handleToolEvent, onToolResult: handleToolResult, onNotice: handleNotice, onPermission: handlePermission, onBrowserPreview: handleBrowserPreview, onScreenState: handleScreenState, interruptionMode, onError: (message) => reportFailure(message) });
+  const session = useLumineVoice({ onMessage: conversation.addMessage, onUpdateMessage: conversation.updateMessage, onToolEvent: handleToolEvent, onToolActivity: handleToolActivity, onToolResult: handleToolResult, onNotice: handleNotice, onPermission: handlePermission, onBrowserPreview: handleBrowserPreview, onScreenState: handleScreenState, interruptionMode, onError: (message) => reportFailure(message) });
 
   /**
    * Answer one pending approval, keeping the card only if the answer failed.
@@ -379,6 +388,21 @@ export default function Home() {
     },
     [session.respondPermission],
   );
+
+  /**
+   * The same question, also where the user's eyes already are.
+   *
+   * Placed after `answerPermission` on purpose: this hook does not get its own
+   * path back to the worker. It renders a system notification, plays the arrival
+   * sound *if that notification did not go out*, and turns an Allow / Not now
+   * press on the toast into the identical call this card makes — so there is one
+   * answer channel and two ways to reach it, and the worker cannot tell which.
+   *
+   * It observes `permissions` rather than taking a callback per request, which
+   * is also what makes the expiry tick possible: a deadline that passes is a
+   * request that *leaves* this list, and the sweep that removes it runs here.
+   */
+  useApprovalNotifications(permissions, answerPermission);
 
   // A finished call's cards answer nothing -- the worker released its gate
   // with the room -- so the UI stops showing them rather than letting someone
@@ -408,6 +432,19 @@ export default function Home() {
       setDesktopState(null);
     }
   }, [session.isActive, desktopState]);
+
+  // And the ledger's *running* rows. A worker that has gone cannot finish a
+  // call, so a spinner beside "Searching" is a claim nobody will ever make
+  // good on — the same reasoning as the three sweeps above, and kept separate
+  // for the same reason they are: this clears a spinner, not a card or a
+  // picture. Settled rows are left to their own short expiry rather than
+  // swept here, because "the call ended" and "the row is old" are different
+  // facts and a finished row is still true after the room is gone.
+  useEffect(() => {
+    if (!session.isActive) {
+      stageActivity.drain();
+    }
+  }, [session.isActive]);
 
   /**
    * The voice worker, followed rather than asked.
