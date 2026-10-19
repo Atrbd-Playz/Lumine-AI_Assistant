@@ -39,6 +39,7 @@ try:
     from ..tools_compat import RunContext, ToolError, function_tool
     from ..tool_results import MAX_PAGE_READ_CHARS, as_payload, wrap_untrusted
     from ..tools_text import clip
+    from . import sites
     from .actions import (
         BROWSE_ACTIONS,
         classify_click,
@@ -87,6 +88,7 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_compat import RunContext, ToolError, function_tool
     from tool_results import MAX_PAGE_READ_CHARS, as_payload, wrap_untrusted  # type: ignore[no-redef]
     from tools_text import clip
+    from browser import sites  # type: ignore[no-redef]
     from browser.actions import (
         BROWSE_ACTIONS,
         classify_click,
@@ -162,7 +164,9 @@ ACTIONS: tuple[str, ...] = BROWSE_ACTIONS
 #: the input and guesses a near match -- but the surface is still worth writing
 #: down, and `test_browser_lifecycle` checks it against `ACTIONS`.
 MSG_BAD_ACTION = "Tell me one of: open, observe, act, back, forward, scroll, tab, or close."
-MSG_NO_URL = "Tell me which page to open."
+#: There is deliberately no "tell me which page" message any more. `open` with
+#: nothing named opens the default search page instead of refusing, because an
+#: address bar with nothing in it is not an error -- it is where a lookup starts.
 MSG_BAD_URL = (
     "I can only open web addresses (http or https) -- I won't open that. "
     "Nothing was shown."
@@ -304,7 +308,8 @@ def _is_search(info: Any) -> bool:
     tools agree by construction rather than by two copies of the same rule. The
     facts come from ``session._JS_FACTS``, which reads ``role``, ``formRole``
     and ``soleField`` alongside the ``tag``/``type``/``inForm`` the freshness
-    signature already covered.
+    signature already covered, plus ``field`` -- the element's ``name``
+    attribute -- for a site whose form declares nothing.
     """
     return is_search_control(
         tag=info.get("tag"),
@@ -313,6 +318,8 @@ def _is_search(info: Any) -> bool:
         in_form=bool(info.get("inForm")),
         form_role=info.get("formRole"),
         sole_field=bool(info.get("soleField")),
+        field=info.get("field"),
+        url=info.get("url"),
     )
 
 
@@ -328,7 +335,9 @@ async def browse(
     """Browse a page in Lumine's own isolated browser window.
 
     One tool, eight actions:
-    - open: go to a page (needs url; http/https only).
+    - open: go to a page (http/https only). With nothing named it opens the
+      search page instead -- DuckDuckGo -- and the notice says so, so a
+      general lookup still happens.
     - observe: read the current tab -- title, address, the text currently in
       view (plus a little above and below the fold), and the visible controls
       with references like "r3". Controls inside a product, video, or result
@@ -376,8 +385,8 @@ async def browse(
     Args:
         action: One of "open", "observe", "act", "back", "forward", "scroll",
             "tab", "close".
-        url: The page to open, for action "open", or for action "tab" with
-            "new".
+        url: The page to open, for action "open" (nothing named opens the
+            search page), or for action "tab" with "new".
         ref: A control reference from observe, for action "act".
         text: The text to type for action "act", where to scroll for action
             "scroll", or which tab request for action "tab".
@@ -407,8 +416,16 @@ async def browse(
     # -- open ---------------------------------------------------------------
     if normalized == "open":
         raw = str(url or "").strip() or str(payload or "").strip()
-        if not raw:
-            raise ToolError(MSG_NO_URL)
+        # An address bar with nothing in it is not an error, it is a search
+        # engine -- and this is what "default search engine" means on the
+        # browser side. Refusing ("Tell me which page to open") left the model
+        # to invent an address for the next attempt, which is how a general
+        # lookup ended up wherever it ended up. The payload says what opened,
+        # so a page the user did not ask for by name is never reported as if
+        # they had asked for it.
+        opened_default = not raw
+        if opened_default:
+            raw = sites.DEFAULT_SEARCH_URL
         try:
             target = normalize_url(raw)
         except ValueError:
@@ -496,6 +513,12 @@ async def browse(
         notice = page.get("notice")
         if notice:
             payload["notice"] = str(notice)
+        if opened_default:
+            payload["notice"] = (
+                f"You did not name a page, so I opened the search page "
+                f"({sites.DEFAULT_ENGINE}). Say what you want searched, or give "
+                f"me an address."
+            )
         # `open` reuses the tab in use, which is right most of the time and is
         # also how a page gets thrown away. Saying so is what lets the model
         # notice it did it: the alternative is `tab new`, and a model that
@@ -505,10 +528,13 @@ async def browse(
             payload["tab"] = where["tab"]
             payload["tabCount"] = where["tabCount"]
             if where["tabCount"] > 1:
-                payload["notice"] = (
+                replaced = (
                     f"This replaced the page in tab {where['tab']}; the other "
                     f"{where['tabCount'] - 1} tab(s) are untouched. Use 'tab new' "
                     "next time to keep this one."
+                )
+                payload["notice"] = (
+                    f"{payload['notice']} {replaced}" if payload.get("notice") else replaced
                 )
         return wrap_untrusted(as_payload(payload))
 

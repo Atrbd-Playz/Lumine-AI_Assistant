@@ -33,8 +33,9 @@ The bound is written down rather than assumed, because this is the only place a
 page-presented fact *lowers* a class:
 
 - It requires a **positive** signal that the form is a search form --
-  ``<form role="search">``, a ``searchbox`` control, or the form's only text
-  field typed ``search``. A comment box, a checkout, a sign-in form and a
+  ``<form role="search">``, a ``searchbox`` control, the form's only text
+  field typed ``search``, or the field this site's own table names as its
+  search box. A comment box, a checkout, a sign-in form and a
   contact form all still ask, because none of them carries one.
 - What it moves is one class on one form. A hostile page gains what an ordinary
   click already gives it (``act``); it does not gain anybody's keystrokes,
@@ -57,9 +58,11 @@ from urllib.parse import urlsplit, urlunsplit
 try:
     from ..tools_text import clip
     from ..tool_results import as_payload, MAX_PAGE_READ_CHARS
+    from . import sites
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_text import clip
     from tool_results import as_payload, MAX_PAGE_READ_CHARS
+    from browser import sites  # type: ignore[no-redef]
 
 #: The only schemes this tool opens. Everything else -- ``file:``,
 #: ``javascript:``, ``data:``, ``chrome:`` -- reaches something that is not a
@@ -241,18 +244,24 @@ def is_search_control(
     in_form: object = False,
     form_role: object = "",
     sole_field: object = False,
+    field: object = "",
+    url: object = "",
 ) -> bool:
     """Whether this control is the search box of a search form.
 
     The narrowest question that answers "is submitting this a *search*?", asked
-    from structure only. Three ways to say yes, and a plain text input in a
+    from structure only. Four ways to say yes, and a plain text input in a
     plain ``<form>`` is none of them:
 
-    - the ``<form>`` itself declares ``role="search"`` -- YouTube, Google and
-      Amazon all do, and it is the strongest signal because it describes the
+    - the ``<form>`` itself declares ``role="search"`` -- Google and Amazon
+      all do, and it is the strongest signal because it describes the
       form rather than the field;
     - the control reports the ``searchbox`` role and is **not** a lone
-      ``type=search`` field in a larger form.
+      ``type=search`` field in a larger form;
+    - the field is the one the site table says a search goes into on *this*
+      host (:func:`.sites.is_named_search_field`) -- the signal for a site
+      too plain to declare anything, and measured rather than assumed:
+      YouTube's masthead form carries no ``role`` at all now.
 
     The sole-field requirement on ``type=search`` is the sharp edge, and it is
     needed because ``state``'s ``roleOf`` *derives* ``searchbox`` from
@@ -266,6 +275,13 @@ def is_search_control(
     shape -- Google's field is ``name="q"`` with nothing in its label that says
     "search", so a search box on the most-used search engine has no label to
     read and this is the only signal left.
+
+    ``field`` and ``url`` are the last signal, and they are the only pair here
+    that is not read off the element alone: the *site* decides, because the
+    question "is ``name="search_query"`` a search field" has the same answer on
+    every page of youtube.com and no answer anywhere else. See
+    :func:`.sites.is_named_search_field` for the measurement that made it
+    necessary.
     """
     if not in_form:
         # Nothing to submit, so the question is moot and the caller falls
@@ -277,7 +293,9 @@ def is_search_control(
     if typed == SEARCH_INPUT_TYPE:
         # Only when it is the form's sole field -- see the docstring.
         return bool(sole_field)
-    return str(role or "").strip().casefold() == SEARCH_ROLE
+    if str(role or "").strip().casefold() == SEARCH_ROLE:
+        return True
+    return sites.is_named_search_field(url, field)
 
 
 def classify_click(

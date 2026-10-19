@@ -104,8 +104,10 @@ open/observe/act is one job, and `run_task` runs several steps in one call.
   address yourself: a made-up link still loads, so the mistake looks like a
   working page until the title says the video does not exist. Each link an
   `observe` returns carries its real `href`, so use that one. A `notice` on an
-  `open` means the address led nowhere -- read it, and click a result instead of
-  trying the same address again.
+  `open` says what happened beyond the page arriving -- that the address led
+  nowhere (click a result instead of retrying the address), or that you named
+  no page and the search page opened (say what you want searched). Read it; it
+  tells you what to do next.
 - `web_control`: the same page addressed by *what a control is* -- a name, a role,
   an optional position. It takes no `ref` from `browse`, and its `read` returns a
   ref `browse` cannot act on: never read with one and act with the other. Its

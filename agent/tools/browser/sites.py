@@ -23,6 +23,9 @@ into a filter box that was never a search box.
   carry, used only to confirm the search actually went somewhere.
 * ``query_param`` -- the URL parameter that identifies a search already showing,
   so an identical request can reuse the live results page.
+* ``fields`` -- the ``name`` attributes of the site's search field, used by
+  :func:`is_named_search_field` when a site's markup is too plain for structure
+  to say that submitting it is a search rather than a submission.
 
 No entry constructs a search URL. The whole point is that the search runs through
 the page's own UI, so what comes back is what a person would have got.
@@ -59,6 +62,12 @@ class SiteSearch:
     #: changed, which is all we will claim".
     results: str = ""
     query_param: str = ""
+    #: The ``name`` attributes that identify *this site's* search field. This is
+    #: the permission classifier's half of the entry -- see
+    #: :func:`is_named_search_field` -- and it is a table lookup rather than a
+    #: guess for the same reason ``input`` is: a site's own markup is the only
+    #: authority on where a search goes.
+    fields: tuple[str, ...] = ()
 
 
 SITES: tuple[SiteSearch, ...] = (
@@ -72,6 +81,14 @@ SITES: tuple[SiteSearch, ...] = (
         submit='button[aria-label*="Search" i], button[title*="Search" i], form[role="search"] button',
         results="/results",
         query_param="search_query",
+        # Measured on the live site (2026): the form that holds this field is
+        # `<form action="/results" class="ytSearchboxComponentSearchForm">` with
+        # **no `role`** -- the `role="search"` this table used to rely on is
+        # gone, and the field is `type="text"` with `role="combobox"`. So none of
+        # the structural signals fire, and pressing Enter in it was classified a
+        # form submission and asked permission. This is the signal left, and it
+        # is a table entry rather than a heuristic for the same reason `input` is.
+        fields=("search_query",),
     ),
     SiteSearch(
         name="google",
@@ -80,6 +97,7 @@ SITES: tuple[SiteSearch, ...] = (
         # Google has no search button: Enter is the only submit there is.
         results="q=",
         query_param="q",
+        fields=("q",),
     ),
     SiteSearch(
         name="maps",
@@ -97,6 +115,7 @@ SITES: tuple[SiteSearch, ...] = (
         submit='#nav-search-submit-button, input[name="go"]',
         results="/s?",
         query_param="k",
+        fields=("field-keywords",),
     ),
     SiteSearch(
         name="reddit",
@@ -105,6 +124,7 @@ SITES: tuple[SiteSearch, ...] = (
         submit='button[type="submit"]',
         results="/search",
         query_param="q",
+        fields=("q",),
     ),
     SiteSearch(
         name="github",
@@ -112,6 +132,7 @@ SITES: tuple[SiteSearch, ...] = (
         input='input[name="q"], input[data-target*="search"]',
         results="?q=",
         query_param="q",
+        fields=("q",),
     ),
     SiteSearch(
         name="wikipedia",
@@ -120,6 +141,7 @@ SITES: tuple[SiteSearch, ...] = (
         submit='button[type="submit"]',
         results="?search=",
         query_param="search",
+        fields=("search",),
     ),
     SiteSearch(
         name="x",
@@ -127,8 +149,32 @@ SITES: tuple[SiteSearch, ...] = (
         input='input[data-testid="SearchBox_Search_Input"], input[placeholder*="Search" i]',
         submit='button[data-testid="SearchBox_Search_Button"]',
         query_param="q",
+        fields=("q",),
+    ),
+    SiteSearch(
+        name="duckduckgo",
+        hosts=("duckduckgo.com",),
+        # Measured on the live site (2026): the box is a `<textarea name="q">`
+        # -- not an input -- inside `<form role="search" id="searchbox_homepage">`,
+        # with hidden `ia`/`origin`/`t` fields beside it. The `role` on the form
+        # is what makes submitting it an ordinary act rather than a question.
+        input='textarea[name="q"], input[name="q"]',
+        submit='button[type="submit"], input[type="submit"]',
+        results="?q=",
+        query_param="q",
+        fields=("q",),
     ),
 )
+
+#: The search page a request that names no site lands on -- what a browser's
+#: address bar does with nothing typed in it. `search_web` already answers
+#: *lookups* through DuckDuckGo's HTML endpoint, so this is the same engine on
+#: the other side of the same line: the browser's own searches should not be a
+#: different company's by accident of which page happened to be open.
+DEFAULT_SEARCH_URL = "https://duckduckgo.com/"
+
+#: The engine named by :data:`DEFAULT_SEARCH_URL`, for messages a person reads.
+DEFAULT_ENGINE = "duckduckgo"
 
 
 def site_for(url: object) -> SiteSearch | None:
@@ -149,6 +195,37 @@ def site_for(url: object) -> SiteSearch | None:
             if host in text and (best is None or len(host) > best[0]):
                 best = (len(host), entry)
     return best[1] if best is not None else None
+
+
+def is_named_search_field(url: object, field: object) -> bool:
+    """Whether ``field`` is *this site's* search field, per the table above.
+
+    The permission classifier's answer to a case structure cannot settle, and
+    the case is measured rather than imagined. YouTube's masthead search box is
+    ``<input name="search_query" type="text" role="combobox">`` inside
+    ``<form action="/results">`` -- a form with **no ``role``** in the current
+    build. So none of ``is_search_control``'s three structural signals fire:
+    the form does not claim to be a search form, the field is not
+    ``type="search"``, and its role is the suggestions combobox every
+    autocomplete shares. Pressing Enter in it was therefore classified as a
+    form submission and asked permission, which made the single most ordinary
+    act on the site this browser is most used for into an interruption.
+
+    The honest structural answer is "we cannot tell": a one-field GET form is
+    also the shape of a newsletter sign-up, and no amount of DOM shape
+    separates "search results" from "subscribe" -- the difference is semantic.
+    So it is answered the way every other question about where a site searches
+    is answered: by a table that names the field, keyed on the host. A page
+    that is not in the table gets nothing, which keeps this bounded exactly as
+    ``form_role`` is.
+    """
+    entry = site_for(url)
+    if entry is None or not entry.fields:
+        return False
+    name = str(field or "").strip().casefold()
+    if not name:
+        return False
+    return name in entry.fields
 
 
 def looks_like_search_label(label: object) -> int:
