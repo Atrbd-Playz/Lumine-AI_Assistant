@@ -24,7 +24,7 @@ import asyncio
 import unittest
 
 from agent.runtime import verification
-from agent.tools.browser import search, state
+from agent.tools.browser import search, sites, state
 from agent.tools.browser.locators import Candidate
 
 
@@ -48,19 +48,52 @@ class FakePage:
 
 
 class FakeEngine:
-    """The engine contract, recording what it was asked to do."""
+    """The engine contract, recording what it was asked to do.
 
-    def __init__(self, page: FakePage | None = None) -> None:
+    It now carries ``navigate``/``observe`` as well, because the default-search
+    fallback reaches for both: an unknown page with no search box navigates to
+    the default engine and then re-reads it. A fake that could not answer those
+    two questions could not exercise that path at all.
+    """
+
+    def __init__(
+        self,
+        page: FakePage | None = None,
+        *,
+        observed: dict | None = None,
+        results_url: str = "",
+    ) -> None:
         self._page_value = page
         self.acted: list = []
+        self.visited: list[str] = []
+        self._observed = observed or {}
+        self._results_url = results_url
 
     async def _page(self):
         if self._page_value is None:
             raise RuntimeError("no page")
         return self._page_value
 
+    async def navigate(self, url: str) -> dict:
+        self.visited.append(url)
+        if self._page_value is None:
+            self._page_value = FakePage(url)
+        else:
+            self._page_value.url = url
+        return {"title": "Fixture", "url": url}
+
+    async def observe(self) -> dict:
+        payload = dict(self._observed)
+        if self._page_value is not None:
+            payload.setdefault("url", self._page_value.url)
+        return payload
+
     async def act(self, step):
         self.acted.append(step)
+        # A submit that navigates is what makes `wait_for_results` report a
+        # landing rather than "stayed put"; the default-search tests rely on it.
+        if step.kind == "press" and self._results_url and self._page_value is not None:
+            self._page_value.url = self._results_url
         return {"ok": True, "before": {}, "after": {}, "element": {}, "host": ""}
 
 
@@ -176,6 +209,40 @@ class FindSearchFieldTests(unittest.TestCase):
         self.assertLessEqual(len(search.no_field_fields(snapshot("https://e.com/", many))), 6)
 
 
+# -- the default engine -------------------------------------------------------
+
+
+class DefaultSearchEngineTests(unittest.TestCase):
+    """The address a search with nowhere to go lands on, and who owns it.
+
+    The fallback in :func:`search.run_search` does two things in sequence: it
+    navigates to :data:`sites.DEFAULT_SEARCH_URL`, then re-finds the box *through
+    the site table*. The second half is the one that fails silently if the two
+    constants drift apart -- pointing the default at a host the table does not
+    name gets the user to a search page and then reports "there is no search
+    box" on the search engine itself. So the coupling is asserted rather than
+    assumed.
+    """
+
+    def test_the_default_search_url_is_a_site_we_know_how_to_search(self):
+        entry = sites.site_for(sites.DEFAULT_SEARCH_URL)
+        self.assertIsNotNone(
+            entry,
+            "the default search URL must be a tabulated site, or the fallback's "
+            "re-find step has no selector to use once it arrives",
+        )
+        self.assertEqual(entry.name, sites.DEFAULT_ENGINE)
+
+    def test_arriving_at_the_default_engine_is_an_ordinary_act(self):
+        # The landing page has a named field the classifier recognises, so the
+        # fallback does not hand the user a permission card the moment it
+        # arrives -- which would be the very interruption the act-class change
+        # was written to remove.
+        self.assertTrue(sites.is_named_search_field(sites.DEFAULT_SEARCH_URL, "q"))
+        entry = sites.site_for(sites.DEFAULT_SEARCH_URL)
+        self.assertIn("q", entry.fields)
+
+
 # -- query normalization ------------------------------------------------------
 
 
@@ -204,13 +271,33 @@ class RunSearchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome.status, verification.FAILED)
         self.assertEqual(engine.acted, [])
 
-    async def test_a_page_with_no_search_box_fails_and_names_what_it_saw(self):
-        engine = FakeEngine(FakePage("https://example.com/"))
+    async def test_an_unknown_page_falls_back_to_the_default_search_engine(self):
+        # A page with no search box that we do not know: rather than refusing,
+        # the lookup lands on the default engine and searches there. This is
+        # what makes "DuckDuckGo is her default engine" true for the *browser*
+        # surface -- a search that reached a page with nowhere to go still has
+        # somewhere to go, and it is one address rather than whichever the model
+        # thought of first.
+        engine = FakeEngine(
+            FakePage("https://example.com/"),
+            results_url="https://duckduckgo.com/?q=kittens",
+        )
         snap = snapshot("https://example.com/", [candidate(1, "Email", role="textbox")])
         outcome = await search.run_search(engine, snap, "kittens")
-        self.assertEqual(outcome.status, verification.FAILED)
-        self.assertIn("Email", outcome.data["fields"])
-        self.assertEqual(engine.acted, [])
+        self.assertEqual(engine.visited, [sites.DEFAULT_SEARCH_URL])
+        self.assertEqual(outcome.status, verification.OBSERVED)
+        kinds = [step.kind for step in engine.acted]
+        self.assertEqual(kinds, ["fill", "press"])
+
+    async def test_the_default_engine_fallback_is_only_for_pages_we_do_not_know(self):
+        # A known tabulated site is searched through *its own* box and never
+        # shipped off to the default engine, even when its own box is the one
+        # that has to be found. The fallback is the long-tail path, not a
+        # substitute for a site the table already answers.
+        engine = FakeEngine(FakePage("https://www.youtube.com/"))
+        snap = snapshot("https://www.youtube.com/", [])
+        await search.run_search(engine, snap, "kittens")
+        self.assertEqual(engine.visited, [], "a known site must not be redirected")
 
     async def test_typing_and_submitting_happen_in_one_call(self):
         # The reported bug. Two *tools* would let the second be lost, skipped by a

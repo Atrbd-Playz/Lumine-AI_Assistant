@@ -49,12 +49,12 @@ try:
     from ..tools_compat import ToolError
     from ..tools_text import clip
     from .actions import REF_RE, host_verdict, hostname_of, normalize_url, TITLE_CHARS, URL_CHARS
-    from . import state as browser_state
+    from . import adblock, state as browser_state
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_compat import ToolError
     from tools_text import clip
     from browser.actions import REF_RE, host_verdict, hostname_of, normalize_url, TITLE_CHARS, URL_CHARS
-    from browser import state as browser_state  # type: ignore[no-redef]
+    from browser import adblock, state as browser_state  # type: ignore[no-redef]
 
 logger = logging.getLogger("lumine")
 
@@ -85,6 +85,28 @@ PRESS_TIMEOUT_MS = 3000
 #: a page full of DNS lookups -- but a host that moves between two networks
 #: does not stay wrong for long either.
 DNS_CACHE_SECONDS = 60.0
+
+#: How long a *failed* resolution is remembered. Deliberately far shorter than
+#: the success TTL above, and this is the fix for a video that played for ~49
+#: seconds and then stopped with "Something went wrong. Refresh or try again
+#: later."
+#:
+#: The mechanism: YouTube serves its media from rotating segment hosts
+#: (``rr4---sn-abc.googlevideo.com``), and it rotates to a *new* one partway
+#: through a stream. A new host means a fresh lookup, one transient miss on that
+#: lookup is cached, and ``host_verdict`` refuses anything that did not resolve
+#: -- so the guard started aborting every segment from that host for a full
+#: minute, which is exactly a player that stops mid-video. A failure is the
+#: thing least worth caching: it is the state most likely to be transient, and
+#: the cost of a wrong retry is one more lookup.
+DNS_FAIL_CACHE_SECONDS = 2.0
+
+#: How long one lookup may take. Before this there was no bound at all, so a
+#: resolver that answered slowly held the guard -- and therefore the request --
+#: for however long the OS felt like waiting. A page makes many requests; each
+#: one waiting on DNS is the difference between a stream that buffers and one
+#: that stalls.
+DNS_TIMEOUT_SECONDS = 5.0
 
 #: Where the WhatsApp automation path drives. Held here rather than in the
 #: messaging package because this module owns the browser it runs in, and the URL
@@ -495,6 +517,10 @@ _JS_FACTS = """
     role: role,
     formRole: formRole,
     soleField: soleField,
+    // The `name` attribute -- an identifier the page's author chose, never
+    // text a user sees -- because a site too plain to declare `role="search"`
+    // still has to be answerable, and the answer is a table keyed on the host.
+    field: (el.getAttribute('name') || '').slice(0, 60),
     sig: tag + '|' + type + '|' + (inForm ? '1' : '0'),
     url: location.href,
     label: (
@@ -1357,7 +1383,19 @@ class _Browser:
     # -- the guard ---------------------------------------------------------
 
     async def _resolve(self, host: str) -> list[str]:
-        """Addresses for a host, cached. Literal IPs short-circuit."""
+        """Addresses for a host, cached. Literal IPs short-circuit.
+
+        A **failure** is cached for :data:`DNS_FAIL_CACHE_SECONDS` rather than
+        :data:`DNS_CACHE_SECONDS`. Both facts matter and neither is decoration:
+
+        - YouTube's media arrives from rotating segment hosts, so a stream
+          meets a *new* host partway through. One transient miss there used to
+          be remembered for a minute, and every segment from that host was
+          refused for it -- the reported ~49-second playback stop.
+        - The lookup itself is bounded by :data:`DNS_TIMEOUT_SECONDS`, because
+          an unbounded ``getaddrinfo`` on the request path is a page that waits
+          on the resolver rather than on the network.
+        """
         host = host.strip("[]")
         try:
             import ipaddress
@@ -1368,13 +1406,22 @@ class _Browser:
             pass
         now = time.monotonic()
         cached = self._dns.get(host)
-        if cached and now - cached[0] < DNS_CACHE_SECONDS:
-            return cached[1]
+        if cached:
+            age = now - cached[0]
+            if not cached[1]:
+                # Empty answer: a failure. Short window only.
+                if age < DNS_FAIL_CACHE_SECONDS:
+                    return []
+            elif age < DNS_CACHE_SECONDS:
+                return cached[1]
         loop = asyncio.get_running_loop()
         try:
-            infos = await loop.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+            infos = await asyncio.wait_for(
+                loop.getaddrinfo(host, None, type=socket.SOCK_STREAM),
+                timeout=DNS_TIMEOUT_SECONDS,
+            )
             addresses = list(dict.fromkeys(info[4][0] for info in infos))
-        except (socket.gaierror, OSError):
+        except (socket.gaierror, OSError, asyncio.TimeoutError):
             addresses = []
         self._dns[host] = (now, addresses)
         return addresses
@@ -1406,6 +1453,13 @@ class _Browser:
                 await route.abort()
             else:
                 await route.continue_()
+            return
+        # Ads and trackers go first, and *before* the DNS check: a request that
+        # is blocked here never leaves the machine, which is the only version of
+        # "blocking" that a tracker cannot observe around. Everything else takes
+        # the same host check it always did.
+        if adblock.should_block(url):
+            await route.abort()
             return
         ok, _why = await self.allowed(url)
         if ok:
@@ -1787,6 +1841,14 @@ class _Browser:
 
         await context.route("**/*", self._guard)
         context.on("page", self._on_page)
+        # Cosmetic hiding, best effort. A stylesheet that fails to install
+        # leaves a slightly uglier page; one that *raises* here would leave no
+        # browser at all, which is a far worse trade than the ads it hides.
+        if adblock.enabled():
+            try:
+                await context.add_init_script(adblock.COSMETIC_INIT_JS)
+            except Exception:  # noqa: BLE001 -- cosmetic only, never fatal
+                logger.debug("[adblock] cosmetic stylesheet not installed")
 
         self._pw = playwright
         self._context = context

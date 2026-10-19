@@ -280,6 +280,9 @@ SITES: dict[str, dict[str, str]] = {
     "maps": {"url": "https://www.google.com/maps", "search": "maps_search", "host": "google.com"},
     "chatgpt": {"url": "https://chatgpt.com", "search": "", "host": "chatgpt.com"},
     "spotify": {"url": "https://open.spotify.com", "search": "spotify_search", "host": "open.spotify.com"},
+    # The default search engine, so "search duckduckgo for X" routes like any
+    # other site. It is also the page `browse open` with no address opens.
+    "duckduckgo": {"url": "https://duckduckgo.com", "search": "duckduckgo_search", "host": "duckduckgo.com"},
 }
 
 #: A bare address in the request. Captured so "open example.com/x" is a browser

@@ -30,8 +30,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,7 +41,7 @@ from unittest import mock
 
 from agent.runtime import audit_log
 from agent.runtime.permission_gate import MSG_NO_GATE
-from agent.tools.browser import actions, session
+from agent.tools.browser import actions, session, sites
 from agent.tools.browser import tools as browse_module
 from agent.tools.browser.tools import browse
 from agent.tools.tools_compat import ToolError
@@ -161,6 +163,108 @@ class HostVerdictTests(unittest.TestCase):
         # default; asserted here so the switch cannot quietly vanish.
         ok, _why = actions.host_verdict("router.local", [], allow_local=True)
         self.assertTrue(ok)
+
+
+class _Clock:
+    """A stand-in for `time.monotonic` the test moves by hand."""
+
+    def __init__(self, start: float = 1000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class DnsFailCacheTests(unittest.IsolatedAsyncioTestCase):
+    """A transient DNS miss is not remembered at the success TTL.
+
+    YouTube's media arrives from rotating segment hosts (`rr*---sn-*.googlevideo
+    .com`), so a stream meets a *new* host partway through. One lookup missing
+    for such a host used to be cached for the same 60 s as a success, so every
+    segment from that host was refused until the window expired -- the reported
+    ~49-second playback stop. A failure now expires after
+    `DNS_FAIL_CACHE_SECONDS`, and the lookup itself is bounded so a slow
+    resolver cannot hold the guard.
+    """
+
+    def _browser(self) -> session._Browser:
+        return session._Browser()
+
+    async def test_a_transient_miss_is_retried_after_the_short_window(self):
+        browser = self._browser()
+        loop = asyncio.get_running_loop()
+        clock = _Clock()
+        calls: list[str] = []
+
+        async def answers(host, port, *, type=0):
+            calls.append(host)
+            if len(calls) == 1:
+                raise socket.gaierror("temporary failure in name resolution")
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        with mock.patch.object(session.time, "monotonic", clock), mock.patch.object(
+            loop, "getaddrinfo", answers
+        ):
+            self.assertEqual(await browser._resolve("rr1---sn-a.googlevideo.com"), [])
+            self.assertEqual(len(calls), 1)
+            # Past the failure window, and still far inside the success one.
+            clock.now += session.DNS_FAIL_CACHE_SECONDS + 1.0
+            resolved = await browser._resolve("rr1---sn-a.googlevideo.com")
+
+        self.assertEqual(resolved, ["93.184.216.34"])
+        self.assertEqual(len(calls), 2, "a failure past its short window is asked again")
+
+    async def test_a_success_is_cached_for_the_long_window(self):
+        browser = self._browser()
+        loop = asyncio.get_running_loop()
+        clock = _Clock()
+        calls: list[str] = []
+
+        async def answers(host, port, *, type=0):
+            calls.append(host)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+        with mock.patch.object(session.time, "monotonic", clock), mock.patch.object(
+            loop, "getaddrinfo", answers
+        ):
+            first = await browser._resolve("rr2---sn-b.googlevideo.com")
+            # Past the failure window: a success is still worth its full TTL.
+            clock.now += session.DNS_FAIL_CACHE_SECONDS + 1.0
+            second = await browser._resolve("rr2---sn-b.googlevideo.com")
+
+        self.assertEqual(first, ["93.184.216.34"])
+        self.assertEqual(second, ["93.184.216.34"])
+        self.assertEqual(len(calls), 1, "a success outlives the failure window")
+
+    async def test_a_slow_lookup_is_bounded_rather_than_holding_the_guard(self):
+        browser = self._browser()
+        loop = asyncio.get_running_loop()
+
+        async def hanging(host, port, *, type=0):
+            await asyncio.sleep(30)
+
+        with mock.patch.object(session, "DNS_TIMEOUT_SECONDS", 0.05), mock.patch.object(
+            loop, "getaddrinfo", hanging
+        ):
+            started = time.monotonic()
+            result = await asyncio.wait_for(browser._resolve("slow.example"), timeout=5.0)
+
+        self.assertEqual(result, [], "a lookup that hangs is a miss, not a stall")
+        self.assertLess(time.monotonic() - started, 2.0)
+
+    async def test_a_literal_address_never_reaches_the_resolver(self):
+        browser = self._browser()
+        loop = asyncio.get_running_loop()
+
+        async def must_not_run(host, port, *, type=0):  # pragma: no cover - the guard
+            raise AssertionError("a literal address must not be resolved")
+
+        with mock.patch.object(loop, "getaddrinfo", must_not_run):
+            self.assertEqual(await browser._resolve("8.8.8.8"), ["8.8.8.8"])
+            # Bracketed IPv6 is unwrapped first, the shape `urlsplit` hands over.
+            self.assertEqual(
+                await browser._resolve("[2001:4860:4860::8888]"), ["2001:4860:4860::8888"]
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +407,50 @@ class SearchControlTests(unittest.TestCase):
             "the sole-field signal only qualifies a search-typed field",
         )
         self.assertFalse(actions.is_search_control(tag="input", type_="", in_form=False))
+
+    def test_youtube_search_box_is_act_despite_having_no_role(self):
+        # Measured against the live site (2026): the masthead box is
+        # `<input name="search_query" type="text" role="combobox">` inside
+        # `<form action="/results" class="ytSearchboxComponentSearchForm">` --
+        # and the form carries **no `role`** any more. So none of the three
+        # structural signals fire, and pressing Enter there was classed a
+        # submission and asked permission, on the site this browser is most
+        # used for. The fourth signal is the site's own table entry.
+        self.assertTrue(
+            actions.is_search_control(
+                tag="input",
+                type_="text",
+                in_form=True,
+                field="search_query",
+                url="https://www.youtube.com/results?search_query=lofi",
+            )
+        )
+
+    def test_the_site_table_signal_needs_both_the_site_and_the_field(self):
+        # Keyed on the host *and* the name, so neither half alone is a
+        # licence: a page that is not in the table gets nothing, and a field
+        # the table does not name is still an ordinary submission.
+        self.assertFalse(
+            actions.is_search_control(
+                tag="input", type_="text", in_form=True, field="search_query",
+                url="https://example.com/",
+            ),
+            "an unknown host is not given the benefit of a known site's field",
+        )
+        self.assertFalse(
+            actions.is_search_control(
+                tag="input", type_="text", in_form=True, field="email",
+                url="https://www.youtube.com/results",
+            ),
+            "only the field the site table names is treated as its search box",
+        )
+        # And with no URL at all -- the classifier may be called without one --
+        # the signal simply does not fire, rather than guessing.
+        self.assertFalse(
+            actions.is_search_control(
+                tag="input", type_="text", in_form=True, field="search_query"
+            )
+        )
 
     def test_a_search_submit_is_an_act_and_not_a_read(self):
         # `act`, never `read`: the query did go to somebody's server, so this
@@ -506,9 +654,28 @@ class OpenActionTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolError, "open, observe"):
             run_browse("teleport")
 
-    def test_open_without_a_url_says_which_argument_it_needed(self):
-        with self.assertRaisesRegex(ToolError, "page to open"):
-            run_browse("open")
+    def test_open_without_a_url_lands_on_the_default_search_page(self):
+        # An address bar with nothing in it is a search engine, not an error.
+        # Refusing ("Tell me which page to open") left the model to invent an
+        # address for the next attempt, which is how a general lookup ended up
+        # wherever it ended up. The payload says what opened, so a page the
+        # user did not name is never reported as if they had asked for it.
+        with mock.patch.object(
+            browse_module, "require_approval", new_callable=mock.AsyncMock
+        ) as approval, mock.patch.object(
+            browse_module,
+            "open_page",
+            return_value={"title": "DuckDuckGo", "url": "https://duckduckgo.com/"},
+        ) as opener:
+            result = run_browse("open")
+
+        opener.assert_called_once_with(sites.DEFAULT_SEARCH_URL)
+        # Opening a page is a read, and the notice names the engine that
+        # answered so the model does not report it as a page they asked for.
+        self.assertEqual(approval.call_args.kwargs["action_class"], "read")
+        self.assertIn(UNTRUSTED_OPEN, result)
+        self.assertIn("You did not name a page", result)
+        self.assertIn(sites.DEFAULT_ENGINE, result)
 
     def test_open_refuses_anything_that_is_not_a_web_page(self):
         with mock.patch.object(browse_module, "open_page") as opener:

@@ -570,11 +570,12 @@ _JS_COLLECT = """(generation) => {
     // exactly why two tools could disagree about the same button.
     if (node.closest('form')) detail.inForm = true;
     // The *form's* own role, which is the one signal that separates a search
-    // form from a comment box: YouTube, Google and Amazon all ship
-    // <form role="search">, and no checkout or sign-in form does. Read here
-    // with `inForm` because it answers the same question -- "does submitting
-    // this send the user anything?" -- and it has to be a DOM fact rather than
-    // something derived later from a field we did not collect.
+    // form from a comment box: Google and Amazon ship <form role="search">, and
+    // no checkout or sign-in form does. Read here with `inForm` because it
+    // answers the same question -- "does submitting this send the user
+    // anything?" -- and it has to be a DOM fact rather than something derived
+    // later from a field we did not collect. YouTube no longer carries the
+    // role at all (measured 2026), which is what `detail.field` below is for.
     if (detail.inForm) {
       const form = node.closest('form');
       const formRole = form && (form.getAttribute('role') || '').trim().toLowerCase();
@@ -586,6 +587,14 @@ _JS_COLLECT = """(generation) => {
     // ordinary act and a form submission never asked. A fact that decides
     // whether to interrupt the user cannot be read off the wrong attribute.
     if (type) detail.type = type;
+    // The element's `name` attribute, which is the site table's half of the
+    // search classification (`actions.is_search_control` reads it as `field`).
+    // An identifier the page's author chose, never text a user reads -- which
+    // is what makes it usable here, and it only ever decides a class on a host
+    // this tool already knows, because a host that is not in the table gets
+    // nothing from it.
+    const fieldName = node.getAttribute('name') || '';
+    if (fieldName) detail.field = fieldName.slice(0, 60);
     out.push({
       index: index,
       ref: ref,

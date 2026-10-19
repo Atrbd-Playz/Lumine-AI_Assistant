@@ -1176,7 +1176,7 @@ def _search_query(request: str) -> str:
     # A trailing "on <site>" belongs to the *route*, not to the query. Leaving it
     # in would search YouTube for "a song on youtube".
     value = re.sub(
-        r"\s+(?:on|in|at|via|through)\s+(?:youtube|google|maps|amazon|reddit|github|wikipedia|twitter|x)\s*$",
+        r"\s+(?:on|in|at|via|through)\s+(?:youtube|google|maps|amazon|reddit|github|wikipedia|twitter|x|duckduckgo)\s*$",
         "",
         value,
         flags=re.IGNORECASE,

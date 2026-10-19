@@ -263,7 +263,11 @@ async def run_search(
 
     Order, and why each part is there:
 
-    1. **Find the field.** The site's selector, then the semantic fallback.
+    1. **Find the field.** The site's selector, then the semantic fallback, and
+       then -- on a page that is not a site we know and has no search box at
+       all -- the default search page (:data:`.sites.DEFAULT_SEARCH_URL`), so a
+       search with nowhere to go still lands on one engine rather than on
+       whichever the model thought of first.
     2. **Ask.** Nothing is asked, and that is the fix rather than an omission.
        A search is :data:`SEARCH_ACTION_CLASS` because submitting a search form
        sends a query rather than anything the user owns. It was previously
@@ -317,12 +321,37 @@ async def run_search(
 
     found = find_search_field(snapshot)
     if found is None:
-        return verification.failed(
-            "search",
-            "I could not find a search box on this page",
-            fields=no_field_fields(snapshot),
-            url=snapshot.url[:90],
-        )
+        # The refusal is shared by both ways of getting here, and the reason it
+        # is two ways is the whole of the rule below.
+        def _no_box() -> verification.ActionOutcome:
+            return verification.failed(
+                "search",
+                "I could not find a search box on this page",
+                fields=no_field_fields(snapshot),
+                url=snapshot.url[:90],
+            )
+
+        if sites.site_for(snapshot.url) is not None:
+            # A site whose box we know how to find did not offer one: a layout
+            # that changed under us. Sending that to a different company's
+            # results page would answer a question nobody asked, so it fails as
+            # the named site it is.
+            return _no_box()
+        # An unknown page with no search box -- which is where a default search
+        # engine earns the name. A person with no box in front of them opens
+        # their engine and searches there; this used to refuse, and a refusal is
+        # what left the model free to open whichever search page it thought of.
+        try:
+            await engine_obj.navigate(sites.DEFAULT_SEARCH_URL)
+            gate = getattr(engine_obj, "gate", None)
+            payload = await engine_obj.observe()
+        except Exception as exc:  # noqa: BLE001 - a navigation refusal is a sentence
+            return verification.failed("search", str(exc)[:120])
+        snapshot = gate.stamp(payload) if gate is not None else state.snapshot_from_script(1, payload)
+        found = find_search_field(snapshot)
+        if found is None:
+            return _no_box()
+    where = hostname_of(snapshot.url) or "this page"
 
     # A search is an ordinary act. It used to be classified by the *key*, which
     # asked whenever the field sat inside a `<form>` -- and it sat inside one on

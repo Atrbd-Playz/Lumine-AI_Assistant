@@ -57,7 +57,7 @@ try:
     from ..tool_results import MAX_PAGE_READ_CHARS, as_payload, wrap_untrusted
     from ..tools_compat import RunContext, ToolError, function_tool
     from ..tools_text import clip
-    from . import locators, preview, search, session as browser_session, state
+    from . import locators, preview, search, session as browser_session, sites, state
     from .actions import (
         parse_tab_request,
         TAB_ACTION_CLASS,
@@ -78,7 +78,7 @@ except ImportError:  # running as a top-level script with agent/ on sys.path
     from tool_results import MAX_PAGE_READ_CHARS, as_payload, wrap_untrusted  # type: ignore[no-redef]
     from tools_compat import RunContext, ToolError, function_tool
     from tools_text import clip
-    from browser import locators, preview, search, session as browser_session, state
+    from browser import locators, preview, search, session as browser_session, sites, state  # type: ignore[no-redef]
     from browser.actions import (
         parse_tab_request,
         TAB_ACTION_CLASS,
@@ -197,7 +197,8 @@ READ_TEXT_CHARS = 1200
 
 MSG_BAD_ACTION = "Tell me one of: " + ", ".join(ACTIONS) + "."
 MSG_BAD_SCROLL = "Tell me where to scroll: down, up, top, or bottom. Nothing moved."
-MSG_NO_URL = "Tell me which page to open."
+#: No "tell me which page" message: `open` with nothing named opens the default
+#: search page instead of refusing (same rule as `browse`).
 MSG_BAD_URL = "I can only open web addresses (http or https) -- I won't open that. Nothing was shown."
 MSG_BAD_QUERY = "Tell me which control: its name, or a role and a name."
 MSG_NO_QUERY = "Tell me what to search for."
@@ -430,7 +431,8 @@ async def web_control(
 
     Args:
         action: What to do. See the list above.
-        url: The page to open, for action "open".
+        url: The page to open, for action "open" (nothing named opens the
+            search page).
         name: What to find, for the element actions -- the visible text,
             accessible name, label, placeholder, alt text, or a partial match.
         role: What kind of control: button, link, textbox, searchbox, checkbox,
@@ -470,8 +472,12 @@ async def web_control(
     # -- reads ---------------------------------------------------------------
     if normalized == "open":
         raw = str(url or "").strip()
-        if not raw:
-            raise ToolError(MSG_NO_URL)
+        # Same rule as `browse open`: nothing named means the search page, not
+        # an error. The engine and the address are one answer, so a lookup that
+        # reached this tool without an address still happens.
+        opened_default = not raw
+        if opened_default:
+            raw = sites.DEFAULT_SEARCH_URL
         try:
             target = normalize_url(raw)
         except ValueError:
@@ -498,13 +504,22 @@ async def web_control(
             "generation": snapshot.generation,
             "status": "opened",
         }
+        if opened_default:
+            payload["note"] = (
+                f"You did not name a page, so I opened the search page "
+                f"({sites.DEFAULT_ENGINE}). Say what you want searched, or give "
+                f"me an address."
+            )
         tabs = await _tabs_note(engine_obj)
         if tabs.get("tab") is not None:
             payload["tab"] = tabs["tab"]
             if int(tabs.get("tabCount") or 0) > 1:
-                payload["note"] = (
+                replaced = (
                     f"This replaced the page in tab {tabs['tab']}. Use action 'tab' "
                     "with 'new' to open another instead."
+                )
+                payload["note"] = (
+                    f"{payload['note']} {replaced}" if payload.get("note") else replaced
                 )
         return _payload(**payload)
 
@@ -965,7 +980,9 @@ async def _element_action(
     on_host = f" on {host}" if host else ""
     target = clip(snapshot.url, 100)
 
-    action_class, verb_for_gate = _classify(verb, chosen, text=clip(text, 200), key=key)
+    action_class, verb_for_gate = _classify(
+        verb, chosen, text=clip(text, 200), key=key, url=str(snapshot.url or "")
+    )
 
     if verb in ("fill", "type") and _is_password(chosen):
         # Before the question, and without one. A card the user answers "yes" to
@@ -1030,13 +1047,22 @@ def _choose_or_refuse(resolution: locators.Resolution, index: int) -> locators.C
     return resolution.chosen
 
 
-def _classify(verb: str, chosen: locators.Candidate, *, text: str, key: str) -> tuple[str, str]:
+def _classify(
+    verb: str, chosen: locators.Candidate, *, text: str, key: str, url: str = ""
+) -> tuple[str, str]:
     """The action class, and the verb name the gate records.
 
     The class comes from DOM facts wherever the verb's class is not fixed:
     a submitter is a submission whichever way it was activated, and an ``Enter``
     inside a form is HTML's implicit submit. Facts only -- never the label,
     which is text the page chose.
+
+    ``url`` is the page the control was read from, and it is the one input that
+    is not a fact of the element itself: `is_search_control` uses it to ask the
+    site table whether *this host's* field of this name is its search box, which
+    is how a site whose form declares nothing (YouTube) stops asking permission
+    to search itself. Without it the answer is the structural signals alone --
+    the same answer `browse` gave before the measurement.
 
     ``type_`` reads ``detail["type"]`` and used to read ``detail["value"]``, which
     is the element's *value* attribute: `<input type="submit" value="Go">` was
@@ -1054,6 +1080,8 @@ def _classify(verb: str, chosen: locators.Candidate, *, text: str, key: str) -> 
         in_form=in_form,
         form_role=chosen.detail.get("formRole"),
         sole_field=bool(chosen.detail.get("soleField")),
+        field=chosen.detail.get("field"),
+        url=url,
     )
     if verb in ELEMENT_ACTIONS:
         action_class = classify_click(
