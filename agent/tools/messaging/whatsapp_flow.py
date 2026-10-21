@@ -277,6 +277,8 @@ def kind_for_row(row: object) -> str:
             return "group"
     except (TypeError, ValueError):
         pass
+    if row.get("contact") is True:
+        return "contact"
     if row.get("group") is False:
         return "contact"
     return "unknown"

@@ -128,6 +128,19 @@ class TabRequestTests(unittest.TestCase):
         self.assertEqual(actions.parse_tab_request("switch 3"), ("switch", "3"))
         self.assertEqual(actions.parse_tab_request("close two"), ("close", "2"))
 
+    def test_a_page_title_or_site_name_switches_without_a_number(self):
+        for said, want in (
+            ("switch to the YouTube tab", ("switch", "title:YouTube")),
+            ("could you switch to the YouTube tab", ("switch", "title:YouTube")),
+            ("please close the Music tab", ("close", "title:Music")),
+            ("go to the Spotify tab", ("switch", "title:Spotify")),
+            ("open the Gmail tab", ("switch", "title:Gmail")),
+            ("close the Music tab", ("close", "title:Music")),
+            ("tab named YouTube", ("switch", "title:YouTube")),
+        ):
+            with self.subTest(said=said):
+                self.assertEqual(actions.parse_tab_request(said), want)
+
     def test_close_takes_an_optional_target(self):
         self.assertEqual(actions.parse_tab_request("close"), ("close", ""))
         self.assertEqual(actions.parse_tab_request("close 2"), ("close", "2"))
@@ -172,6 +185,34 @@ class TabRequestTests(unittest.TestCase):
 
 
 class TabRegistryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_unique_site_name_switches_to_its_tab(self):
+        youtube = FakePage("https://www.youtube.com/")
+        youtube.title = mock.AsyncMock(return_value="YouTube")
+        other = FakePage("https://example.com/")
+        other.title = mock.AsyncMock(return_value="Example")
+        browser = _browser_with(youtube, other)
+
+        result = await browser.switch_tab("title:youtube")
+
+        self.assertEqual(result["url"], "https://www.youtube.com/")
+        self.assertEqual(browser._page, youtube)
+
+    async def test_an_ambiguous_site_name_asks_for_a_title_not_a_number(self):
+        first = FakePage("https://www.youtube.com/watch?v=one")
+        first.title = mock.AsyncMock(return_value="First video - YouTube")
+        second = FakePage("https://www.youtube.com/watch?v=two")
+        second.title = mock.AsyncMock(return_value="Second video - YouTube")
+        browser = _browser_with(first, second)
+
+        with self.assertRaisesRegex(ToolError, "page title or site"):
+            await browser._resolve_target("title:youtube")
+
+    async def test_a_missing_tab_name_suggests_a_page_title_or_site(self):
+        browser = _browser_with(FakePage("https://example.com/"))
+
+        with self.assertRaisesRegex(ToolError, "name a page title or site"):
+            await browser._resolve_target("title:spotify")
+
     async def test_joining_does_not_navigate_an_existing_page_to_blank(self):
         existing = FakePage("https://www.youtube.com/")
         new_page = FakePage()

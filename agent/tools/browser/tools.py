@@ -355,8 +355,9 @@ async def browse(
       "bottom". It reports where it landed, so you can tell a scroll that
       moved from one that did not.
     - tab: work with more than one tab. Say nothing to list them; "new" to
-      open another (add a url to open a page in it), a tab's number to switch
-      to it, or "close" (with or without a number) to close one. Tabs are how
+      open another (add a url to open a page in it), a page title or site name
+      to switch to a matching tab, or "close" with a title/site to close one.
+      Numbers remain optional when names are not distinct. Tabs are how
       you keep a search results page while you follow a link, or compare two
       pages -- a link that opens its own window now becomes a tab instead of
       replacing the one you were on.
@@ -374,8 +375,8 @@ async def browse(
     losing this" -- use "tab new" with the url. "open" navigates the current tab,
     which throws the page away, and the result says so when other tabs exist.
 
-    Every read says which tab it read ("tab 2 of 3; also open -- tab 1: ..."),
-    so the number is never something to remember. References come from observe
+    Every read says which page it read and lists other pages by title, so you can
+    switch by name without memorising a number. References come from observe
     and go stale after any act or navigation, and after switching tabs -- each
     tab mints its own, so read the tab you are about to act on. Private
     addresses (localhost, your home network's devices) are never opened. Prefer

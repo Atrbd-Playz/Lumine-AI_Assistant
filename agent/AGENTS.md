@@ -103,12 +103,11 @@ agent/
 │   │   ├── ops.py            the operation table: class, tier, verify, retry hold
 │   │   ├── capture.py        what is on screen, and the generation token for it
 │   │   ├── input.py          SendInput: move, click, drag, scroll, type, hotkey
-│   │   └── uia.py            the UI Automation harness -- shared with WhatsApp
+│   │   └── uia.py            the UI Automation harness for desktop_control
 │   └── messaging/            the WhatsApp surface
 │       ├── whatsapp.py       the send tool, and the resolve/draft/ask/send order
 │       ├── whatsapp_ops.py   the operation table: class, paths, verify, retry hold
 │       ├── whatsapp_web.py   WhatsApp Web, in a tab of its own -- reads and verbs
-│       ├── whatsapp_desktop.py  UI Automation -- UNREACHABLE, kept as the record
 │       ├── whatsapp_read.py  chats, unread, messages, find, contact
 │       ├── whatsapp_chats.py archive, pin, mute, read, star, delete, block
 │       ├── whatsapp_account.py presence, linked devices, about, unlink, call
@@ -584,10 +583,10 @@ Platform-specific considerations that should be isolated later include:
       report the profile as locked
 - [x] Attachments are limited to an allowlisted folder by resolved path, with a
       whitelist of extensions and no URL downloads
-- [~] The WhatsApp **Desktop** adapter still only searches and sends. Every other verb
-      is Web-only, because a UIA accessibility tree offers geometry where the operations
-      need identity. `whatsapp_probe.py` reports which Web selectors are live, so a
-      WhatsApp layout change is a specific line rather than a silent no-op
+- [x] WhatsApp messaging is Web-only. The desktop messaging adapter and execution
+      code have been removed; explicitly opening the installed app remains the
+      separate `open_app` capability. `whatsapp_probe.py` reports which Web selectors
+      are live, so a WhatsApp layout change is a specific line rather than a silent no-op
 - [x] The Web selectors are verified **against a live account**, and the live DOM was not
       what any of them assumed. Measured with `whatsapp_probe.py` (closed composer) and
       `whatsapp_message_probe.py` (open one), because the send button and the bubbles do

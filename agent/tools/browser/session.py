@@ -1,13 +1,11 @@
-"""One isolated browser, started on demand, closable on demand.
+"""Lumine's personal browser, started on demand, closable on demand.
 
 Design rules worth keeping, because each one is a security or lifetime
 decision rather than a style:
 
-- **Isolated profile, never the user's browser.** A separate profile
-  directory with its own cookies, so nothing the model browses can read the
-  sessions the user keeps in their own browser. The profile persists on disk
-  between conversations -- so a login the *user* completes by typing it
-  themselves survives -- and is never seeded from the real profile.
+- **Brave uses its existing `Lumine` profile.** Its cookies, settings and
+  extensions are the user's; Brave must be closed before Lumine can launch it.
+  Playwright Chromium keeps a separate profile.
 - **Playwright is imported lazily.** The module must import on machines
   without it: the tool reports a setup step instead of the worker refusing
   to start.
@@ -35,32 +33,43 @@ decision rather than a style:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shutil
 import socket
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 try:
     from ..tools_compat import ToolError
     from ..tools_text import clip
     from .actions import REF_RE, host_verdict, hostname_of, normalize_url, TITLE_CHARS, URL_CHARS
-    from . import adblock, state as browser_state
+    from . import state as browser_state
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_compat import ToolError
     from tools_text import clip
     from browser.actions import REF_RE, host_verdict, hostname_of, normalize_url, TITLE_CHARS, URL_CHARS
-    from browser import adblock, state as browser_state  # type: ignore[no-redef]
+    from browser import state as browser_state  # type: ignore[no-redef]
+
+try:
+    from ...settings.config_store import effective_document
+except ImportError:  # running below the agent package on sys.path
+    from settings.config_store import effective_document
 
 logger = logging.getLogger("lumine")
 
-#: Where the isolated profile lives. One conversation's cookies are the next
-#: conversation's cookies only for pages the *user* chose to log into.
+#: Where Playwright Chromium's isolated profile lives. Brave uses its existing
+#: native profile named :data:`BRAVE_PROFILE_NAME`.
 PROFILE_VAR = "LUMINE_BROWSER_PROFILE"
+ENGINE_VAR = "LUMINE_BROWSER_ENGINE"
+BRAVE_EXECUTABLE_VAR = "LUMINE_BRAVE_EXECUTABLE"
+BRAVE_USER_DATA_DIR_VAR = "LUMINE_BRAVE_USER_DATA_DIR"
+BRAVE_PROFILE_NAME = "Lumine"
 
 #: The documented escape hatch for people who want their assistant to reach
 #: a NAS or a local dev server. Off by default; see `actions.host_verdict`.
@@ -107,6 +116,8 @@ DNS_FAIL_CACHE_SECONDS = 2.0
 #: one waiting on DNS is the difference between a stream that buffers and one
 #: that stalls.
 DNS_TIMEOUT_SECONDS = 5.0
+YOUTUBE_MEDIA_HOST = "googlevideo.com"
+YOUTUBE_MEDIA_DNS_RETRIES = 2
 
 #: Where the WhatsApp automation path drives. Held here rather than in the
 #: messaging package because this module owns the browser it runs in, and the URL
@@ -226,11 +237,19 @@ MSG_NOT_INSTALLED = (
     "The browser engine is not installed yet, so nothing was opened. "
     "It is installed once with: python -m playwright install chromium"
 )
+MSG_BRAVE_NOT_FOUND = (
+    "Brave is not installed where Lumine can find it. Choose Auto or Chromium "
+    "in Settings → Browser, or set LUMINE_BRAVE_EXECUTABLE. Nothing was opened."
+)
+MSG_BRAVE_PROFILE_NOT_FOUND = (
+    "I couldn't find the existing Brave profile named 'Lumine'. Create or rename "
+    "a Brave profile to 'Lumine', then try again. Nothing was opened."
+)
 MSG_OTHER_LOOP = "The browser is busy with another conversation. Nothing was done."
 MSG_PROFILE_LOCKED = (
-    "A Lumine browser window is already open, and this profile can only be used "
-    "by one at a time. Close that window -- or quit the Lumine app if it is the "
-    "one holding it -- and ask me again. Nothing was sent."
+    "The Brave profile 'Lumine' is already open, and Brave allows only one "
+    "browser process to use a profile at a time. Close all Brave windows using "
+    "that profile, then ask me again. Nothing was done."
 )
 MSG_NO_PAGE = "No page is open yet -- open one first."
 MSG_UNKNOWN_REF = "I don't have that control -- observe the page again. Nothing was done."
@@ -680,11 +699,9 @@ _JS_SCROLL = """
 
 
 def profile_dir() -> Path:
-    """The isolated profile directory.
+    """The isolated Playwright Chromium profile directory.
 
-    An override wins, then the platform's per-user data directory. Nothing
-    here points at the user's real browser profile: the whole point of this
-    path is that it is somewhere else.
+    Brave uses its selected native profile instead.
     """
     raw = (os.getenv(PROFILE_VAR, "") or "").strip()
     if raw:
@@ -696,6 +713,122 @@ def profile_dir() -> Path:
     else:
         base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "lumine" / "browser-profile"
+
+
+def brave_user_data_dir() -> Path:
+    """Brave's native user-data directory, which contains all named profiles."""
+    raw = (os.getenv(BRAVE_USER_DATA_DIR_VAR, "") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "BraveSoftware" / "Brave-Browser" / "User Data"
+    if sys.platform == "darwin":
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "BraveSoftware"
+            / "Brave-Browser"
+        )
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "BraveSoftware" / "Brave-Browser"
+
+
+def brave_profile_directory(
+    user_data_dir: Path | None = None, profile_name: str = BRAVE_PROFILE_NAME
+) -> Path:
+    """Resolve a Brave display name to its on-disk profile directory."""
+    root = user_data_dir or brave_user_data_dir()
+    local_state = root / "Local State"
+    try:
+        state = json.loads(local_state.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Brave profile metadata could not be read ({type(exc).__name__})"
+        ) from None
+    profile = state.get("profile") if isinstance(state, dict) else None
+    cache = profile.get("info_cache") if isinstance(profile, dict) else None
+    if not isinstance(cache, dict):
+        raise ValueError("Brave profile metadata has no profile list")
+    matches = [
+        str(directory)
+        for directory, info in cache.items()
+        if isinstance(info, dict)
+        and str(info.get("name") or "").strip().casefold() == profile_name.casefold()
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one profile named {profile_name!r}, found {len(matches)}"
+        )
+    candidate = root / matches[0]
+    try:
+        if not candidate.is_dir() or candidate.resolve().parent != root.resolve():
+            raise ValueError("the named Brave profile directory is missing or invalid")
+    except OSError:
+        raise ValueError("the named Brave profile directory could not be accessed") from None
+    return candidate
+
+
+def brave_executable() -> Path | None:
+    """Find the installed Brave executable."""
+    override = (os.getenv(BRAVE_EXECUTABLE_VAR, "") or "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.is_file():
+            return candidate
+        logger.warning("[Browser] %s does not point to a Brave executable", BRAVE_EXECUTABLE_VAR)
+
+    if sys.platform == "win32":
+        roots = [
+            os.getenv("PROGRAMFILES"),
+            os.getenv("PROGRAMFILES(X86)"),
+            os.getenv("LOCALAPPDATA"),
+        ]
+        candidates = [
+            Path(root) / "BraveSoftware" / "Brave-Browser" / "Application" / "brave.exe"
+            for root in roots
+            if root
+        ]
+    elif sys.platform == "darwin":
+        candidates = [
+            Path("/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+            Path.home() / "Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        ]
+    else:
+        located = shutil.which("brave-browser") or shutil.which("brave-browser-stable") or shutil.which("brave")
+        candidates = [Path(located)] if located else []
+
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _browser_engine_preference(
+    document: Mapping[str, Any] | None,
+    environment: str,
+    *,
+    brave_available: bool,
+) -> str:
+    """Resolve the saved personal-browser choice, then the environment."""
+    desktop = (document or {}).get("desktop")
+    browsers = desktop.get("browsers") if isinstance(desktop, Mapping) else None
+    saved = browsers.get("personalEngine") if isinstance(browsers, Mapping) else None
+    raw = str(saved if saved is not None else environment or "auto").strip().casefold()
+    if raw not in {"auto", "brave", "chromium"}:
+        logger.warning("[Browser] unknown personal browser engine %r; using auto", raw)
+        raw = "auto"
+    if raw == "auto":
+        return "brave" if brave_available else "chromium"
+    return raw
+
+
+def _configured_browser_engine() -> str:
+    """Use the saved browser choice first, matching the settings precedence."""
+    document, _source, _diagnostics = effective_document()
+    return _browser_engine_preference(
+        document,
+        os.getenv(ENGINE_VAR, ""),
+        brave_available=brave_executable() is not None,
+    )
 
 
 async def _joined_start_page(context: Any) -> Any:
@@ -755,9 +888,11 @@ def allow_local() -> bool:
 # than interleaving two.
 
 
-def _endpoint_file() -> Path:
-    """Where the running browser's DevTools endpoint is published."""
-    return profile_dir().parent / "browser-cdp.txt"
+def _endpoint_file(engine: str | None = None) -> Path:
+    """Where an engine's running browser endpoint is published."""
+    selected = engine or _configured_browser_engine()
+    name = "browser-cdp-brave.txt" if selected == "brave" else "browser-cdp.txt"
+    return profile_dir().parent / name
 
 
 #: How long `_close_remote` waits for the endpoint it just closed to stop
@@ -796,7 +931,14 @@ def _profile_locked(message: str) -> bool:
     return "existing browser session" in lowered or "user data directory is already in use" in lowered
 
 
-async def _launch_persistent(playwright: Any, directory: Path) -> Any:
+async def _launch_persistent(
+    playwright: Any,
+    directory: Path,
+    *,
+    executable_path: str | None = None,
+    personal_engine: str = "chromium",
+    profile_directory: str | None = None,
+) -> Any:
     """Launch the profile's browser, retrying a lock that is on its way out.
 
     **A lock that is *being* released looks exactly like one somebody holds**, and
@@ -818,24 +960,38 @@ async def _launch_persistent(playwright: Any, directory: Path) -> Any:
     while True:
         attempts += 1
         try:
-            return await playwright.chromium.launch_persistent_context(
-                str(directory),
-                headless=headless_default(),
+            args = _window_args() + ["--remote-debugging-port=0"]
+            if profile_directory:
+                args.append(f"--profile-directory={profile_directory}")
+            options = {
+                "headless": headless_default(),
                 # Downloads are cancelled at the source: a browser the
                 # assistant drives is not a browser that drops files on the
                 # user's disk without a conversation about it.
-                accept_downloads=False,
+                "accept_downloads": False,
                 # There is no synthetic viewport: the browser window is the
                 # viewport, and its default appearance is explicitly dark.
-                no_viewport=True,
-                color_scheme="dark",
-                args=_window_args()
-                # A DevTools endpoint, so another process can *join* this
-                # browser instead of failing against its lock. Port 0 lets the
-                # OS choose it, because two processes launching at once would
-                # otherwise both ask for the same fixed one -- and the endpoint
-                # is published from `DevToolsActivePort` once it is known.
-                + ["--remote-debugging-port=0"],
+                "no_viewport": True,
+                "color_scheme": "dark",
+                # A DevTools endpoint, so another process can join this browser.
+                # Port 0 lets the OS choose it, because two processes launching
+                # at once would otherwise both ask for the same fixed one.
+                "args": args,
+            }
+            if executable_path:
+                options["executable_path"] = executable_path
+            if personal_engine == "brave":
+                # Restore Brave features Playwright disables in its automation
+                # defaults so the selected native profile behaves normally.
+                options["ignore_default_args"] = [
+                    "--disable-background-networking",
+                    "--disable-component-update",
+                    "--disable-extensions",
+                    "--disable-component-extensions-with-background-pages",
+                ]
+            return await playwright.chromium.launch_persistent_context(
+                str(directory),
+                **options,
             )
         except Exception as exc:  # noqa: BLE001 - re-raised unless locked
             if attempts >= _LAUNCH_ATTEMPTS or not _profile_locked(str(exc)):
@@ -849,8 +1005,8 @@ async def _launch_persistent(playwright: Any, directory: Path) -> Any:
             await asyncio.sleep(_LAUNCH_RETRY_SECONDS)
 
 
-def _publish_endpoint(port: int) -> None:
-    target = _endpoint_file()
+def _publish_endpoint(port: int, target: Path | None = None) -> None:
+    target = target or _endpoint_file()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(f"http://127.0.0.1:{port}\n", encoding="utf-8")
@@ -858,7 +1014,7 @@ def _publish_endpoint(port: int) -> None:
         logger.info("[Browser] could not publish the DevTools endpoint: %s", exc)
 
 
-def _read_endpoint() -> str:
+def _read_endpoint(target: Path | None = None) -> str:
     """The published endpoint, or ``""``.
 
     Read rather than written by a lock file, and validated against the socket
@@ -866,7 +1022,7 @@ def _read_endpoint() -> str:
     to a dead port has to be indistinguishable from there having never been one.
     """
     try:
-        text = _endpoint_file().read_text(encoding="utf-8").strip()
+        text = (target or _endpoint_file()).read_text(encoding="utf-8").strip()
     except OSError:
         return ""
     if not text.startswith("http://127.0.0.1:"):
@@ -896,9 +1052,9 @@ def _endpoint_alive(endpoint: str) -> bool:
             pass
 
 
-def _forget_endpoint() -> None:
+def _forget_endpoint(target: Path | None = None) -> None:
     try:
-        _endpoint_file().unlink()
+        (target or _endpoint_file()).unlink()
     except OSError:
         pass
 
@@ -1136,6 +1292,7 @@ class _Browser:
     def __init__(self) -> None:
         self._pw: Any = None
         self._context: Any = None
+        self._endpoint_path: Path | None = None
         self._page: Any = None
         self._wa_page: Any = None
         #: Every page the model may act on, and which one it is looking at.
@@ -1167,6 +1324,9 @@ class _Browser:
         #: "detach from the browser" from "close the context", which for a CDP
         #: connection are very different operations.
         self._joined_browser: Any = None
+        self._route_handler: Any = None
+        self._preserved_clients: list[tuple[Any, Any]] = []
+        self._preserve_whatsapp = False
         self._loop: asyncio.AbstractEventLoop | None = None
         #: Guards the ownership fields above. A `threading.Lock`, *not* an
         #: `asyncio.Lock` -- see `_OwnerLock` for why an asyncio lock deadlocks
@@ -1275,14 +1435,11 @@ class _Browser:
         )
         return self._tabs[(index + offset) % len(self._tabs)]
 
-    def _resolve_target(self, which: object) -> "_Tab | None":
+    async def _resolve_target(self, which: object) -> "_Tab | None":
         """The tab a request names, however it named it.
 
-        Four spellings, because the request arrives as a sentence rather than a
-        number: nothing at all means the tab in use, ``+1``/``-1`` mean next and
-        previous, ``last`` means the last one opened, and digits mean that tab.
-        ``last`` is its own marker and not ``-1`` because "the last tab" is a
-        *specific* tab and "the previous one" is a direction.
+        A target may be a title or site, as well as a number, relative direction,
+        or the current tab. Names resolve only when exactly one tab matches.
         """
         self._prune()
         text = str(which if which is not None else "").strip()
@@ -1294,6 +1451,36 @@ class _Browser:
             return self._step(-1)
         if text == "last":
             return self._tabs[-1] if self._tabs else None
+        if text.casefold().startswith("title:"):
+            requested = text[len("title:"):].strip().casefold()
+            if not requested:
+                return None
+            tabs: list[tuple[_Tab, str, str]] = []
+            for tab in self._tabs:
+                title = await self._title(tab.page)
+                host = hostname_of(tab.url()).casefold()
+                tabs.append((tab, title.casefold(), host))
+            exact = [
+                tab
+                for tab, title, host in tabs
+                if requested == title or requested == host
+            ]
+            matches = exact or [
+                tab
+                for tab, title, host in tabs
+                if requested in title or requested in host
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            if len(matches) > 1:
+                raise ToolError(
+                    "I found more than one tab matching that name. Which page title "
+                    "or site should I use?"
+                )
+            raise ToolError(
+                f"I couldn't find a tab matching {clip(requested, 50)}. "
+                "Ask what tabs are open, or name a page title or site."
+            )
         return self._tab_by_key(text)
 
     def _register(self, page: Any, *, activate: bool = True) -> _Tab:
@@ -1415,14 +1602,23 @@ class _Browser:
             elif age < DNS_CACHE_SECONDS:
                 return cached[1]
         loop = asyncio.get_running_loop()
-        try:
-            infos = await asyncio.wait_for(
-                loop.getaddrinfo(host, None, type=socket.SOCK_STREAM),
-                timeout=DNS_TIMEOUT_SECONDS,
-            )
-            addresses = list(dict.fromkeys(info[4][0] for info in infos))
-        except (socket.gaierror, OSError, asyncio.TimeoutError):
-            addresses = []
+        media_host = host == YOUTUBE_MEDIA_HOST or host.endswith(f".{YOUTUBE_MEDIA_HOST}")
+        attempts = 1 + (YOUTUBE_MEDIA_DNS_RETRIES if media_host else 0)
+        addresses: list[str] = []
+        for attempt in range(attempts):
+            try:
+                infos = await asyncio.wait_for(
+                    loop.getaddrinfo(host, None, type=socket.SOCK_STREAM),
+                    timeout=DNS_TIMEOUT_SECONDS,
+                )
+                addresses = list(dict.fromkeys(info[4][0] for info in infos))
+                break
+            except socket.gaierror:
+                if media_host and attempt + 1 < attempts:
+                    continue
+                break
+            except (OSError, asyncio.TimeoutError):
+                break
         self._dns[host] = (now, addresses)
         return addresses
 
@@ -1454,17 +1650,19 @@ class _Browser:
             else:
                 await route.continue_()
             return
-        # Ads and trackers go first, and *before* the DNS check: a request that
-        # is blocked here never leaves the machine, which is the only version of
-        # "blocking" that a tracker cannot observe around. Everything else takes
-        # the same host check it always did.
-        if adblock.should_block(url):
-            await route.abort()
-            return
         ok, _why = await self.allowed(url)
         if ok:
             await route.continue_()
         else:
+            host = (urlsplit(url).hostname or "").casefold()
+            if host == YOUTUBE_MEDIA_HOST or host.endswith(f".{YOUTUBE_MEDIA_HOST}"):
+                logger.warning(
+                    "[Browser] YouTube media request blocked for %s (%s)",
+                    host,
+                    _why,
+                )
+            else:
+                logger.debug("[Browser] blocked request to %s (%s)", host, _why)
             await route.abort()
 
     # -- lifetime ----------------------------------------------------------
@@ -1655,6 +1853,7 @@ class _Browser:
                 self._owner_token = None
                 self._start_lock = None
                 self._wa_lock = None
+                self._wa_lock = None
             # The page we would hand out is settled here rather than at every
             # call site: the window is the user's, so a tab can be closed from
             # its toolbar at any moment, and a registry entry for a page that no
@@ -1696,13 +1895,30 @@ class _Browser:
         except ImportError:
             raise ToolError(MSG_NOT_INSTALLED) from None
 
-        directory = profile_dir()
-        try:
-            directory.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise ToolError(
-                f"I can't use {clip(str(directory), 60)} for the browser profile: {clip(str(exc), 80)}"
-            ) from None
+        selected_engine = _configured_browser_engine()
+        brave_path = brave_executable() if selected_engine == "brave" else None
+        if selected_engine == "brave" and brave_path is None:
+            raise ToolError(MSG_BRAVE_NOT_FOUND)
+        endpoint_path = _endpoint_file(selected_engine)
+
+        profile_directory = None
+        if selected_engine == "brave":
+            directory = brave_user_data_dir()
+            try:
+                profile_directory = brave_profile_directory(directory).name
+            except ValueError as exc:
+                raise ToolError(
+                    f"{MSG_BRAVE_PROFILE_NOT_FOUND} {clip(str(exc), 100)}"
+                ) from None
+        else:
+            directory = profile_dir()
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise ToolError(
+                    f"I can't use {clip(str(directory), 60)} for the browser profile: "
+                    f"{clip(str(exc), 80)}"
+                ) from None
 
         playwright = await async_playwright().start()
         shared = False
@@ -1715,7 +1931,7 @@ class _Browser:
             # product fault. Connecting to the running one instead is what makes
             # the browser usable by the worker, the desktop app, every dispatched
             # room and a diagnostic CLI at the same time. See `_endpoint_file`.
-            existing = _read_endpoint()
+            existing = _read_endpoint(endpoint_path)
             if existing and _endpoint_alive(existing):
                 try:
                     # `connect_over_cdp` returns a **Browser**, not a
@@ -1745,21 +1961,36 @@ class _Browser:
                     raise
                 except Exception as exc:  # noqa: BLE001 - fall through and launch
                     logger.info("[Browser] could not join %s (%s); launching", existing, exc)
-                    _forget_endpoint()
+                    _forget_endpoint(endpoint_path)
                     context = None
             else:
                 if existing:
                     # A crashed browser leaves its endpoint behind; treating that
                     # as "none" is the difference between recovering and refusing
                     # forever.
-                    _forget_endpoint()
+                    _forget_endpoint(endpoint_path)
                 context = None
 
             if context is None:
-                context = await _launch_persistent(playwright, directory)
+                context = await _launch_persistent(
+                    playwright,
+                    directory,
+                    executable_path=str(brave_path) if brave_path else None,
+                    personal_engine=selected_engine,
+                    profile_directory=profile_directory,
+                )
+                if selected_engine == "brave":
+                    logger.info(
+                        "[Browser] started Brave with the existing %r profile",
+                        BRAVE_PROFILE_NAME,
+                    )
+                else:
+                    logger.info(
+                        "[Browser] started Playwright Chromium with Lumine's isolated profile"
+                    )
                 port = _discover_devtools_port(directory)
                 if port:
-                    _publish_endpoint(port)
+                    _publish_endpoint(port, endpoint_path)
                     logger.info("[Browser] published a DevTools endpoint on %s", port)
         except Exception as exc:  # noqa: BLE001 -- any launch failure becomes a sentence
             # Detach, do not shut down, when we joined somebody else's browser.
@@ -1813,7 +2044,9 @@ class _Browser:
             try:
                 page = await _joined_start_page(context)
             except ToolError:
-                await self._close_remote(context, playwright, shared=True)
+                await self._close_remote(
+                    context, playwright, shared=True, endpoint_path=endpoint_path
+                )
                 raise
         elif pages:
             page = pages[0]
@@ -1839,19 +2072,13 @@ class _Browser:
                     f"I couldn't open a browser tab: {clip(str(exc), 100)}"
                 ) from None
 
-        await context.route("**/*", self._guard)
+        self._route_handler = self._guard
+        await context.route("**/*", self._route_handler)
         context.on("page", self._on_page)
-        # Cosmetic hiding, best effort. A stylesheet that fails to install
-        # leaves a slightly uglier page; one that *raises* here would leave no
-        # browser at all, which is a far worse trade than the ads it hides.
-        if adblock.enabled():
-            try:
-                await context.add_init_script(adblock.COSMETIC_INIT_JS)
-            except Exception:  # noqa: BLE001 -- cosmetic only, never fatal
-                logger.debug("[adblock] cosmetic stylesheet not installed")
 
         self._pw = playwright
         self._context = context
+        self._endpoint_path = endpoint_path
         self._loop = loop
         self._shared = shared
         # Registered rather than assigned, so the first tab is a tab like any
@@ -2117,8 +2344,25 @@ class _Browser:
             return False
         return bool((state or {}).get("ready"))
 
+    def preserve_whatsapp_on_release(self) -> None:
+        """Keep a user-visible unsent WhatsApp draft available after this room."""
+        with self._lock:
+            if self._context is not None and self._wa_page is not None:
+                self._preserve_whatsapp = True
+
+    def existing_whatsapp_page(self) -> Any | None:
+        """Return the WhatsApp page if it is already open, without starting it."""
+        with self._lock:
+            page = self._wa_page
+        if page is None:
+            return None
+        try:
+            return None if page.is_closed() else page
+        except Exception:  # noqa: BLE001 -- an unreadable page is not reusable
+            return None
+
     async def release(self) -> None:
-        """Close the browser if we have one. Never raises: this runs in
+        """Release the browser if we have one. Never raises: this runs in
         teardown paths where an exception would cost more than a browser.
 
         **Ownership is dropped even when this cannot close anything.** The old
@@ -2140,27 +2384,31 @@ class _Browser:
         loop = asyncio.get_running_loop()
         with self._lock:
             context, playwright = self._context, self._pw
+            endpoint_path = self._endpoint_path
             owner = self._loop
             shared = self._shared
+            preserve_whatsapp = self._preserve_whatsapp
+            self._preserve_whatsapp = False
+            wa_page = self._wa_page
+            route_handler = self._route_handler
             self._context = self._page = self._pw = None
+            self._endpoint_path = None
             self._shared = False
+            self._wa_page = None
+            self._route_handler = None
             # We are no longer attached to that browser, so nothing here may keep
             # a handle to it. Leaving `_joined_browser` set meant a later read of
             # "am I a guest?" answered yes for a browser we had already left.
             self._joined_browser = None
-            # The WhatsApp tab goes with everything else. Its *login* survives on disk
-            # in the profile, which is the part worth keeping; the open chat, the
-            # half-typed draft, and the search box somebody left filtered are all
-            # state a new conversation must not inherit.
+            # Ordinarily the WhatsApp tab goes with the room: only the profile and
+            # user-entered login survive. An explicitly unsent draft is the one
+            # exception, because the user needs that exact composer visible to
+            # review and send manually.
             #
-            # The tab is ours -- `whatsapp_page` created it -- so letting it outlive
-            # the conversation that used it means a persistent worker leaves one
-            # behind per conversation. That is not untidy, it is *broken*: the next
-            # conversation cannot see the old tab, so `whatsapp_page` opens another,
-            # and after a few rooms there are several copies of WhatsApp open at
-            # once. The search then runs against one while the press lands in
-            # another, which reads as "she can't open the chat" -- and the reaction
-            # to that failure is to open yet another tab.
+            # Keeping a draft also means dropping every room-bound callback and
+            # every non-WhatsApp tab before the room loop ends. The retained client
+            # keeps the headed browser alive; the next room joins its published
+            # endpoint rather than reusing Playwright objects from a dead loop.
             #
             # Best effort, and deliberately so: release runs on the way out of a
             # room and must not be the thing that fails. A close that does not land
@@ -2178,11 +2426,7 @@ class _Browser:
             # waiting its turn, and the close the first one is waiting on can then
             # never finish. Teardown is the one path that is not allowed to fail,
             # and it was failing against its own lock. See `_close_page_safe`.
-            wa_page = None
-            if not shared:
-                wa_page = self._wa_page
-                self._wa_page = None
-                self._wa_lock = None
+            self._wa_lock = None
             # Every tab goes with them, for the same reason: a page somebody was
             # halfway through reading is not state the next conversation should
             # inherit, and the numbers minted for it mean nothing to a browser
@@ -2195,6 +2439,50 @@ class _Browser:
             self._loop = None
             self._owner_token = None
             self._start_lock = None
+
+        if shared and context is not None:
+            if route_handler is not None:
+                try:
+                    await context.unroute("**/*", route_handler)
+                except Exception:  # noqa: BLE001 -- this client must not leave a dead route
+                    logger.warning("[Browser] could not remove the guest route guard")
+            try:
+                context.remove_listener("page", self._on_page)
+            except Exception:  # noqa: BLE001 -- this client is leaving the shared context
+                logger.debug("[Browser] could not remove the guest page listener")
+
+        if (
+            preserve_whatsapp
+            and context is not None
+            and not shared
+            and wa_page is not None
+            and not wa_page.is_closed()
+        ):
+            safe_to_preserve = playwright is not None
+            if route_handler is not None:
+                try:
+                    await context.unroute("**/*", route_handler)
+                except Exception:  # noqa: BLE001 -- do not strand a dead-loop route
+                    logger.warning("[Browser] could not remove the room's route guard; closing instead")
+                    safe_to_preserve = False
+            try:
+                context.remove_listener("page", self._on_page)
+            except Exception:  # noqa: BLE001 -- do not strand a dead-loop listener
+                logger.warning("[Browser] could not remove the room's page listener; closing instead")
+                safe_to_preserve = False
+            if safe_to_preserve:
+                pages = list(getattr(context, "pages", []) or [])
+                for page in pages:
+                    if page is wa_page:
+                        continue
+                    await _close_page_safe(page, "a non-WhatsApp browser tab")
+            if safe_to_preserve:
+                # A launched Playwright context owns its Chromium process. Stopping
+                # that client closes the window, so retain the client until the
+                # worker exits; the next room attaches through the published CDP
+                # endpoint as a guest. Only the WhatsApp tab survives this handoff.
+                self._preserved_clients.append((context, playwright))
+                return
 
         if wa_page is not None:
             if owner is not None and owner is not loop and not owner.is_closed() and owner.is_running():
@@ -2215,15 +2503,29 @@ class _Browser:
             if not owner.is_closed() and owner.is_running():
                 try:
                     asyncio.run_coroutine_threadsafe(
-                        self._close_remote(context, playwright, shared=shared), owner
+                        self._close_remote(
+                            context,
+                            playwright,
+                            shared=shared,
+                            endpoint_path=endpoint_path,
+                        ),
+                        owner,
                     )
                 except RuntimeError:  # pragma: no cover - loop died mid-handoff
                     pass
             return
-        await self._close_remote(context, playwright, shared=shared)
+        await self._close_remote(
+            context, playwright, shared=shared, endpoint_path=endpoint_path
+        )
 
     @staticmethod
-    async def _close_remote(context: Any, playwright: Any, *, shared: bool = False) -> None:
+    async def _close_remote(
+        context: Any,
+        playwright: Any,
+        *,
+        shared: bool = False,
+        endpoint_path: Path | None = None,
+    ) -> None:
         """Detach from a context and stop Playwright, ignoring every failure.
 
         **A shared browser is detached from, not closed.** This is the difference
@@ -2256,8 +2558,8 @@ class _Browser:
         if context is None:
             # We had no browser of our own to close, so the published endpoint may
             # still be somebody else's: drop it only once nothing answers on it.
-            if not _endpoint_alive(_read_endpoint()):
-                _forget_endpoint()
+            if not _endpoint_alive(_read_endpoint(endpoint_path)):
+                _forget_endpoint(endpoint_path)
             return
         # We closed the browser, so its endpoint is no longer a way in.
         #
@@ -2274,10 +2576,10 @@ class _Browser:
         # *file for a dead browser* costs a whole session.
         deadline = time.monotonic() + _ENDPOINT_DEATH_SECONDS
         while time.monotonic() < deadline:
-            if not _endpoint_alive(_read_endpoint()):
+            if not _endpoint_alive(_read_endpoint(endpoint_path)):
                 break
             await asyncio.sleep(_ENDPOINT_POLL_SECONDS)
-        _forget_endpoint()
+        _forget_endpoint(endpoint_path)
 
     # -- page operations ---------------------------------------------------
     #
@@ -2804,7 +3106,7 @@ class _Browser:
         read tab 1, switch to tab 2, switch back, act on what tab 1 showed. A
         counter that moved on every switch would refuse all of it.
         """
-        tab = self._resolve_target(which)
+        tab = await self._resolve_target(which)
         if tab is None:
             raise ToolError(MSG_NO_TAB)
         self._activate(tab)
@@ -2817,8 +3119,8 @@ class _Browser:
         }
 
     async def close_tab(self, which: object = "") -> dict[str, Any]:
-        """Close one tab -- by number, by ordinal, by position, or the one in use."""
-        tab = self._resolve_target(which)
+        """Close one tab by title, site, number, ordinal, or current tab."""
+        tab = await self._resolve_target(which)
         if tab is None:
             raise ToolError(MSG_NO_TAB)
         key = tab.key
@@ -2909,6 +3211,14 @@ async def go_history(direction: str) -> dict[str, Any]:
 
 async def release() -> None:
     await _browser.release()
+
+
+def preserve_whatsapp_on_release() -> None:
+    _browser.preserve_whatsapp_on_release()
+
+
+def existing_whatsapp_page() -> Any | None:
+    return _browser.existing_whatsapp_page()
 
 
 async def tab_list() -> dict[str, Any]:

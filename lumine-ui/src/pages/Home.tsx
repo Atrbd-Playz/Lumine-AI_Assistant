@@ -86,6 +86,7 @@ import { VoicePage } from "./settings/ai/VoicePage";
 import { ModelsPage } from "./settings/ai/ModelsPage";
 import { DiagnosticsPage } from "./settings/system/DiagnosticsPage";
 import { AboutPage } from "./settings/system/AboutPage";
+import { BrowserPage } from "./settings/system/BrowserPage";
 
 /**
  * What is on screen while a deferred page is being fetched.
@@ -1142,6 +1143,9 @@ export default function Home() {
         if (section === "permissions") {
           return <PermissionsPage />;
         }
+        if (section === "browser") {
+          return <BrowserPage />;
+        }
         if (aiConfig.state === "loading") {
           return <div className="settings-page"><p className="validation is-pending">Loading the AI configuration…</p></div>;
         }
@@ -1224,4 +1228,3 @@ export default function Home() {
     )}
   </div>;
 }
-

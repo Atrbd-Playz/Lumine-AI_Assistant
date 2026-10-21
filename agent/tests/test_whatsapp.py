@@ -41,7 +41,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from agent.runtime.permission_gate import MSG_NO_GATE
 from agent.settings.validation import CONFIG_VERSION, WHATSAPP_MODES, validate_document
 from agent.tools.messaging import whatsapp
 from agent.tools.messaging import whatsapp_web as web
@@ -241,14 +240,14 @@ class DeeplinkToolTests(AuditRedirect):
         self.addCleanup(stack.close)
         return approval, opener
 
-    def test_a_draft_is_prepared_after_a_sensitive_approval(self):
+    def test_preparing_a_draft_is_an_ordinary_action_not_a_send_approval(self):
         approval, opener = self._patches()
         result = run_tool("+1 (555) 123-4567", "Buy milk")
 
         approval.assert_awaited_once()
         kwargs = approval.call_args.kwargs
         self.assertEqual(kwargs["tool"], "send_whatsapp")
-        self.assertEqual(kwargs["action_class"], "sensitive")
+        self.assertEqual(kwargs["action_class"], "act")
         self.assertIn("+15551234567", kwargs["summary"])
         self.assertIn("Buy milk", kwargs["summary"])
         opener.assert_called_once_with("whatsapp://send?phone=15551234567&text=Buy%20milk")
@@ -270,26 +269,109 @@ class DeeplinkToolTests(AuditRedirect):
 
         opener.assert_called_once_with("whatsapp://send?phone=15551234567&text=hi")
         self.assertIn("press send", result)
-        # Two gates, in order: the lookup is a read, the draft is sensitive. The
-        # first one is what stops this being a way around the Tools page.
+        # The lookup is a read and preparing a draft is an ordinary, reversible
+        # action. Neither is a send approval.
         self.assertEqual(approval.await_count, 2)
         self.assertEqual(approval.await_args_list[0].kwargs["action_class"], "read")
-        self.assertEqual(approval.await_args_list[1].kwargs["action_class"], "sensitive")
+        self.assertEqual(approval.await_args_list[1].kwargs["action_class"], "act")
 
-    def test_a_name_with_no_number_behind_it_is_refused(self):
-        # A group is the honest counter-example: it is a chat the account has,
-        # and it has no number to build a `whatsapp://` link from. Guessing one
-        # would open a stranger's chat.
+    def test_a_group_is_also_an_acceptable_recipient(self):
+        # Superseded, and deliberately. This used to refuse a group outright
+        # ("the name-based Web draft fallback must not turn a group into an
+        # acceptable recipient"), and it refused for a reason that stopped
+        # working when WhatsApp's row reader stopped claiming to know: a row
+        # with `group: null` reads as *possibly* a group, so an exact single
+        # match was refused too and the user was told to read a phone number
+        # aloud for a chat that had just been found.
+        #
+        # The substitution rule is kept by naming the chat, not by refusing one:
+        # the draft lands in the group's own composer and the *user* presses send.
+        # A group the user
+        # named is a group the user meant.
         approval, opener = self._patches()
-        with mock.patch.object(
-            whatsapp.web,
-            "search_chats",
-            new_callable=mock.AsyncMock,
-            return_value=[{"title": "Alice", "jid": "15551234567-1600000000@g.us", "group": True}],
+        backend = SimpleNamespace(
+            open_chat=mock.AsyncMock(return_value=True),
+            draft=mock.AsyncMock(return_value=True),
+        )
+        with (
+            mock.patch.object(
+                whatsapp.web,
+                "search_chats",
+                new_callable=mock.AsyncMock,
+                return_value=[{"title": "Family", "jid": "15551234567-1600000000@g.us", "group": True}],
+            ),
+            mock.patch.object(whatsapp, "choose_backend", new=mock.AsyncMock(return_value=backend)),
         ):
-            with self.assertRaisesRegex(ToolError, "international form"):
-                run_tool("Alice", "hi")
+            result = run_tool("Family", "hi")
+
         opener.assert_not_called()
+        backend.open_chat.assert_awaited_once_with("Family")
+        backend.draft.assert_awaited_once_with("hi")
+        self.assertIn("Drafted message to Family", result)
+
+    def test_an_ordinary_chat_row_with_no_kind_signal_still_resolves(self):
+        # The reported fault, pinned at the shape the DOM actually produces.
+        # `_JS_CHAT_ROW_FN` emits `group: null` (no `data-id` to read, no
+        # participant count, no group icon) and `contact: false` unless a phone
+        # number was stripped off the title -- so every ordinary chat row is
+        # `kind_for_row(...) == "unknown"`, and `maybe_group` then refused the
+        # exact match this function had just found. She searched, the contact
+        # came up on screen, and she still asked for a number.
+        approval, opener = self._patches()
+        backend = SimpleNamespace(
+            open_chat=mock.AsyncMock(return_value=True),
+            draft=mock.AsyncMock(return_value=True),
+        )
+        with (
+            mock.patch.object(
+                whatsapp.web,
+                "search_chats",
+                new_callable=mock.AsyncMock,
+                return_value=[
+                    {"title": "Master", "raw": "Master", "contact": False, "jid": "", "group": None}
+                ],
+            ),
+            mock.patch.object(whatsapp, "choose_backend", new=mock.AsyncMock(return_value=backend)),
+        ):
+            result = run_tool("Master", "hi")
+
+        opener.assert_not_called()
+        backend.open_chat.assert_awaited_once_with("Master")
+        backend.draft.assert_awaited_once_with("hi")
+        self.assertIn("Drafted message to Master", result)
+        # The lookup and the reversible draft remain classed separately.
+        self.assertEqual(approval.await_count, 2)
+        self.assertEqual(approval.await_args_list[0].kwargs["action_class"], "read")
+        self.assertEqual(approval.await_args_list[1].kwargs["action_class"], "act")
+
+    def test_a_saved_contact_without_a_visible_jid_gets_an_unsent_name_draft(self):
+        approval, opener = self._patches()
+        backend = SimpleNamespace(
+            open_chat=mock.AsyncMock(return_value=True),
+            draft=mock.AsyncMock(return_value=True),
+        )
+        with (
+            mock.patch.object(
+                whatsapp.web,
+                "search_chats",
+                new_callable=mock.AsyncMock,
+                return_value=[
+                    {"title": "Alice", "raw": "Alice (555-1234)", "contact": True, "jid": "", "group": None}
+                ],
+            ),
+            mock.patch.object(whatsapp, "choose_backend", new=mock.AsyncMock(return_value=backend)),
+        ):
+            result = run_tool("Alice", "hi")
+
+        self.assertIn("Drafted message to Alice", result)
+        self.assertIn("review and send", result)
+        opener.assert_not_called()
+        backend.open_chat.assert_awaited_once_with("Alice")
+        backend.draft.assert_awaited_once_with("hi")
+        self.assertEqual(approval.await_count, 2)
+        self.assertEqual(approval.await_args_list[0].kwargs["action_class"], "read")
+        self.assertEqual(approval.await_args_list[1].kwargs["action"], "prepare")
+        self.assertEqual(approval.await_args_list[1].kwargs["action_class"], "act")
 
     def test_a_name_the_account_does_not_have_is_refused(self):
         approval, opener = self._patches()
@@ -355,14 +437,13 @@ class DeeplinkToolTests(AuditRedirect):
         approval2.assert_awaited_once()
         opener2.assert_called_once()
 
-    def test_a_draft_without_an_approval_channel_prepares_nothing(self):
-        # Real `require_approval`, unpatched: no gate, sensitive class, so
-        # the standard refusal -- and the link is never built or opened.
+    def test_a_draft_needs_no_approval_channel(self):
+        # A draft cannot send anything; without a gate it should still open the
+        # requested draft, while the destructive send flow remains gated.
         with mock.patch.object(whatsapp, "open_deeplink") as opener:
-            with self.assertRaises(ToolError) as caught:
-                run_tool("+15551234567", "hello")
-        self.assertEqual(str(caught.exception), MSG_NO_GATE)
-        opener.assert_not_called()
+            result = run_tool("+15551234567", "hello")
+        self.assertIn("press send", result)
+        opener.assert_called_once()
 
     def test_mode_off_says_so_before_anything_else(self):
         approval, opener = self._patches()
@@ -395,20 +476,6 @@ class AutomationToolTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
 
         self.stack.enter_context(mock.patch.object(whatsapp, "resolve_mode", return_value="automation"))
-        # The desktop adapter is real and running on the machine this suite runs
-        # on. Web is tried first, so these tests pin the Web seam and the desktop
-        # check must never be reached; the choice itself has its own tests, and
-        # `DesktopPathToolTests` covers the machine where Web is down.
-        self.stack.enter_context(
-            mock.patch.object(
-                whatsapp.desktop,
-                "desktop_capability",
-                return_value={
-                    "available": False,
-                    "reason": whatsapp.desktop.MSG_NOT_RUNNING,
-                },
-            )
-        )
         self.ledger = self.stack.enter_context(
             mock.patch.object(whatsapp, "ledger", whatsapp.SendLedger())
         )
@@ -587,19 +654,7 @@ class AutomationToolTests(unittest.TestCase):
 
 
 class BackendChoiceTests(unittest.TestCase):
-    """WhatsApp Web, chosen whole, before anything is resolved.
-
-    This class used to pin the opposite. ``PATH_PREFERENCE`` was
-    ``("web", "desktop")`` and the interesting assertions were about *when* the
-    desktop adapter carried on -- the fallback that needed no browser, no profile
-    and no QR code.
-
-    It was reasonable in the abstract and it failed three ways in practice, all
-    visible to the user: two applications answering one sentence; a name resolved on
-    one path that then could not be opened on the other; and an authority question
-    nobody should have to answer mid-sentence. The assertions below are the
-    replacement, and each one names the fault it would have let through.
-    """
+    """The one Web backend is checked before recipient lookup."""
 
     def setUp(self):
         env = mock.patch.dict(os.environ, {}, clear=True)
@@ -616,79 +671,26 @@ class BackendChoiceTests(unittest.TestCase):
             )
         )
 
-    def _desktop_would_reach(self):
-        """Patch the desktop adapter so that touching it is a visible failure.
-
-        The point is that these tests would have *passed* against a fallback that
-        no longer exists -- `web_state` returning "logged_out" used to select the
-        desktop backend and assert it was chosen. With the adapter patched to
-        raise, a single stray reference anywhere on the path fails here.
-        """
-        self.stack.enter_context(
-            mock.patch.object(
-                whatsapp.desktop,
-                "desktop_capability",
-                side_effect=AssertionError("a messaging path reached for the desktop app"),
-            )
-        )
-
     def test_web_is_chosen_when_it_is_ready(self):
-        self._desktop_would_reach()
         chosen = asyncio.run(whatsapp.choose_backend())
         self.assertEqual(chosen.name, "WhatsApp Web")
 
-    def test_web_not_being_ready_is_a_refusal_and_never_a_fallback(self):
-        """The bug, stated as the contract that replaces it.
-
-        Web signed out used to select the desktop app, which is what produced a
-        send leaving through one application while the user watched another. The
-        answer is now one sentence about Web and nothing else -- not a second
-        application.
-        """
-        self._desktop_would_reach()
+    def test_web_not_being_ready_is_a_refusal(self):
         self.web_state.return_value = "logged_out"
         with self.assertRaises(ToolError) as caught:
             asyncio.run(whatsapp.choose_backend())
         message = str(caught.exception)
         self.assertIn("not signed in", message)
-        self.assertNotIn(
-            "WhatsApp Desktop", message, "the refusal names two applications"
-        )
         self.assertEqual(message.count("Nothing was sent."), 1)
 
-    def test_the_refusal_never_mentions_the_installed_application(self):
-        self._desktop_would_reach()
-        for token in ("logged_out", "loading"):
-            with self.subTest(state=token):
-                self.web_state.return_value = token
-                with self.assertRaises(ToolError) as caught:
-                    asyncio.run(whatsapp.choose_backend())
-                self.assertNotIn("Desktop", str(caught.exception))
-
-    def test_an_operation_web_cannot_do_is_reported_as_about_web(self):
-        # The verb still decides eligibility. There is no second path to skip, so
-        # the refusal names the one path and says what it cannot do.
-        #
-        # A verb that does not exist rather than one Web lacks: every row in the
-        # table is Web-capable, so "something Web cannot do" can only be reached
-        # with an unknown verb -- and that is the useful case anyway, because a
-        # caller passing one should hear "WhatsApp Web cannot X" and not a version
-        # of that sentence naming a second application.
-        self._desktop_would_reach()
-        self.web_state.return_value = "logged_out"
+    def test_unknown_verb_is_rejected_before_readiness_check(self):
         with self.assertRaises(ToolError) as caught:
             asyncio.run(whatsapp.choose_backend("teleport"))
-        message = str(caught.exception)
-        self.assertIn("WhatsApp Web cannot", message)
-        self.assertNotIn("WhatsApp Desktop", message)
+        self.assertIn("cannot teleport", str(caught.exception))
+        self.web_state.assert_not_awaited()
 
-    def test_a_supported_verb_on_a_ready_web_path_answers(self):
-        self._desktop_would_reach()
-        chosen = asyncio.run(whatsapp.choose_backend("delete"))
-        self.assertEqual(chosen.name, "WhatsApp Web")
-
-    def test_the_candidate_list_never_contains_a_second_backend(self):
-        self.assertEqual(len(whatsapp.backend_candidates()), 1)
+    def test_backend_candidates_contains_only_web(self):
+        self.assertEqual([item.name for item in whatsapp.backend_candidates()], ["WhatsApp Web"])
 
 
 def fake_backend(order: list[str], **overrides: object) -> object:
@@ -700,9 +702,7 @@ def fake_backend(order: list[str], **overrides: object) -> object:
     so a test can watch one list across several calls, and `**overrides` replaces
     a single operation without restating the other eight.
 
-    Named "WhatsApp Web" on purpose: `_path_of` reads the name, and being the web
-    path is what makes an attachment refusal the web path's own rather than a
-    special case.
+    Named "WhatsApp Web" to match the sole backend's public identity.
     """
 
     async def check():
@@ -717,8 +717,8 @@ def fake_backend(order: list[str], **overrides: object) -> object:
         order.append("search")
         return "Bob"
 
-    async def search_name(name: str):
-        order.append("search_name")
+    async def search_name(name: str, *, preserve_search: bool = False):
+        order.append(f"search_name:{preserve_search}")
         return [{"title": name, "kind": "contact"}]
 
     async def open_chat(name: str):
@@ -806,13 +806,8 @@ class PathAgreementTests(unittest.TestCase):
                     f"{module.__name__} must not call the browse page",
                 )
 
-    def test_every_backend_can_search_a_name_and_the_ones_built_do(self):
-        # `search_name` is what makes the path a decision made once. A backend
-        # without it would send from one application having looked the name up in
-        # another.
-        for factory in (whatsapp.web_backend, whatsapp.desktop_backend):
-            with self.subTest(backend=factory.__name__):
-                self.assertTrue(callable(factory().search_name))
+    def test_web_backend_can_search_a_name(self):
+        self.assertTrue(callable(whatsapp.web_backend().search_name))
 
     def test_contact_search_uses_the_path_it_is_given_and_never_picks_one(self):
         import ast
@@ -847,6 +842,15 @@ class PathAgreementTests(unittest.TestCase):
             source,
             "the recipient must be resolved on the backend that will send to it",
         )
+
+    def test_name_resolution_leaves_its_unique_result_open_for_selection(self):
+        order: list[str] = []
+        backend = fake_backend(order)
+
+        choice = asyncio.run(whatsapp._resolve_contact(backend, "Alice"))
+
+        self.assertTrue(choice.ok)
+        self.assertEqual(order, ["search_name:True"])
 
 
 class HeaderCheckTests(unittest.TestCase):
@@ -1005,14 +1009,13 @@ class DeeplinkModeTests(unittest.TestCase):
     """Draft mode must never dead-end, and must say what it cannot do."""
 
     def test_the_refusal_names_the_switch_and_offers_both_ways_out(self):
-        # This sentence is what the user reads when they say "message Afia" and
-        # she asks for a number. It used to read as though she had searched and
-        # failed, which sent people looking for a contact that was right there.
+        # This is only for a name that could not be safely resolved, not for a
+        # known contact whose JID WhatsApp no longer exposes.
         text = whatsapp.MSG_NEED_NUMBER
         self.assertIn("international form", text)
-        self.assertIn("automation", text)
-        self.assertIn("by name", text)
-        self.assertIn("Nothing was prepared", text)
+        self.assertIn("saved contact", text)
+        self.assertIn("groups", text)
+        self.assertIn("nothing was prepared", text)
 
     def test_the_default_mode_is_still_the_one_that_does_not_send(self):
         # The *fallback* stays draft mode for an unconfigured install. It is a
@@ -1085,15 +1088,6 @@ class _SendHarness(unittest.TestCase):
         self.stack.enter_context(
             mock.patch.object(whatsapp, "ledger", whatsapp.SendLedger())
         )
-        # The desktop adapter is real on the machine this suite runs on. These
-        # tests pin the Web seam; `BackendChoiceTests` owns the choice itself.
-        self.stack.enter_context(
-            mock.patch.object(
-                whatsapp.desktop,
-                "desktop_capability",
-                return_value={"available": False, "reason": "not here"},
-            )
-        )
         self.stack.enter_context(
             mock.patch.object(
                 whatsapp,
@@ -1153,6 +1147,62 @@ class SendSequenceTests(_SendHarness):
         # is the wording WhatsApp receives.
         self.assertIn("hello world", asks[0].kwargs["summary"])
 
+    def test_distinct_recipients_can_be_sent_sequentially_in_one_session(self):
+        async def send_both() -> None:
+            await whatsapp.send_whatsapp(
+                SimpleNamespace(), "+15551234567", "first message"
+            )
+            await whatsapp.send_whatsapp(
+                SimpleNamespace(), "+15557654321", "second message"
+            )
+
+        asyncio.run(send_both())
+
+        sequence = ["check", "search", "open", "draft", "send", "delivery"]
+        self.assertEqual(self.order, sequence + sequence)
+        self.assertEqual(len(self.sends_asked_for()), 2)
+
+    def test_concurrent_send_calls_cannot_replace_a_pending_draft(self):
+        approval_started = asyncio.Event()
+        release_approval = asyncio.Event()
+
+        async def hold_at_approval(*_args, **kwargs):
+            if kwargs.get("action") == "send":
+                approval_started.set()
+                await release_approval.wait()
+
+        self.approval.side_effect = hold_at_approval
+
+        async def send_both() -> None:
+            first = asyncio.create_task(
+                whatsapp.send_whatsapp(
+                    SimpleNamespace(), "+15551234567", "first message"
+                )
+            )
+            await asyncio.wait_for(approval_started.wait(), timeout=2)
+            first_order = list(self.order)
+
+            second = asyncio.create_task(
+                whatsapp.send_whatsapp(
+                    SimpleNamespace(), "+15557654321", "second message"
+                )
+            )
+            await asyncio.sleep(0)
+            self.assertEqual(
+                self.order,
+                first_order,
+                "the next recipient must not open over the pending approval",
+            )
+
+            release_approval.set()
+            await asyncio.gather(first, second)
+
+        asyncio.run(send_both())
+
+        sequence = ["check", "search", "open", "draft", "send", "delivery"]
+        self.assertEqual(self.order, sequence + sequence)
+        self.assertEqual(len(self.sends_asked_for()), 2)
+
     def test_a_number_is_searched_for_before_the_chat_is_opened(self):
         run_tool("+15551234567", "hi")
         self.assertEqual(self.order[:4], ["check", "search", "open", "draft"])
@@ -1175,13 +1225,27 @@ class SendSequenceTests(_SendHarness):
         # difference between "not delivered" and "we broke".
         self.assertIn("send", self.order)
 
+    def test_a_send_that_was_not_attempted_clears_the_draft_without_uncertain_hold(self):
+        async def not_attempted():
+            self.order.append("send")
+            raise whatsapp.web.SendNotAttempted(
+                "I couldn't verify focus. Nothing was sent."
+            )
+
+        self.use_backend(press_send=not_attempted)
+        with self.assertRaisesRegex(ToolError, "Nothing was sent"):
+            run_tool("Alice", "hello")
+
+        self.assertEqual(self.order, ["check", "open", "draft", "send", "discard"])
+        self.assertIsNone(whatsapp.ledger.check("Alice", "hello"))
+
     def test_leftovers_in_the_message_box_hold_the_retry_too(self):
         # `DirtyText` happens *before* the send, so nothing went out -- but a
         # blind retry would type on top of what is already there, which is
         # exactly why it must land on the held side of the line.
         async def dirty(text: str):
             self.order.append("draft")
-            raise whatsapp.desktop.DirtyText("could not clear")
+            raise whatsapp.web.DirtyText("could not clear")
 
         self.use_backend(draft=dirty)
         with self.assertRaisesRegex(ToolError, "could not confirm"):
@@ -1270,20 +1334,33 @@ class SendSequenceTests(_SendHarness):
         self.assertIn("draft text", result)
 
 
+class WebPathDelegationTests(unittest.TestCase):
+    def test_draft_uses_the_shared_verified_web_typing_path(self):
+        type_message = mock.AsyncMock()
+
+        async def run() -> bool:
+            with mock.patch.object(whatsapp.web, "type_message", new=type_message):
+                return await whatsapp.draft_message("exact text")
+
+        self.assertTrue(asyncio.run(run()))
+        type_message.assert_awaited_once_with("exact text")
+
+    def test_send_uses_the_shared_real_click_or_enter_fallback(self):
+        press_send = mock.AsyncMock()
+
+        async def run() -> None:
+            with mock.patch.object(whatsapp.web, "press_send", new=press_send):
+                await whatsapp.press_send()
+
+        asyncio.run(run())
+        press_send.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 
 
-class DesktopPathToolTests(unittest.TestCase):
-    """Web signed out is a refusal, not a route to the installed app.
-
-    This class used to be the opposite: it drove the whole tool with Web mocked
-    as *signed out* and the desktop adapter mocked as *ready*, and asserted the
-    send went out through WhatsApp Desktop. That fallback was the user's bug --
-    "she's opening the desktop WhatsApp and searching there while opening WhatsApp
-    Web in the browser" -- so the class now asserts the refusal, with every
-    desktop function patched to **raise**, so a single stray reference anywhere on
-    the path fails here rather than in front of somebody's chat list.
-    """
+class WebUnavailableTests(unittest.TestCase):
+    """A missing Web session refuses without performing any send-side action."""
 
     def setUp(self):
         env = mock.patch.dict(os.environ, {}, clear=True)
@@ -1299,33 +1376,9 @@ class DesktopPathToolTests(unittest.TestCase):
             mock.patch.object(whatsapp, "ledger", whatsapp.SendLedger())
         )
         self.approval = self._mock(whatsapp, "require_approval")
-        # Every desktop entry point, patched to fail loudly. The desktop app may be
-        # *launched* as a program; it may not be *driven* as a messaging path, and
-        # this is where that distinction stops being an intention.
-        self.dunreachable = "the installed WhatsApp app was reached as a messaging path"
-        self.stack.enter_context(
-            mock.patch.object(
-                whatsapp.desktop,
-                "desktop_capability",
-                side_effect=AssertionError(self.dunreachable),
-            )
+        self.web_contacts = self._mock(
+            whatsapp, "list_contacts", side_effect=AssertionError("unready Web path used")
         )
-        for name in (
-            "state",
-            "list_contacts",
-            "search_number",
-            "open_chat",
-            "type_message",
-            "clear_composer",
-            "press_send",
-            "delivery_seen",
-        ):
-            self._mock(
-                whatsapp.desktop,
-                name,
-                side_effect=AssertionError(self.dunreachable),
-            )
-        self.web_contacts = self._mock(whatsapp, "list_contacts", side_effect=AssertionError("Web path used"))
         # Signed out, explicitly. Not silent, because a *reachable* Web path is the
         # case under test and a mock that said nothing would make this pass.
         self.web_state = self._mock(whatsapp, "whatsapp_state", return_value="logged_out")
@@ -1335,38 +1388,26 @@ class DesktopPathToolTests(unittest.TestCase):
             mock.patch.object(owner, name, new_callable=mock.AsyncMock, **kwargs)
         )
 
-    def test_a_name_send_refuses_rather_than_opening_the_installed_app(self):
-        # The reported bug. Web is signed out, so the old fallback opened WhatsApp
-        # Desktop and sent through it -- two applications answering one sentence.
+    def test_a_name_send_refuses_when_web_is_signed_out(self):
         with self.assertRaises(ToolError) as caught:
             run_tool("Alice", "hello")
         message = str(caught.exception)
         self.assertIn("not signed in", message)
-        self.assertNotIn("Desktop", message)
-        # Web's state was asked, which is what the refusal is built from.
         self.web_state.assert_awaited()
 
     def test_a_number_send_refuses_the_same_way(self):
-        # A number is not an excuse to open a second application: the lookup that
-        # turns it into a chat goes through the account's own search box, which is
-        # Web.
         with self.assertRaises(ToolError) as caught:
             run_tool("+15551234567", "hi")
-        self.assertNotIn("Desktop", str(caught.exception))
+        self.assertIn("not signed in", str(caught.exception))
 
     def test_nothing_is_typed_or_sent_anywhere(self):
         with self.assertRaises(ToolError):
             run_tool("Alice", "hello")
         self.approval.assert_not_awaited()
 
-    def test_an_attachment_refuses_before_anything_is_opened(self):
-        self.stack.enter_context(
-            mock.patch.object(
-                whatsapp, "resolve_attachment", return_value="C:/Users/me/Downloads/a.png"
-            )
-        )
+    def test_no_approval_is_requested_when_web_is_unavailable(self):
         with self.assertRaises(ToolError):
-            run_tool("Alice", "look", attachment="C:/Users/me/Downloads/a.png")
+            run_tool("Alice", "hello")
         self.approval.assert_not_awaited()
 
 

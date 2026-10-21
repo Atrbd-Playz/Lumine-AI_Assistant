@@ -116,9 +116,14 @@ class RealBrowserJourneyTests(unittest.TestCase):
             },
         )
         env.start()
+        engine_choice = mock.patch.object(
+            session, "_configured_browser_engine", return_value="chromium"
+        )
+        engine_choice.start()
         # Restored rather than merely unset: this file turns the local switch on
         # for its own sake, and leaving it on would quietly relax the network
         # guard for every test module imported after this one.
+        cls.addClassCleanup(engine_choice.stop)
         cls.addClassCleanup(env.stop)
 
     def _with_engine(self, body):

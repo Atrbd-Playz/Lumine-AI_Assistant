@@ -119,12 +119,8 @@ AGENT_MODULES = [
     "tools.messaging.whatsapp_read",
     "tools.messaging.whatsapp_chats",
     "tools.messaging.whatsapp_account",
-    # tools/desktop/ -- the same shape, and the same reason the messaging ones
-    # are named individually: `whatsapp_desktop` reaches a sibling in this
-    # package (`from ..desktop import uia`) and a top-level sibling in the
-    # script shape (`from desktop import uia`). Getting that pair wrong works
-    # through the package, fails when `tools/` itself is the package, and only
-    # this guard notices -- which is exactly how it would reach a release.
+    # tools/desktop/ -- general desktop control remains a separate capability
+    # with its own import shape. WhatsApp messaging no longer imports UIA.
     "tools.desktop.uia",
     "tools.desktop.input",
     "tools.desktop.capture",

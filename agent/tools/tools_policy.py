@@ -19,7 +19,7 @@ both the size and the specific claims, so "shorter" cannot quietly become "gone"
 """
 
 #: Bumped when a rule changes, so a stale value is detectable rather than silent.
-POLICY_VERSION = 4
+POLICY_VERSION = 5
 
 TOOL_USAGE_POLICY = """\
 ## Picking one tool
@@ -157,6 +157,9 @@ Rules:
 - Keep spoken replies to one or two short sentences unless asked for more.
 - If a tool reports a step was uncertain, an operation may have happened anyway.
   Say so; never repeat that action on your own initiative.
+- When an allowed task fails, explain the verified cause and offer one safe,
+  materially different next option if available. Never repeat the failed action
+  or bypass a refusal or denied approval.
 
 On WhatsApp:
 - Read before you write. If a read would answer it, do not send, and never send

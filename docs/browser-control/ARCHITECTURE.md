@@ -49,6 +49,29 @@ browser launches at 960×680 with a dark appearance and background media
 suspension disabled; these launch defaults apply when Lumine owns a new browser,
 not when it joins an already-running Chromium process.
 
+The personal browser engine is selected in Settings → Browser (or with
+`LUMINE_BROWSER_ENGINE`): `auto` prefers an installed Brave and otherwise uses
+Playwright Chromium; `brave` and `chromium` explicitly select one. Brave uses
+the existing native profile named `Lumine`, resolved from Brave's `Local State`
+metadata, so its cookies, settings, and extensions are shared. Brave must be
+closed before Lumine starts that profile; Chromium permits only one running
+process per user-data directory. A custom Brave executable may be supplied with
+`LUMINE_BRAVE_EXECUTABLE`; a non-standard user-data directory may be set with
+`LUMINE_BRAVE_USER_DATA_DIR`. Switching engines applies on the next browser start.
+For Brave launches, Lumine opts out of Playwright's default
+`--disable-background-networking`, `--disable-component-update`, and extension
+disabling switches so Brave runs with normal component updates and installed
+extensions. Lumine has no custom ad filter or cosmetic ad-hiding code; Brave
+Shields handles ads. The route guard still checks public-network boundaries for
+every request. The shared DevTools endpoint is engine-specific
+(`browser-cdp.txt` for Playwright Chromium and `browser-cdp-brave.txt` for Brave)
+so changing engines cannot join or tear down the other browser.
+
+YouTube media host resolution retries two transient DNS failures for a
+`googlevideo.com` segment host and logs if the request still cannot be resolved.
+This can avoid a dropped segment after temporary lookup failures, but does not
+guarantee uninterrupted playback or remove YouTube ads.
+
 ## Component map (what grows, what is added)
 
 ```text
@@ -125,10 +148,10 @@ the host browser.** `_close_remote(shared=True)` is the existing expression of i
 
 - `engine.py` classifies Playwright's disconnect errors as `crashed` instead of
   retrying the operation against a dead connection.
-- Session-level recovery is *rejoin*: read `browser-cdp.txt`, `connect_over_cdp`
-  again, rebuild the tab registry from the live pages. If the endpoint is gone and
-  this process was the **owner** (the `_OwnerLock` holder), relaunch is allowed —
-  a guest never relaunches.
+- Session-level recovery is *rejoin*: read the selected engine's endpoint,
+  `connect_over_cdp` again, rebuild the tab registry from the live pages. If the
+  endpoint is gone and this process was the **owner** (the `_OwnerLock` holder),
+  relaunch is allowed — a guest never relaunches.
 - Recovery mints a new generation for every tab: after a restart no outstanding
   ref can be trusted, and pretending otherwise is how a stale click survives a
   crash.
@@ -297,5 +320,6 @@ test that fails if it is weakened.
 - No new browser, no second context, no per-agent browser. The singleton stands.
 - No LLM planner in this track — replan calls the existing `plan_for`, which stays
   deterministic; the planner upgrade is runtime-track Phase 8, out of scope here.
-- No removal of `whatsapp_desktop.py`, `site_map.py`, or any module the audit
-  found mature — maturity is not obsolescence.
+- `whatsapp_desktop.py` was removed in a later, explicitly approved WhatsApp
+  reliability change; that exception does not imply removal of `site_map.py` or
+  any other module this architecture depends on.

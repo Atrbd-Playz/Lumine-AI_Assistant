@@ -55,13 +55,11 @@ from typing import Any, Sequence
 try:
     from ..tools_compat import ToolError
     from ..tools_text import clip
-    from ..browser.session import whatsapp_page
-    from . import whatsapp_desktop as desktop
+    from ..browser.session import existing_whatsapp_page, whatsapp_page
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_compat import ToolError
     from tools_text import clip
-    from browser.session import whatsapp_page
-    import whatsapp_desktop as desktop
+    from browser.session import existing_whatsapp_page, whatsapp_page
 
 # The voice, for `announce_sent`. At **module scope**, deliberately: a
 # function-level relative import breaks the script path the worker actually runs
@@ -79,6 +77,15 @@ except ImportError:  # running as a top-level module with agent/ on sys.path
     )
 
 logger = logging.getLogger("lumine")
+
+
+class DirtyText(Exception):
+    """A partial draft could not be safely cleared from the composer."""
+
+
+class SendNotAttempted(ToolError):
+    """The send gesture was not issued, so retrying cannot duplicate a send."""
+
 
 #: Digits only, and ASCII only: ``str.isdigit`` would accept Arabic-Indic digits
 #: and hand them to the OS as a URL. Declared here rather than imported from
@@ -1152,8 +1159,8 @@ _JS_MESSAGE_AT = _with_rows("spec", """
 #: had in fact worked.
 #:
 #: What is stable is layout: WhatsApp puts your own messages flush right and
-#: theirs flush left, inside `[role="row"]` elements. Same geometric reasoning as
-#: `whatsapp_desktop.py`. The whole string is compared, because a row carries its
+#: theirs flush left, inside `[role="row"]` elements. The whole string is compared,
+#: because a row carries its
 #: timestamp too and a substring test would accept the wrong message.
 #:
 #: It reuses `_JS_ROWS_FN` rather than restating the geometry, because six scripts
@@ -1661,7 +1668,9 @@ def number_from_jid(jid: object) -> str:
     return number if PHONE_RE.fullmatch(number) else ""
 
 
-async def search_chats(query: str) -> list[dict[str, Any]]:
+async def search_chats(
+    query: str, *, preserve_search: bool = False
+) -> list[dict[str, Any]]:
     """Chats matching `query`, through WhatsApp's own search box.
 
     ## It waits for the page before it types
@@ -1746,10 +1755,68 @@ async def search_chats(query: str) -> list[dict[str, Any]]:
         _applied, rows = answer
         return rows
     finally:
-        try:
-            await page.keyboard.press("Escape")
-        except Exception:  # noqa: BLE001 - best effort; nothing depends on it
-            pass
+        if not preserve_search:
+            await clear_chat_search(page)
+
+
+async def clear_chat_search(page: Any | None = None) -> None:
+    """Clear WhatsApp's chat filter, and leave the currently open chat open.
+
+    This used to be one blind ``keyboard.press("Escape")``. A keypress goes to
+    **whatever currently has focus**, and after a row press that is the row
+    itself -- measured against the live account, with `open_chat` doing exactly
+    what it has always done::
+
+        _click_row -> True
+        right after click : pane=True  header=('Master', 'Master') composer=True
+        after clear search: pane=False header=('','')              composer=False
+
+    The press had opened the conversation, and the line running immediately
+    after it tore the conversation down. `open_chat` then polled its whole
+    four-second window for a header that would never come, returned on its
+    *"proceeding on the press"* rule, and handed the draft step a chat with no
+    message box -- which refused with "I can't see the message box on this
+    chat" for a chat that has one. That is the whole of the reported failure:
+    a send refused on a perfectly good conversation, twice in a row for the
+    same contacts, while a retry against an already-open chat worked.
+
+    So it now does what this docstring has always claimed, and the measurement
+    that picks the mechanism is below.
+
+    **A read first, and no read means no keystroke.** :data:`_JS_SEARCH_BOX_VALUE`
+    answers ``""`` for an empty box *and* for an absent one, so "there is no
+    filter" is answered rather than assumed. That guard is load-bearing:
+    :data:`_JS_SEARCH_BOX_EMPTY` returns ``false`` when the input is missing,
+    which would otherwise send select-all and delete into whatever holds focus --
+    a composer mid-draft, among other things.
+
+    **The clear is :func:`_empty_search_box`**, the verified select-all-and-delete,
+    which focuses the box itself before it presses anything. Measured the same
+    way, chat open and the box holding ``Master``::
+
+        _empty_search_box -> True
+        after kb clear    : pane=True  header=('Master', 'Master')
+                            rows=<the eight baseline rows>
+
+    **Focus is the entire difference.** The same keystroke aimed at a box this
+    function has just focused clears a filter; aimed at a row it closes a
+    conversation. And with nothing in the box no key is pressed at all, which is
+    also what keeps the post-send cleanup calls safe while focus sits in the
+    composer -- those used to fire an Escape at it too.
+
+    Escape is not used here any more in either direction. It was measured doing
+    the right thing *only* when focus was already inside the search box, which
+    is precisely the condition this function cannot see.
+    """
+    try:
+        active_page = page or existing_whatsapp_page()
+        if active_page is None:
+            return
+        if not str(await active_page.evaluate(_JS_SEARCH_BOX_VALUE) or "").strip():
+            return
+        await _empty_search_box(active_page)
+    except Exception:  # noqa: BLE001 - a missing search overlay is already clear
+        pass
 
 
 async def search_messages(query: str, chat: str = "") -> list[dict[str, Any]]:
@@ -2098,6 +2165,17 @@ async def _focus(page: Any, target: str) -> Any:
     return None
 
 
+async def _focus_composer(page: Any, *, timeout: float = 1.0) -> bool:
+    """Retry a transient composer mount, but require focus confirmation."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if await _focus(page, "composer") is not None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        await _sleep(0.15)
+
+
 async def _click_target(page: Any, target: str) -> bool:
     """Click a target through the real input pipeline. ``True`` when it landed.
 
@@ -2118,6 +2196,32 @@ async def _click_target(page: Any, target: str) -> bool:
             await page.click(f"[{_CLICK_MARK}='1']", timeout=4000)
         except Exception:  # noqa: BLE001 - try the next spelling
             continue
+        return True
+    return False
+
+
+async def _press_send_button(page: Any) -> bool:
+    """Press the first live send button, or report that none exists.
+
+    A failed Playwright press is not absence: it may have reached WhatsApp before
+    the browser reported an error. Do not follow that ambiguous click with Enter.
+    """
+    for selector in TARGETS.get("send_button", ()):
+        try:
+            marked = await page.evaluate(
+                _JS_MARK_ONE, {"selector": selector, "mark": _CLICK_MARK}
+            )
+        except Exception:  # noqa: BLE001 - try another selector; no gesture occurred
+            continue
+        if not marked:
+            continue
+        try:
+            await page.click(f"[{_CLICK_MARK}='1']", timeout=4000)
+        except Exception as exc:  # noqa: BLE001 - do not risk a second gesture
+            raise ToolError(
+                "WhatsApp's send-button press could not be confirmed. Check the "
+                "chat before asking me to retry."
+            ) from exc
         return True
     return False
 
@@ -2271,8 +2375,14 @@ async def _search_then_click(page: Any, wanted: str, *, attempts: int = 8, delay
     except Exception:  # noqa: BLE001 - a failed search is a refusal, never a crash
         return False
     finally:
+        # Not a bare Escape, and this is the one place that used to press it at
+        # the worst possible moment: this `finally` runs *after* the row press,
+        # so focus is sitting on the row that just opened a conversation -- and
+        # Escape there closes it (measured, in `clear_chat_search`). The box does
+        # still hold the query on the success path, so there is a genuine filter
+        # to clear; the helper clears that and leaves the conversation alone.
         try:
-            await page.keyboard.press("Escape")
+            await clear_chat_search(page)
         except Exception:  # noqa: BLE001 - best effort; nothing depends on it
             pass
 
@@ -2353,7 +2463,11 @@ async def open_chat(title: str, *, timeout: float = 4.0) -> bool:
     if not wanted:
         return False
 
-    if not await _click_row(page, wanted) and not await _search_then_click(page, wanted):
+    if await _click_row(page, wanted):
+        # A caller may have already searched and left the result rows in place.
+        # Reuse that visible result instead of typing the same name a second time.
+        await clear_chat_search(page)
+    elif not await _search_then_click(page, wanted):
         return False
 
     deadline = time.monotonic() + max(0.5, timeout)
@@ -2428,6 +2542,55 @@ async def composer() -> dict[str, Any]:
     return dict(await page.evaluate(_JS_COMPOSER) or {})
 
 
+#: How long a step that is about to type gives the message box to appear, and how
+#: often it looks while waiting.
+#:
+#: This exists because of a failure that took 10 ms to report and four seconds to
+#: cause. The draft step read the composer **once** and refused when the answer
+#: was "not there". `require_ready` was already being called first, and it is a
+#: different question: it waits for ``#pane-side``, the chat list, which is up
+#: long before the *conversation* has drawn a message box. So the only gate left
+#: was that one instant read.
+#:
+#: And `open_chat` had just told us exactly how we would get here. When the chat
+#: header never becomes readable -- which is every contact who has never been
+#: messaged, and any build whose header selector moved -- the open step runs out
+#: its whole window and returns on the documented *"proceeding on the press and
+#: relying on the composer check"* fallback. The composer check **was** the next
+#: line of defence its own log message promised, and it was a single look taken
+#: the instant the conversation finished mounting. Measured as the user saw it:
+#: `open` closing `done` at 4564 ms and `draft` failing 10 ms later with "I can't
+#: see the message box on this chat" -- on a chat that has one, twice in a row,
+#: for the same two contacts, while a retry against an already-open chat worked.
+#:
+#: Three seconds rather than the full readiness window: a message box is drawn
+#: with the conversation, so anything still absent after that is a chat that
+#: genuinely has no composer to type into, and the refusal is the honest one.
+#: The first look costs nothing -- `_poll` reads before it sleeps -- so a page
+#: that is ready types immediately, as it did before.
+COMPOSER_WAIT_SECONDS = 3.0
+COMPOSER_WAIT_INTERVAL_SECONDS = 0.2
+
+
+async def _composer_for_typing() -> dict[str, Any]:
+    """The composer, having given it a moment to mount. Never raises.
+
+    Polls through the same :func:`composer` the rest of the draft step reads, so
+    "waited for the box" and "typed into the box" cannot be two different
+    opinions of the page. An unreadable page answers the same as an absent one --
+    :func:`_poll` gets whatever ``composer`` returns, and the caller's existing
+    ``found`` check does the refusing.
+    """
+    attempts = max(1, int(COMPOSER_WAIT_SECONDS / COMPOSER_WAIT_INTERVAL_SECONDS) + 1)
+    found = await _poll(
+        composer,
+        attempts=attempts,
+        delay=COMPOSER_WAIT_INTERVAL_SECONDS,
+        predicate=lambda state_: bool(state_ and state_.get("found")),
+    )
+    return dict(found or {})
+
+
 async def type_message(text: str) -> None:
     """Put exactly `text` in the message box -- or leave the box clean.
 
@@ -2449,9 +2612,15 @@ async def type_message(text: str) -> None:
     so a tab still mounting answers "no composer" and the send refuses with "I
     can't see the message box" for a chat that has a message box. Waiting here is
     the difference between one slow send and a retry the user has to ask for.
+
+    Waiting for the page is not waiting for the *composer*, though, and that gap
+    is what :func:`_composer_for_typing` closes: the chat list being up says
+    nothing about whether the conversation that just opened has drawn its message
+    box yet, and a single read at that instant refused a perfectly good chat in
+    ~10 ms. See the constant's note for the log that named it.
     """
     await require_ready()
-    state_ = await composer()
+    state_ = await _composer_for_typing()
     if not state_.get("found"):
         raise ToolError(MSG_NO_COMPOSER)
     if not state_.get("empty", True):
@@ -2461,15 +2630,14 @@ async def type_message(text: str) -> None:
             "Nothing was sent."
         )
     page = await whatsapp_page()
-    box = await _focus(page, "composer")
-    if box is None:
+    if not await _focus_composer(page):
         raise _missing("message box")
     try:
         await page.keyboard.type(str(text), delay=KEY_DELAY_MS)
     except Exception:
         if await _clear_composer():
             raise
-        raise desktop.DirtyText(MSG_DIRTY) from None
+        raise DirtyText(MSG_DIRTY) from None
     # Verify the box now holds the text, and clear it if it does not.
     #
     # Without this the sequence went on to ask for approval for a draft that was
@@ -2498,9 +2666,7 @@ async def _clear_composer() -> bool:
     with keystrokes while the user watches.
     """
     page = await whatsapp_page()
-    try:
-        await _focus(page, "composer")
-    except Exception:  # noqa: BLE001
+    if not await _focus_composer(page):
         return False
     for _ in range(2):
         try:
@@ -2568,15 +2734,21 @@ async def press_send() -> None:
     fallback rather than the primary: a button whose icon we can find is a button
     we can also verify is live.
 
-    Waits for the page first, like every step that *acts* rather than looks. The
-    Enter fallback types into whatever currently holds focus, so on a page that is
-    still mounting that is the search box -- a send gesture aimed at a search field
-    is worse than no send at all, because it looks like it worked.
+    Waits for the page first, like every step that *acts* rather than looks. Enter
+    is pressed only after the composer is positively focused. A missing composer
+    is a pre-send refusal; a failed button press is not followed by Enter, because
+    that could send the same message twice.
     """
-    await require_ready()
-    page = await whatsapp_page()
-    if not await _click_target(page, "send_button"):
-        await _focus(page, "composer")
+    try:
+        await require_ready()
+        page = await whatsapp_page()
+    except ToolError as exc:
+        raise SendNotAttempted(f"{exc} Nothing was sent.") from None
+    if not await _press_send_button(page):
+        if not await _focus_composer(page):
+            raise SendNotAttempted(
+                "I couldn't verify focus on the message box. Nothing was sent."
+            )
         await page.keyboard.press("Enter")
 
 

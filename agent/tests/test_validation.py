@@ -452,6 +452,18 @@ class DesktopRoutingSettingsTests(unittest.TestCase):
         document["desktop"] = {"browsers": {"default": "chrome"}}
         self.assertEqual(self.codes(document), [])
 
+    def test_personal_browser_engine_accepts_each_supported_choice(self):
+        for engine in ("auto", "brave", "chromium"):
+            with self.subTest(engine=engine):
+                document = self.document()
+                document["desktop"] = {"browsers": {"personalEngine": engine}}
+                self.assertNotIn("desktop.browser_engine_invalid", self.codes(document))
+
+    def test_unknown_personal_browser_engine_is_reported(self):
+        document = self.document()
+        document["desktop"] = {"browsers": {"personalEngine": "edge"}}
+        self.assertIn("desktop.browser_engine_invalid", self.codes(document))
+
     def test_a_blank_browser_default_is_reported(self):
         document = self.document()
         document["desktop"] = {"browsers": {"default": "   "}}

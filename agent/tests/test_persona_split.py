@@ -51,6 +51,13 @@ class PersonaCoreTests(unittest.TestCase):
         for trait in ("gentle", "honest", "kindness", "language", "short"):
             self.assertIn(trait, core, f"the core lost '{trait}', which shapes every reply")
 
+    def test_affection_stays_modest_and_does_not_claim_a_real_relationship(self):
+        core = CORE_PATH.read_text(encoding="utf-8").lower()
+        full = FULL_PATH.read_text(encoding="utf-8").lower()
+        self.assertIn("gently affectionate", core)
+        self.assertIn("real spouse or human partner", core)
+        self.assertIn("stays modest, non-possessive", full)
+
     def test_the_policy_still_goes_after_the_core(self):
         # Order matters: the tool policy is the more specific rule, and it reads
         # as a correction of a more general persona rather than the other way

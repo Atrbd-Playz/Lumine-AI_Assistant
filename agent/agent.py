@@ -1030,11 +1030,13 @@ async def entrypoint(ctx: JobContext):
             await session.aclose()
         finally:
             # Drops the gate with everything it was still waiting on, then
-            # releases the browser and the shared HTTP client. All three are
-            # last-one-out: the browser's *profile* (logins the user typed
-            # themselves) survives on disk, but its pages do not survive a
-            # conversation -- a fresh session must not open on the last
-            # session's screen.
+            # releases the browser and the shared HTTP client. An unsent draft
+            # explicitly marks its WhatsApp tab for handoff, so release preserves
+            # that one user-visible window and closes the other owned tabs. All
+            # three are last-one-out: the browser's *profile* (logins the user
+            # typed themselves) survives on disk, while ordinary pages do not
+            # survive a conversation. A pending WhatsApp draft is the exception:
+            # the user asked for that unsent message to remain visible.
             release_gate(session)
             unregister_tracker(session)
             unregister_publisher(session)

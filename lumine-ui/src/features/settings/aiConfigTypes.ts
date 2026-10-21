@@ -345,6 +345,22 @@ export type AgentSettings = {
   enableAppLaunch?: boolean;
 };
 
+export type PersonalBrowserEngine = "auto" | "brave" | "chromium";
+
+export type DesktopSettings = {
+  browsers?: {
+    default?: string;
+    desktopBrowser?: string;
+    ownBrowser?: boolean;
+    preferOwnBrowser?: boolean;
+    isolate?: boolean;
+    personalEngine?: PersonalBrowserEngine;
+    [key: string]: unknown;
+  };
+  input?: string;
+  [key: string]: unknown;
+};
+
 /**
  * A voice the user found and chose to keep.
  *
@@ -379,6 +395,7 @@ export type ConfigDocument = {
   providers: Record<string, ProviderEntry>;
   profiles: VoiceProfile[];
   agent?: AgentSettings;
+  desktop?: DesktopSettings;
   /**
    * Voices the user added themselves. Absent or empty means the picker offers
    * only what the catalog declares.

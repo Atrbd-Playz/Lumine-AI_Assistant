@@ -205,14 +205,52 @@ class DnsFailCacheTests(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(session.time, "monotonic", clock), mock.patch.object(
             loop, "getaddrinfo", answers
         ):
-            self.assertEqual(await browser._resolve("rr1---sn-a.googlevideo.com"), [])
+            self.assertEqual(await browser._resolve("example.com"), [])
             self.assertEqual(len(calls), 1)
             # Past the failure window, and still far inside the success one.
             clock.now += session.DNS_FAIL_CACHE_SECONDS + 1.0
-            resolved = await browser._resolve("rr1---sn-a.googlevideo.com")
+            resolved = await browser._resolve("example.com")
 
         self.assertEqual(resolved, ["93.184.216.34"])
         self.assertEqual(len(calls), 2, "a failure past its short window is asked again")
+
+    async def test_youtube_media_retries_a_transient_dns_miss_before_aborting_a_segment(self):
+        browser = self._browser()
+        loop = asyncio.get_running_loop()
+        calls: list[str] = []
+
+        async def answers(host, port, *, type=0):
+            calls.append(host)
+            if len(calls) == 1:
+                raise socket.gaierror("temporary failure in name resolution")
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.72.14", 0))]
+
+        with mock.patch.object(loop, "getaddrinfo", answers):
+            allowed, reason = await browser.allowed(
+                "https://rr3---sn-a.googlevideo.com/videoplayback"
+            )
+
+        self.assertTrue(allowed, reason)
+        self.assertEqual(calls, ["rr3---sn-a.googlevideo.com"] * 2)
+
+    async def test_youtube_media_retries_two_transient_dns_misses(self):
+        browser = self._browser()
+        loop = asyncio.get_running_loop()
+        calls: list[str] = []
+
+        async def answers(host, port, *, type=0):
+            calls.append(host)
+            if len(calls) < 3:
+                raise socket.gaierror("temporary failure in name resolution")
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("142.250.72.14", 0))]
+
+        with mock.patch.object(loop, "getaddrinfo", answers):
+            allowed, reason = await browser.allowed(
+                "https://rr3---sn-a.googlevideo.com/videoplayback"
+            )
+
+        self.assertTrue(allowed, reason)
+        self.assertEqual(calls, ["rr3---sn-a.googlevideo.com"] * 3)
 
     async def test_a_success_is_cached_for_the_long_window(self):
         browser = self._browser()
@@ -1407,6 +1445,20 @@ class RouteGuardTests(unittest.TestCase):
                 route = self._guard(url, navigation=False)
                 self.assertTrue(route.aborted)
                 self.assertFalse(route.continued)
+
+    def test_youtube_ad_requests_are_not_blocked_by_a_lumine_filter(self):
+        browser = session._Browser()
+        route, request = FakeRoute(), FakeRequest(
+            "https://www.youtube.com/pagead/interaction/?v=abcdefghijk",
+            navigation=False,
+        )
+        with mock.patch.object(
+            browser, "allowed", new=mock.AsyncMock(return_value=(True, ""))
+        ):
+            asyncio.run(browser._guard(route, request))
+
+        self.assertTrue(route.continued)
+        self.assertFalse(route.aborted)
 
     def test_a_public_address_is_allowed(self):
         route = self._guard("http://8.8.8.8/", navigation=False)

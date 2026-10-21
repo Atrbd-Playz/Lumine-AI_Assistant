@@ -535,8 +535,8 @@ class ProfileLockTests(unittest.TestCase):
         from agent.tools.browser import session
 
         self.assertIn("already open", session.MSG_PROFILE_LOCKED)
-        self.assertIn("profile can only be used", session.MSG_PROFILE_LOCKED)
-        self.assertIn("Close that window", session.MSG_PROFILE_LOCKED)
+        self.assertIn("only one browser process", session.MSG_PROFILE_LOCKED)
+        self.assertIn("Close all Brave windows", session.MSG_PROFILE_LOCKED)
 
     def test_the_probe_checks_the_lock_before_launching(self):
         module = _load_probe("lumine_whatsapp_probe")

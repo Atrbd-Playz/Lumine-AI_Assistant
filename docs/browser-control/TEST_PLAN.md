@@ -65,6 +65,24 @@ rerun successfully. On the Sony product detail page, Amazon displayed a
 detail-page price was not verified. YouTube's navigation/title transition was
 verified; uninterrupted media playback was not an acceptance check.
 
+## Personal browser engine and name-based tabs
+
+The browser lifecycle tests cover saved/environment engine precedence, automatic
+Brave discovery, clear refusal when explicitly selected Brave is unavailable,
+resolving the native profile named `Lumine`, and passing its on-disk profile
+directory into the launcher. Endpoint files are isolated by engine and owner
+teardown only removes the matching endpoint. They also assert the Brave launch restores
+component updates, background networking, and extensions, while Chromium keeps
+Playwright's default arguments. The media DNS test exercises two consecutive
+transient failures before recovery.
+The UI setting persists
+`desktop.browsers.personalEngine`; switching takes effect only after the existing
+Lumine browser is closed. Tab tests cover selecting and closing by page title or
+site, asking when a name is ambiguous, and giving a useful not-found response.
+These are local tests: ad delivery and uninterrupted playback on YouTube are not
+asserted, and Brave Shields cannot guarantee either. Lumine no longer ships or
+applies a custom ad filter; Brave Shields handles ad blocking.
+
 ## Phase 1 — engine completion
 
 **Unit**

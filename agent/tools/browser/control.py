@@ -405,11 +405,16 @@ async def web_control(
     forward, reload, tab, pagetabs, state, screenshot, close.
 
     "tab" is the browser's own tabs, same as `browse`: say nothing to list them,
-    "new" to open one (give the address in url), a tab's number to switch to it,
-    or "close" to close one. "pagetabs" is the tab strip *on the page* -- a form's
+    "new" to open one (give the address in url), a page title or site name to
+    switch to a matching tab, or "close" with a title/site to close one. Numbers
+    are optional if names distinguish the tabs. "pagetabs" is the tab strip *on the page* -- a form's
     own sections, read out of the document. They were both called "tabs" once,
     which meant one word for two things; "tabs" still works and still means
     "pagetabs".
+
+    Prefer the structured `read` result. Use `screenshot` only when appearance
+    or visual content (such as a canvas, map, or chart) is needed beyond that
+    text; set `for_model=true` when Lumine herself needs to inspect the image.
 
     **"open" reuses the tab in use; "tab new" adds one.** When the user wants to
     keep what is on screen, use "tab new" with the url -- "open" navigates the

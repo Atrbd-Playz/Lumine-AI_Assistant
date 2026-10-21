@@ -1199,27 +1199,29 @@ the user rather than theoretical:
 - **A silent authority question.** Which application a message leaves from is not
   something a person should have to reason about mid-sentence.
 
-Two supporting decisions make the one path stick:
-
-- `backend_candidates()` does not name `desktop_backend` in its factory mapping.
-  Leaving it in the dict with no caller would be one edit away from returning.
-- `Operation.supports()` answers from `ops.ONLY_PATH`, not from the row's `desktop`
-  field — so a row setting `desktop=True` cannot make the adapter reachable on its
-  own. The field and `PATHS` stay as the *record* of what the adapter could do, so
-  the next question ("could it have handled this?") has a row to point at. Deleting
-  the column would have been a tidier diff and a worse one.
+The WhatsApp Desktop messaging adapter, its factory, and desktop path metadata
+have been removed rather than retained as unreachable execution code.
+`backend_candidates()` now builds only WhatsApp Web, and the operation catalog
+declares `web` as its sole path.
 
 **The installed app is still launchable.** "Open WhatsApp Desktop" is a request to
 start a program, and `router.py` sends it to `open_app` like any other installed
 program. It is a window the user can look at, never the thing a message is written
-into. An unreachable adapter and a launchable application are different states, and
-only one of them was removed.
+into. App launch and messaging execution are separate capabilities.
 
 ### The send flow's order is the feature
 
-Resolve → open chat → **type the draft** → ask → send → confirm. The draft step
-happens *before* the approval question, and the text is read back out of the
-composer to confirm it took. Two reasons:
+Resolve → open chat → **type the draft** → ask once → send → confirm. A unique
+contact search leaves its results visible until the selected row is opened, so
+opening a resolved name does not search for it again. The draft is read back out
+of the composer before the one send approval. Preparing a draft is an ordinary,
+reversible action and does not ask by default; an explicit `ask` policy may still
+raise that action. Two reasons:
+
+Each `send_whatsapp` call handles exactly one recipient and one message. To send
+to more than one person in the same voice session, Lumine makes separate
+sequential calls and obtains approval for each message; it does not batch or
+parallelize sends.
 
 - The user is asked to confirm something that is physically on their own screen,
   not a sentence Lumine recited. A draft that lost its last few characters is
@@ -1229,6 +1231,10 @@ composer to confirm it took. Two reasons:
   refuses with *"there is already something written in WhatsApp's message box"*,
   so a single "no" would break messaging until they found the window and emptied
   it themselves. A refused action should cost the user nothing to undo.
+- An explicitly requested unsent draft stays open for review when the voice
+  session ends. Lumine closes other tabs and removes the room's browser callbacks,
+  then hands the WhatsApp window back to the user; the next room can rejoin through
+  the existing local DevTools endpoint. A normal room still closes its browser.
 
 ### What is still deliberately narrow
 

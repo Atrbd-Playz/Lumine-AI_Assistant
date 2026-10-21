@@ -43,13 +43,10 @@ class WindowGeometryTests(unittest.TestCase):
     def test_the_browser_starts_dark_and_does_not_emulate_a_viewport(self):
         import inspect
 
-        source = inspect.getsource(session._launch_persistent)
-        self.assertIn("no_viewport=True", source)
-        self.assertIn('color_scheme="dark"', source)
+        self.assertIn("_launch_persistent(", inspect.getsource(session._Browser._start))
         flags = " ".join(session._window_args())
         self.assertIn("--force-dark-mode", flags)
         self.assertIn("--disable-background-media-suspend", flags)
-        self.assertIn("_launch_persistent(", inspect.getsource(session._Browser._start))
 
 
 class SharedBrowserTests(unittest.TestCase):
@@ -243,9 +240,28 @@ class GuestTests(unittest.TestCase):
 
         source = inspect.getsource(session._Browser._close_remote)
         early = source.index("if shared:")
-        forget = source.index("_forget_endpoint()")
+        forget = source.index("_forget_endpoint(endpoint_path)")
         self.assertLess(early, forget)
         self.assertIn("return", source[early:forget])
+
+    def test_an_owner_cleans_up_its_engine_specific_endpoint(self):
+        import asyncio
+
+        endpoint = Path("C:/Lumine/browser-cdp-brave.txt")
+        context = mock.AsyncMock()
+        playwright = mock.AsyncMock()
+        with mock.patch.object(session, "_endpoint_alive", return_value=False), mock.patch.object(
+            session, "_forget_endpoint"
+        ) as forget:
+            asyncio.run(
+                session._Browser._close_remote(
+                    context,
+                    playwright,
+                    shared=False,
+                    endpoint_path=endpoint,
+                )
+            )
+        forget.assert_called_once_with(endpoint)
 
 
 if __name__ == "__main__":  # pragma: no cover

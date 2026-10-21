@@ -118,10 +118,12 @@ without it and can stay.
 
 ## Removal strategy
 
-**Nothing is removed in this track.** The audit found no obsolete module: the
-smallest (`preview.py`, 174 lines) is the frontend's only screenshot path, and
-`whatsapp_desktop.py` is the unreachable-but-authoritative adapter record the
-messaging docs explicitly keep.
+**WhatsApp Desktop messaging is the explicit exception to this track's earlier
+no-removal decision.** The adapter was unreachable at runtime but still retained
+as executable code and an import dependency. It has now been removed at the
+user's request; WhatsApp messaging uses the isolated Web session, while opening
+the installed application remains a separate `open_app` action. This does not
+authorize removal of other browser or desktop modules.
 
 Should a future track want to remove something, the procedure this repository has
 used and this track adopts:
@@ -133,7 +135,8 @@ used and this track adopts:
    docstring is exactly that).
 3. Write the removal reason into the owning doc (ADR supersession or area file)
    *before* deleting the file, per the repository rule: supersede explicitly, do
-   not delete decision records.
+   not delete decision records. The WhatsApp adapter removal is recorded above
+   and in the area instructions; the historical decision files remain intact.
 
 No step 3 is reachable today — this is recorded so the procedure exists when it is.
 

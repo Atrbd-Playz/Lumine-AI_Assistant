@@ -679,6 +679,39 @@ def _target_in(words: list[str]) -> str | None:
     return None
 
 
+def _named_tab_target(raw: object) -> str | None:
+    """Return a title/site target from phrases such as "switch to YouTube tab"."""
+    text = " ".join(str(raw or "").split())
+    named = re.search(
+        r"\btab\s+(?:named|called)\s+(?P<name>[\w .&'’()-]{1,80})$",
+        text,
+        re.IGNORECASE,
+    )
+    if named:
+        candidate = named.group("name").strip(" .!?")
+        return f"title:{candidate}" if candidate else None
+
+    match = re.search(r"\b(?P<before>.+?)\s+tabs?\b", text, re.IGNORECASE)
+    if not match:
+        return None
+    candidate = match.group("before").strip()
+    candidate = re.sub(
+        r"^(?:(?:please|can|could|would|you|switch|go|jump|return|back|close|delete|remove|dismiss|"
+        r"quit|exit|kill|discard|shut|open|to|the|browser)\s+)+",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    ).strip(" .!?")
+    if not candidate:
+        return None
+    if candidate.casefold() in {
+        "back", "browser", "close", "delete", "dismiss", "exit", "go", "jump",
+        "kill", "open", "quit", "remove", "return", "shut", "switch", "to",
+    }:
+        return None
+    return f"title:{candidate}"
+
+
 def _names_no_tab(words: list[str]) -> bool:
     """Whether the sentence tried to name a tab and did not manage it.
 
@@ -712,6 +745,8 @@ def parse_tab_request(raw: object) -> tuple[str, str]:
         return "list", ""
 
     target = _target_in(words)
+    if target is None:
+        target = _named_tab_target(raw)
     relative = target in ("+1", "-1")
     closing = bool(_CLOSE_WORDS & set(words))
 
@@ -749,7 +784,7 @@ def parse_tab_request(raw: object) -> tuple[str, str]:
         return "list", ""
 
     if target is not None:
-        # A bare "2" or "tab 3" is a switch, with no verb in front of it.
+        # A bare number or named page is a switch, with no verb in front of it.
         return "switch", target
 
     # Nothing recognisable. Not an error -- asking about tabs is the default

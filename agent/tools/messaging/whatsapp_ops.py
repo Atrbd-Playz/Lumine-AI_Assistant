@@ -44,22 +44,10 @@ from typing import Any, Iterable
 #: fails rather than quietly becoming "sensitive" at the gate.
 ACTION_CLASSES = ("read", "act", "sensitive", "destructive")
 
-#: The paths an operation may be carried out on.
-#:
-#: ``web`` is the only one. ``desktop`` stays in the tuple -- and the ``desktop``
-#: field stays on every row -- because the field is the *record* of what the
-#: adapter could do, and `refusal_for` names a path in its sentence. What changed
-#: is that no row sets it, so `supported_by(verb, "desktop")` is False for
-#: everything and `choose_backend` cannot hand one out.
-#:
-#: The alternative, deleting the column, would have been a tidier diff and a worse
-#: one: the next person to ask "could the desktop path do this?" would have no
-#: answer to find, and no row to point at when the answer is no.
-PATHS = ("desktop", "web")
+#: The sole WhatsApp messaging path.
+PATHS = ("web",)
 
-#: The path every operation runs on. One name, so a row cannot quietly opt out of
-#: it by leaving ``web`` unset -- which is how a verb with ``desktop=True,
-#: web=False`` would have become desktop-only by accident.
+#: The path every operation runs on.
 ONLY_PATH = "web"
 
 #: Model-facing tool ids. Declared here rather than in the registry so this table
@@ -90,8 +78,6 @@ class Operation:
     tool: str
     #: The permission class at the call site.
     action_class: str
-    #: Whether the Windows UI Automation path can carry it out.
-    desktop: bool = False
     #: Whether WhatsApp Web can carry it out.
     web: bool = True
     #: How a completed operation proves it happened, in one short clause. Written
@@ -134,13 +120,7 @@ class Operation:
         return tuple(name for name in PATHS if getattr(self, name))
 
     def supports(self, path: str) -> bool:
-        """Whether this operation can be carried out on ``path``.
-
-        Answered from the row **and** from :data:`ONLY_PATH`, so a row that sets
-        ``desktop=True`` does not make the desktop adapter reachable again by
-        itself. One place decides which paths exist for messaging; a row decides
-        only whether an operation applies to the path that does.
-        """
+        """Whether this operation is available on the sole Web path."""
         wanted = str(path or "").strip().lower()
         if wanted != ONLY_PATH:
             return False
@@ -253,9 +233,9 @@ OPERATIONS: tuple[Operation, ...] = (
     Operation(
         verb="prepare_draft",
         tool=SEND_TOOL,
-        action_class="sensitive",
+        action_class="act",
         web=True,
-        verify="the composer holding exactly the approved text, and still unsent",
+        verify="the composer holding exactly the requested text, and still unsent",
         summary="Type a message into a chat and leave it there, unsent.",
     ),
     Operation(
@@ -513,11 +493,12 @@ def refusal_for(verb: object, path: str) -> str:
     learned nothing except that something is broken.
     """
     row = operation(verb)
-    name = {"desktop": "WhatsApp Desktop", "web": "WhatsApp Web"}.get(
+    name = {"web": "WhatsApp Web"}.get(
         str(path or "").strip().lower(), "that path"
     )
+    normalized = _phrase(str(verb or "").strip())
     if row is None:
-        return f"{name} cannot do that."
+        return f"{name} cannot {normalized or 'do that'}."
     return f"{name} cannot {_phrase(row.verb)}."
 
 

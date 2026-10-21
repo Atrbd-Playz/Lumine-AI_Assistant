@@ -2,6 +2,7 @@ import type { IconName } from "../home/types";
 
 export type SettingsSection =
   | "appearance"
+  | "browser"
   | "voice"
   | "models"
   | "providers"
@@ -51,6 +52,14 @@ export const SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     label: "Appearance",
     description: "Colour mode, type, and Lumine's presence",
     icon: "spark",
+    group: "General",
+    tabs: [],
+  },
+  {
+    id: "browser",
+    label: "Browser",
+    description: "Which browser Lumine uses for her own pages",
+    icon: "globe",
     group: "General",
     tabs: [],
   },

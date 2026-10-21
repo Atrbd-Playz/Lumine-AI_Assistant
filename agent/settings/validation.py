@@ -847,6 +847,8 @@ def _check_tools(document: Mapping[str, Any], out: list[Diagnostic]) -> None:
 ROUTING_BROWSER_NAME_KEYS = ("default", "desktopBrowser")
 ROUTING_BROWSER_FLAG_KEYS = ("ownBrowser", "preferOwnBrowser", "isolate")
 ROUTING_BROWSER_KEYS = ROUTING_BROWSER_NAME_KEYS + ROUTING_BROWSER_FLAG_KEYS
+PERSONAL_BROWSER_ENGINE_KEY = "personalEngine"
+PERSONAL_BROWSER_ENGINES = frozenset({"auto", "brave", "chromium"})
 
 #: The keys read out of ``desktop.input``. ``desktop.input`` is the switch for
 #: ``desktop_control``, which is the only tool that can press an arbitrary key
@@ -915,6 +917,19 @@ def _check_desktop(document: Mapping[str, Any], out: list[Diagnostic]) -> None:
                     f"desktop.browsers.{key}",
                     f"{key} cannot be blank.",
                     "A request that names no browser will ask instead of choosing one.",
+                )
+            )
+
+    if PERSONAL_BROWSER_ENGINE_KEY in browsers:
+        engine = _as_text(browsers[PERSONAL_BROWSER_ENGINE_KEY]).strip().casefold()
+        if engine not in PERSONAL_BROWSER_ENGINES:
+            out.append(
+                _diag(
+                    "warn",
+                    "desktop.browser_engine_invalid",
+                    f"desktop.browsers.{PERSONAL_BROWSER_ENGINE_KEY}",
+                    f"{browsers[PERSONAL_BROWSER_ENGINE_KEY]!r} is not a supported personal browser engine.",
+                    "Use auto, brave, or chromium. An unrecognised choice uses auto.",
                 )
             )
 

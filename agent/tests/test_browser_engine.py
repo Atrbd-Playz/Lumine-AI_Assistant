@@ -215,6 +215,12 @@ class RealBrowserJourneyTests(unittest.TestCase):
         env.start()
         cls.addClassCleanup(env.stop)
 
+        engine_choice = mock.patch.object(
+            session, "_configured_browser_engine", return_value="chromium"
+        )
+        engine_choice.start()
+        cls.addClassCleanup(engine_choice.stop)
+
         cls.url = f"http://127.0.0.1:{cls._server.server_address[1]}/"
 
     def _run(self, coroutine):

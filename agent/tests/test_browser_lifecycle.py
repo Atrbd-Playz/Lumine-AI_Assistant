@@ -27,6 +27,9 @@ fault:
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -141,6 +144,60 @@ class ReleaseLockTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(browser.release(), timeout=5)
 
         self.assertEqual(lock_was_free, [True])
+
+
+class PreserveWhatsAppDraftTests(unittest.IsolatedAsyncioTestCase):
+    def _browser_with_draft(self):
+        browser = session._Browser()
+        browser._loop = asyncio.get_running_loop()
+        browser._context = mock.Mock()
+        browser._pw = mock.Mock()
+        browser._wa_page = mock.Mock()
+        browser._wa_page.is_closed.return_value = False
+        browser._context.pages = [browser._wa_page, mock.Mock()]
+        browser._context.unroute = mock.AsyncMock()
+        browser._context.remove_listener = mock.Mock()
+        browser._route_handler = object()
+        browser.preserve_whatsapp_on_release()
+        return browser
+
+    async def test_an_unsent_draft_hands_off_only_the_whatsapp_window(self):
+        browser = self._browser_with_draft()
+        wa_page = browser._wa_page
+        extra_page = browser._context.pages[1]
+        context, playwright = browser._context, browser._pw
+        route_handler = browser._route_handler
+        with mock.patch.object(
+            session, "_close_page_safe", new=mock.AsyncMock()
+        ) as close_page:
+            await browser.release()
+
+        self.assertEqual(close_page.await_count, 1)
+        self.assertIs(close_page.await_args.args[0], extra_page)
+        self.assertEqual(len(browser._preserved_clients), 1)
+        self.assertEqual(browser._preserved_clients[0], (context, playwright))
+        context.unroute.assert_awaited_once_with("**/*", route_handler)
+        context.remove_listener.assert_called_once_with("page", browser._on_page)
+        self.assertIsNotNone(wa_page)
+        self.assertIsNone(browser._context)
+        self.assertIsNone(browser._pw)
+        self.assertIsNone(browser._loop)
+        self.assertFalse(browser._preserve_whatsapp)
+
+    async def test_a_failed_route_handoff_closes_instead_of_stranding_a_dead_loop(self):
+        browser = self._browser_with_draft()
+        context, playwright = browser._context, browser._pw
+        context.unroute.side_effect = RuntimeError("route still active")
+        with (
+            mock.patch.object(session, "_close_page_safe", new=mock.AsyncMock()),
+            mock.patch.object(session._Browser, "_close_remote", new=mock.AsyncMock()) as close_remote,
+        ):
+            await browser.release()
+
+        close_remote.assert_awaited_once_with(
+            context, playwright, shared=False, endpoint_path=None
+        )
+        self.assertEqual(browser._preserved_clients, [])
 
 
 class CloseRemoteEndpointTests(unittest.IsolatedAsyncioTestCase):
@@ -260,6 +317,142 @@ class ProfileLockMessageTests(unittest.TestCase):
         self.assertFalse(session._profile_locked("network error"))
 
 
+class BrowserEngineSelectionTests(unittest.TestCase):
+    def test_auto_prefers_installed_brave_and_falls_back_to_playwright_chromium(self):
+        self.assertEqual(
+            session._browser_engine_preference(None, "", brave_available=True),
+            "brave",
+        )
+        self.assertEqual(
+            session._browser_engine_preference(None, "", brave_available=False),
+            "chromium",
+        )
+
+    def test_saved_choice_wins_over_environment(self):
+        document = {"desktop": {"browsers": {"personalEngine": "chromium"}}}
+        self.assertEqual(
+            session._browser_engine_preference(document, "brave", brave_available=True),
+            "chromium",
+        )
+
+    def test_environment_is_used_when_the_saved_choice_is_absent(self):
+        self.assertEqual(
+            session._browser_engine_preference({}, "brave", brave_available=True),
+            "brave",
+        )
+
+    def test_an_unknown_choice_uses_auto_without_raising(self):
+        self.assertEqual(
+            session._browser_engine_preference(
+                {"desktop": {"browsers": {"personalEngine": "edge"}}},
+                "",
+                brave_available=False,
+            ),
+            "chromium",
+        )
+
+    def test_windows_brave_install_is_found_without_touching_a_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = (
+                Path(directory)
+                / "BraveSoftware"
+                / "Brave-Browser"
+                / "Application"
+                / "brave.exe"
+            )
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            with mock.patch.object(session.sys, "platform", "win32"), mock.patch.dict(
+                os.environ,
+                {
+                    "PROGRAMFILES": directory,
+                    "PROGRAMFILES(X86)": "",
+                    "LOCALAPPDATA": "",
+                    session.BRAVE_EXECUTABLE_VAR: "",
+                },
+                clear=False,
+            ):
+                self.assertEqual(session.brave_executable(), executable)
+
+    def test_each_engine_has_its_own_shared_endpoint(self):
+        with mock.patch.object(
+            session, "profile_dir", return_value=Path("C:/Lumine/browser-profile")
+        ):
+            self.assertEqual(
+                session._endpoint_file("brave"),
+                Path("C:/Lumine/browser-cdp-brave.txt"),
+            )
+            self.assertEqual(
+                session._endpoint_file("chromium"),
+                Path("C:/Lumine/browser-cdp.txt"),
+            )
+
+
+class ExplicitBrowserEngineTests(unittest.IsolatedAsyncioTestCase):
+    async def test_an_explicit_brave_choice_refuses_when_brave_is_missing(self):
+        browser = session._Browser()
+        with mock.patch.object(session, "_configured_browser_engine", return_value="brave"), \
+                mock.patch.object(session, "brave_executable", return_value=None):
+            with self.assertRaisesRegex(ToolError, "Brave is not installed"):
+                await browser._start(asyncio.get_running_loop())
+
+
+class BraveProfileDirectoryTests(unittest.TestCase):
+    def test_resolves_the_profile_display_name_to_its_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Profile 1").mkdir()
+            (root / "Default").mkdir()
+            (root / "Local State").write_text(
+                json.dumps(
+                    {
+                        "profile": {
+                            "info_cache": {
+                                "Default": {"name": "Person 1"},
+                                "Profile 1": {"name": "Lumine"},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                session.brave_profile_directory(root),
+                root / "Profile 1",
+            )
+
+    def test_missing_or_ambiguous_profile_names_refuse(self):
+        for cache in (
+            {"Default": {"name": "Person 1"}},
+            {
+                "Profile 1": {"name": "Lumine"},
+                "Profile 2": {"name": "Lumine"},
+            },
+        ):
+            with self.subTest(cache=cache), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for key in cache:
+                    (root / key).mkdir()
+                (root / "Local State").write_text(
+                    json.dumps({"profile": {"info_cache": cache}}),
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, "expected one profile"):
+                    session.brave_profile_directory(root)
+
+    def test_an_invalid_profile_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "Local State").write_text(
+                json.dumps(
+                    {"profile": {"info_cache": {"Profile 1": {"name": "Lumine"}}}}
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "directory is missing"):
+                session.brave_profile_directory(root)
+
+
 class LaunchPersistentTests(unittest.IsolatedAsyncioTestCase):
     """A lock that is *being* released looks exactly like one somebody holds."""
 
@@ -341,6 +534,41 @@ class LaunchPersistentTests(unittest.IsolatedAsyncioTestCase):
             playwright.chromium.launch_persistent_context.await_args.args[0],
             str(Path("D:/somewhere/else")),
         )
+
+    async def test_brave_uses_the_named_profile_and_restores_normal_browser_features(self):
+        playwright = self._playwright([object()])
+        executable = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
+        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0):
+            await session._launch_persistent(
+                playwright,
+                Path("C:/Users/example/AppData/Local/BraveSoftware/Brave-Browser/User Data"),
+                executable_path=executable,
+                personal_engine="brave",
+                profile_directory="Profile 1",
+            )
+        _, kwargs = playwright.chromium.launch_persistent_context.await_args
+        self.assertEqual(kwargs["executable_path"], executable)
+        self.assertEqual(
+            kwargs["ignore_default_args"],
+            [
+                "--disable-background-networking",
+                "--disable-component-update",
+                "--disable-extensions",
+                "--disable-component-extensions-with-background-pages",
+            ],
+        )
+        self.assertIn("--profile-directory=Profile 1", kwargs["args"])
+        self.assertEqual(
+            playwright.chromium.launch_persistent_context.await_args.args[0],
+            str(Path("C:/Users/example/AppData/Local/BraveSoftware/Brave-Browser/User Data")),
+        )
+
+    async def test_chromium_keeps_playwright_default_launch_arguments(self):
+        playwright = self._playwright([object()])
+        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0):
+            await session._launch_persistent(playwright, Path("C:/profile"))
+        _, kwargs = playwright.chromium.launch_persistent_context.await_args
+        self.assertNotIn("ignore_default_args", kwargs)
 
 
 class ScrollVerbTests(unittest.IsolatedAsyncioTestCase):

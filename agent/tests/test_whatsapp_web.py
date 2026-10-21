@@ -39,7 +39,11 @@ class FakeKeyboard:
 
     async def type(self, text: str, delay: float | None = None) -> None:
         # Typing into the search box is what makes the account's whole history
-        # reachable, so the fake applies the filter exactly as the page would.
+        # reachable, so the fake applies the filter exactly as the page would --
+        # and on the page the filter *is* the text in the box, which is the
+        # relationship `clear_chat_search` now reads before it presses anything
+        # (measured: `box='Master'` with the results up, and the baseline list the
+        # instant the box was emptied).
         #
         # `delay` is accepted and ignored: the real caller passes it because
         # WhatsApp's composer drops characters typed faster than it re-renders.
@@ -47,12 +51,23 @@ class FakeKeyboard:
         # would only test that the fake is slow.
         del delay
         self._page.typed.append(text)
-        self._page.filtering = True
+        self._page.search_text = (self._page.search_text or "") + text
 
     async def press(self, key: str) -> None:
         self._page.keys.append(key)
-        if key == "Escape":
-            self._page.filtering = False
+        if key == "Control+A":
+            self._page.selection = True
+        elif key == "Delete":
+            if self._page.selection and self._page.search_text:
+                self._page.search_text = ""
+            self._page.selection = False
+        elif key == "Escape":
+            # The gesture `clear_chat_search` used to fire blindly. It clears here
+            # only because this fake has no notion of focus. On the live page it
+            # clears the filter while the box is focused and **closes the open
+            # chat** when focus is on the row a press just landed on -- which is
+            # the bug, so the tests below assert it no longer reaches the page.
+            self._page.search_text = ""
 
 
 class FakePage:
@@ -70,7 +85,14 @@ class FakePage:
     def __init__(self, rendered: list[str], search_results: list[str] | None = None) -> None:
         self.rendered = list(rendered)
         self.search_results = list(search_results or [])
-        self.filtering = False
+        #: What the search box holds. The list is narrowed exactly while this is
+        #: non-empty -- on the live page and in this fake alike, which is what lets
+        #: `clear_chat_search` ask "is there a filter?" instead of firing a key at
+        #: whatever has focus.
+        self.search_text = ""
+        #: Set by select-all, so the following delete knows it has something to
+        #: delete. Modelled because the clear is select-all-then-delete now.
+        self.selection = False
         self.typed: list[str] = []
         self.keys: list[str] = []
         #: What the conversation header reports. Set by a successful click.
@@ -95,6 +117,17 @@ class FakePage:
         self.click_fail_times: int | None = 0
         #: Set to make focus confirmation fail, so `_focus` falls through.
         self.focus_fails = False
+
+    @property
+    def filtering(self) -> bool:
+        """Whether the list is narrowed -- exactly while the box holds text.
+
+        Read-only on purpose: a test that wants a filter turns one on by giving
+        the box the query the resolve step left in it, because that *is* what a
+        filter is. Two flags that could disagree is how a fake passes while the
+        real page is in a state the code never handles.
+        """
+        return bool(self.search_text)
 
     def _visible(self) -> list[str]:
         return self.search_results if self.filtering else self.rendered
@@ -125,10 +158,18 @@ class FakePage:
             shown = self.reported_chat()
             return {"title": shown, "raw": shown, "open": bool(shown)}
         if "input.value" in script:
-            # The search-box emptiness read `search_chats` does *before* typing.
-            # It arrives empty here because nothing has typed into it yet, which is
-            # what the real page looks like at the start of a search.
-            return True
+            # Both search-box reads land here, and they are two different
+            # questions: `_JS_SEARCH_BOX_EMPTY` probes the box (and focuses it
+            # when there is something to clear), while `_JS_SEARCH_BOX_VALUE`
+            # simply reads what it holds.
+            #
+            # The old fake answered "empty" to *both*, even while it was
+            # filtering -- so a test could not tell "cleared the filter" from
+            # "never had one", which is the distinction `clear_chat_search` now
+            # makes before it decides whether a keystroke is warranted at all.
+            if "focus()" in script:
+                return not self.search_text
+            return self.search_text
         if "setAttribute" in script:
             # Any other mark -- the composer, the send button, the search box.
             # These exist on the fake, so the mark succeeds, but they are recorded
@@ -340,13 +381,51 @@ class OpenChatTests(unittest.TestCase):
         # wrong answer.
         page = FakePage(rendered=["Family"], search_results=["Afia"])
         self.assertTrue(open_chat(page, "Afia"))
-        self.assertIn("Escape", page.keys, "the filter outlived the call")
-        self.assertFalse(page.filtering)
+        self.assertFalse(page.filtering, "the filter outlived the call")
+        self.assertIn("Control+A", page.keys, "the box was never actually cleared")
+        # The regression the clear was replaced *for*. A blind Escape fires at
+        # whatever holds focus, and after a row press that is the row -- measured
+        # on the live account closing the conversation the press had just opened,
+        # which is the whole of "I can't see the message box on this chat".
+        self.assertNotIn(
+            "Escape", page.keys, "a blind Escape reached the page again"
+        )
+
+    def test_a_previously_resolved_search_result_is_opened_without_searching_again(self):
+        page = FakePage(rendered=["Family"], search_results=["Afia"])
+        # The resolve step's own filter, left in place for the open step to reuse
+        # -- which on the page means the box still holds the query.
+        page.search_text = "Afia"
+
+        self.assertTrue(open_chat(page, "Afia"))
+
+        self.assertEqual(page.typed, [], "the already-visible result was searched again")
+        self.assertEqual(page.active, "Afia")
+        self.assertFalse(page.filtering, "the reuse left the filter behind")
+
+    def test_name_search_can_leave_the_result_visible_for_the_open_step(self):
+        rows = [{"title": "Afia", "jid": "15551234567@c.us"}]
+        page = mock.Mock()
+        page.keyboard.type = mock.AsyncMock()
+        page.keyboard.press = mock.AsyncMock()
+        with (
+            mock.patch.object(web, "whatsapp_page", new=mock.AsyncMock(return_value=page)),
+            mock.patch.object(web, "require_ready", new=mock.AsyncMock()),
+            mock.patch.object(web, "list_chats", new=mock.AsyncMock(return_value=[])),
+            mock.patch.object(web, "_focus", new=mock.AsyncMock(return_value=object())),
+            mock.patch.object(web, "_empty_search_box", new=mock.AsyncMock(return_value=True)),
+            mock.patch.object(web, "_poll", new=mock.AsyncMock(return_value=(True, rows))),
+        ):
+            result = asyncio.run(web.search_chats("Afia", preserve_search=True))
+
+        self.assertEqual(result, rows)
+        page.keyboard.press.assert_not_awaited()
 
     def test_a_failed_open_still_clears_the_box(self):
         page = FakePage(rendered=["Family"])
         self.assertFalse(open_chat(page, "Nobody"))
-        self.assertIn("Escape", page.keys, "a failed search left the list filtered")
+        self.assertFalse(page.filtering, "a failed search left the list filtered")
+        self.assertIn("Control+A", page.keys, "the box was never actually cleared")
 
     def test_a_prefix_is_not_a_match(self):
         # Exact titles only, on both routes. "Afia" must never open "Afia
@@ -641,6 +720,54 @@ class ClickFidelityTests(unittest.TestCase):
             f"[{web._CLICK_MARK}='1']", page.clicks, "Send was not pressed for real"
         )
 
+    def test_enter_fallback_is_used_when_the_send_button_is_absent(self):
+        page = _ComposerPage()
+
+        async def run() -> None:
+            with (
+                _with_page(page),
+                mock.patch.object(
+                    web, "_press_send_button", new=mock.AsyncMock(return_value=False)
+                ),
+                mock.patch.object(
+                    web, "_focus_composer", new=mock.AsyncMock(return_value=True)
+                ),
+            ):
+                await web.press_send()
+
+        asyncio.run(run())
+        self.assertIn("Enter", page.keys)
+
+    def test_enter_is_never_pressed_without_verified_composer_focus(self):
+        page = _ComposerPage()
+
+        async def run() -> None:
+            with (
+                _with_page(page),
+                mock.patch.object(
+                    web, "_press_send_button", new=mock.AsyncMock(return_value=False)
+                ),
+                mock.patch.object(
+                    web, "_focus_composer", new=mock.AsyncMock(return_value=False)
+                ),
+            ):
+                with self.assertRaises(web.SendNotAttempted):
+                    await web.press_send()
+
+        asyncio.run(run())
+        self.assertNotIn("Enter", page.keys)
+
+    def test_a_failed_button_press_does_not_fall_through_to_enter(self):
+        page = _ComposerPage(click_fails=True)
+
+        async def run() -> None:
+            with _with_page(page):
+                with self.assertRaises(ToolError):
+                    await web.press_send()
+
+        asyncio.run(run())
+        self.assertNotIn("Enter", page.keys)
+
     def test_a_row_that_cannot_be_clicked_is_refused_not_assumed(self):
         # Playwright raises when the element is covered or detached. Assuming the
         # click worked is what let the old code report success and open nothing.
@@ -660,7 +787,7 @@ class ClickFidelityTests(unittest.TestCase):
         page.click_fail_times = 1
         self.assertTrue(open_chat(page, "Afia"))
         self.assertEqual(page.typed, ["afia"])
-        self.assertIn("Escape", page.keys, "the filter outlived the call")
+        self.assertFalse(page.filtering, "the filter outlived the call")
 
 
 class ChatRowReaderTests(unittest.TestCase):
@@ -779,6 +906,8 @@ class GroupDetectionTests(unittest.TestCase):
 
         self.assertEqual(kind_for_row({"group": True}), "group")
         self.assertEqual(kind_for_row({"group": False}), "contact")
+        self.assertEqual(kind_for_row({"contact": True}), "contact")
+        self.assertEqual(kind_for_row({"contact": True, "group": True}), "group")
         self.assertEqual(kind_for_row({}), "unknown")
         self.assertEqual(kind_for_row({"participants": 4}), "group")
         self.assertEqual(kind_for_row(None), "unknown")
@@ -884,6 +1013,101 @@ class FocusFallbackTests(unittest.TestCase):
         source = _inspect.getsource(web._focus)
         self.assertIn("falling back to focus()", source)
         self.assertNotIn("MSG_NO_TARGET", source)
+
+
+class ComposerArrivalTests(unittest.TestCase):
+    """The draft step waits for the message box instead of asking it once.
+
+    Measured from the user's own log: ``open`` closed ``done`` at 4564 ms and
+    ``draft`` failed **10 ms** later with "I can't see the message box on this
+    chat. Nothing was typed." -- twice in a row, for the same two contacts, while
+    a retry against an already-open chat went through.
+
+    The open step had returned on its own *"proceeding on the press and relying on
+    the composer check"* fallback, which is a promise that the composer check is
+    what comes next. `require_ready` does not keep that promise: it waits for
+    ``#pane-side``, the chat list, which is up long before a freshly opened
+    conversation has drawn its message box. So the only gate left was a single
+    read taken inside the gap, and it answered "not there" for a chat that has one.
+
+    Three properties, and all three are wrong without a poll of their own: it
+    *waits* for a box that is about to mount, it still *refuses* when there is
+    none, and it does not make a healthy send wait for something it already has.
+    """
+
+    @staticmethod
+    def _absent() -> dict[str, object]:
+        return {"found": False, "text": "", "empty": True, "hasSend": False}
+
+    @staticmethod
+    async def _no_sleep(_seconds: float) -> None:
+        # The wait is what is under test, so no wall time may be spent on it.
+        return None
+
+    def test_a_composer_that_mounts_a_moment_later_is_waited_for(self):
+        page = _ComposerPage()
+        misses = {"left": 2}
+
+        async def late_composer() -> dict[str, object]:
+            if misses["left"]:
+                misses["left"] -= 1
+                return self._absent()
+            return page.state()
+
+        with (
+            _with_page(page),
+            mock.patch.object(web, "composer", new=mock.AsyncMock(side_effect=late_composer)),
+            mock.patch.object(web, "_sleep", new=self._no_sleep),
+        ):
+            asyncio.run(web.type_message("hello"))
+
+        self.assertEqual(page.text, "hello", "the draft never reached the box")
+        self.assertEqual(misses["left"], 0, "the poll gave up before the box arrived")
+
+    def test_a_chat_with_no_composer_still_refuses_and_still_terminates(self):
+        page = _ComposerPage()
+        reads = {"count": 0}
+
+        async def never_appears() -> dict[str, object]:
+            reads["count"] += 1
+            return self._absent()
+
+        with (
+            _with_page(page),
+            mock.patch.object(web, "composer", new=mock.AsyncMock(side_effect=never_appears)),
+            mock.patch.object(web, "_sleep", new=self._no_sleep),
+        ):
+            with self.assertRaises(ToolError) as caught:
+                asyncio.run(web.type_message("hello"))
+
+        self.assertEqual(str(caught.exception), web.MSG_NO_COMPOSER)
+        self.assertEqual(page.text, "", "nothing was typed into a chat with no box")
+        # More than one look is the whole fix; a ceiling is what stops it being a
+        # spin. Both directions are failures, so both are asserted.
+        self.assertGreater(reads["count"], 1, "it asked once and refused, as before")
+        self.assertLessEqual(
+            reads["count"],
+            40,
+            "a chat with no composer must not turn the refusal into a hang",
+        )
+
+    def test_a_composer_already_there_costs_no_wait_at_all(self):
+        # The other direction, and the one that would be easy to break quietly:
+        # `_poll` reads before it sleeps, so a page that is ready types on the
+        # first look exactly as it did before the fix.
+        page = _ComposerPage()
+        sleeps: list[float] = []
+
+        async def record_sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+
+        with _with_page(page), mock.patch.object(web, "_sleep", new=record_sleep):
+            asyncio.run(web.type_message("hello"))
+
+        self.assertEqual(page.text, "hello")
+        self.assertEqual(
+            sleeps, [], "a healthy send began waiting for a box it already had"
+        )
 
 
 class StaleMarkerTests(unittest.TestCase):

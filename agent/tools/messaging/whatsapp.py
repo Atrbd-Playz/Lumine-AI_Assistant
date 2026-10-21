@@ -1,24 +1,20 @@
-"""WhatsApp: one tool, two modes, and the human's finger on the send key.
+"""WhatsApp: one tool, two modes, and an explicit authorization boundary.
 
 The design in one paragraph, because every decision below falls out of it:
 WhatsApp is the user's own account on the user's own machine, and a message
-sent in their name is irreversible. So there are exactly two ways this tool
-may operate, both gated, and neither may ever send twice.
+sent in their name is irreversible. The tool has two modes and one messaging
+surface: the isolated WhatsApp Web session.
 
 - **deeplink** (the default) builds ``whatsapp://send?phone=...&text=...``
   and hands it to the OS. The desktop app opens with the recipient and the
   text *filled in* -- and the user presses send themselves. The tool
   prepares; it never sends. This needs no login, no automation, and no
   network call of ours, which is why it is the default.
-- **automation** drives WhatsApp itself, types the message, and sends --
-  *after* the approval card shows the recipient and the exact wording. It
-  has two paths behind one seam: WhatsApp **Desktop** on Windows (the
-  machine's own app, driven through UI Automation -- no browser to start)
-  and WhatsApp **Web** in the isolated browser (the same profile the
-  `browse` tool uses) underneath for everything else. One path is chosen
-  before anything is resolved and used whole -- it is never switched
-  mid-send -- and when neither is ready the refusal names what was tried
-  and why each said no. It is opt-in because it is the mode where a bug
+- **automation** drives WhatsApp Web in the isolated browser (the same
+  profile the `browse` tool uses), types the message, and sends only after
+  the approval card shows the recipient and exact wording. The installed
+  application remains separately launchable through `open_app`, but is
+  never driven by messaging tools. Automation is opt-in because a bug
   could really send something.
 
 Both modes obey the same three rules:
@@ -45,8 +41,7 @@ Both modes obey the same three rules:
    the person and quoting the text.
 
 Nothing here types a password (WhatsApp Web login is a QR code the *user*
-scans, and WhatsApp Desktop signs in on the user's own phone), and nothing
-reads message history: contact names are the only thing that leaves the
+scans), and nothing reads message history: contact names are the only thing that leaves the
 account, capped and clipped like every other tool result.
 """
 
@@ -62,6 +57,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from functools import wraps
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import quote
 
@@ -112,19 +108,28 @@ try:
     # contact worked, and then selecting it did nothing, because the search ran on
     # one page and the click on another. If you are adding a Web operation here,
     # it must be `whatsapp_page()`.
-    from ..browser.session import whatsapp_page
+    from ..browser.session import preserve_whatsapp_on_release, whatsapp_page
 except ImportError:  # running as a top-level script with agent/ on sys.path
     from tools_compat import RunContext, ToolError, function_tool
     from tool_results import as_payload, wrap_untrusted
     from tools_text import clip
-    from browser.session import whatsapp_page
-
-try:
-    from . import whatsapp_desktop as desktop
-except ImportError:  # running as a top-level script with agent/ on sys.path
-    import whatsapp_desktop as desktop
+    from browser.session import preserve_whatsapp_on_release, whatsapp_page
 
 logger = logging.getLogger("lumine")
+
+# All sends share one WhatsApp tab. Keep separate tool calls sequential through
+# their approval wait so they cannot replace each other's open chat or draft.
+_SEND_SEQUENCE_LOCK = asyncio.Lock()
+
+
+def _serialize_send(func: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+    @wraps(func)
+    async def serialized(*args: Any, **kwargs: Any) -> str:
+        async with _SEND_SEQUENCE_LOCK:
+            return await func(*args, **kwargs)
+
+    return serialized
+
 
 #: The three modes, mildest first. `deeplink` prepares a draft;
 #: `automation` sends. `off` hides the tool entirely.
@@ -154,44 +159,8 @@ RECIPIENT_MAX = 60
 #: Arabic-Indic or fullwidth digits and hand them to the OS as a URL.
 PHONE_RE = re.compile(r"^[0-9]{6,15}$")
 
-#: Which paths messaging may run on. **Web only.**
-#:
-#: This was `("web", "desktop")`, and the fallback was a genuine attempt to help:
-#: a working desktop path starts nothing -- no browser, no profile, no QR code --
-#: so it was worth trying where Web was not ready. It produced three separate
-#: faults, all of them visible to the user rather than theoretical:
-#:
-#: - **Two applications for one sentence.** A send whose Web tab had not finished
-#:   loading fell through to Desktop, so the desktop app opened, searched its own
-#:   chat list, and the user watched two applications answer the same request.
-#:   Measured in the worker log: the resolve step took 9.1 seconds -- UI Automation
-#:   speed -- while Web was sitting right there.
-#: - **A resolve that could not be followed by an open.** The name resolved on one
-#:   path and the chat was then opened on another, so a contact the account has
-#:   came back as "I couldn't read your chat list -- nothing matched". That is the
-#:   Desktop/Web contradiction this module was supposed to have eliminated: the fix
-#:   was to pick one path and use it whole, and the only way to *guarantee* that is
-#:   to have one path.
-#: - **A silent authority question.** Which application a message goes out of is not
-#:   something the user should have to reason about mid-sentence, and neither is
-#:   which one a reply lands in.
-#:
-#: So the messaging surface is Web, full stop. ``whatsapp_desktop.py`` stays in the
-#: tree as the record of what the adapter could do and is no longer reachable from
-#: any tool -- see :func:`choose_backend`, which says so out loud rather than
-#: quietly skipping it.
-#:
-#: **The installed WhatsApp Desktop app is still launchable**, and that is a
-#: different thing from a messaging path: "open WhatsApp Desktop" is a request to
-#: start a program, and ``router.py`` sends it to ``open_app`` like any other. It
-#: is only ever a *window*, never the thing a message is sent through.
-PATH_PREFERENCE: tuple[str, ...] = ("web",)
-
-#: Set to ``True`` by a caller that has explicitly asked for the installed
-#: application. There is currently no such caller, and the flag exists so that one
-#: cannot be added by accident: it is read in exactly one place, and adding a
-#: second route to the desktop adapter would have to go through here.
-PATH_PREFERENCE_IS_FIXED = True
+#: WhatsApp messages use the isolated Web session. Opening the installed
+#: application through `open_app` is a separate capability.
 
 #: How many steps a send narrates. Fixed so the "step 3 of 6" position means the
 #: same thing every time; the sequence below is the same sequence every time.
@@ -208,17 +177,15 @@ SEND_STEPS = 5
 # alone invites the model to rephrase the same request.
 MSG_OFF = "WhatsApp messaging is switched off in configuration. Nothing was prepared."
 MSG_NEED_NUMBER = (
-    "I'm in draft mode, where WhatsApp only takes a phone number -- so I can't "
-    "look anybody up by name. Give me the number in international form like "
-    "+15551234567, or switch messaging to automation mode in Settings and I can "
-    "find Afia by name and type the message in WhatsApp for you to confirm. "
-    "Nothing was prepared."
+    "I couldn't safely resolve that as one unique saved contact in WhatsApp, "
+    "so nothing was prepared. Try the exact saved contact name or provide a "
+    "phone number in international form like +15551234567; I won't guess "
+    "between contacts or groups."
 )
 MSG_BAD_RECIPIENT = "That isn't a phone number or a contact name. Nothing was prepared."
 MSG_EMPTY = "There is no message text to send. Nothing was prepared."
 MSG_TOO_LONG = "That message is too long for one send. Nothing was prepared."
 MSG_NO_BODY = "WhatsApp is not open on this machine. Nothing was prepared."
-MSG_NO_COMPOSER = "I can't see the message box on this chat. Nothing was typed."
 MSG_NOT_LOGGED_IN = (
     "WhatsApp Web is not signed in on this machine yet. Scan the QR code once in "
     "Lumine's browser window and ask me again. Nothing was sent."
@@ -334,15 +301,13 @@ async def _search_contact_web(query: str) -> list:
             pass
 
 
-async def search_contact(backend: Any, query: str) -> list:
+async def search_contact(
+    backend: Any, query: str, *, preserve_search: bool = False
+) -> list:
     """Chat candidates for ``query``, read on the path that will send.
 
-    The path is a *parameter*, not a decision this function makes. It used to walk
-    ``PATH_PREFERENCE`` itself, and that was how the two paths came to contradict
-    each other: the lookup could succeed against Desktop's chat list while the
-    message went to a Web tab that had never heard of the contact, or vice versa.
-    Now whoever chose the path also reads the name from it, so the chat the name
-    was found in is the chat the message goes to.
+    The backend is a parameter so contact lookup and follow-up actions share
+    the same Web session and cannot silently cross application contexts.
 
     A path that cannot search falls through to its own rendered list rather than
     reporting "no contacts" -- which would be a false answer about a person who is
@@ -350,7 +315,7 @@ async def search_contact(backend: Any, query: str) -> list:
     that says so.
     """
     try:
-        rows = await backend.search_name(query)
+        rows = await backend.search_name(query, preserve_search=preserve_search)
     except Exception as exc:  # noqa: BLE001 - a search that cannot run is a fallback
         logger.debug("[whatsapp] %s could not search by name: %s", backend.name, exc)
         rows = []
@@ -373,23 +338,12 @@ async def search_contact(backend: Any, query: str) -> list:
         ]
 
 
-def _desktop_can_search() -> bool:
-    """Whether the Desktop path has both a driver and a search box, right now.
-
-    Synchronous on purpose: it is a Toolhelp snapshot plus a window probe, and
-    making it a coroutine would let the caller ``await`` it inside the loop where
-    a COM-touching call would be wrong.
-    """
-    capability = desktop.desktop_capability()
-    return bool(capability["available"]) and desktop.has_search()
-
-
 async def _web_can_search() -> bool:
     return await whatsapp_state() == "ready"
 
 
-async def _web_contact_search(query: str) -> list:
-    rows = await web.search_chats(query)
+async def _web_contact_search(query: str, *, preserve_search: bool = False) -> list:
+    rows = await web.search_chats(query, preserve_search=preserve_search)
     out = []
     for row in rows:
         title = str(row.get("title") or "").strip()
@@ -404,18 +358,6 @@ async def _web_contact_search(query: str) -> list:
             }
         )
     return out
-
-
-async def _desktop_contact_search(query: str) -> list:
-    rows = await desktop.search_contacts(query)
-    return [
-        {
-            "title": str(row.get("title") or ""),
-            "kind": str(row.get("kind") or "contact"),
-            "participants": tuple(row.get("participants") or ()),
-        }
-        for row in rows
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -699,28 +641,6 @@ _JS_FOCUS_SEARCH = """
 _ROW_MARK = web._ROW_MARK
 _ROW_SELECTOR = web._ROW_SELECTOR
 
-_JS_FOCUS_COMPOSER = """
-() => {
-  const composer = document.querySelector('footer [contenteditable="true"]');
-  if (!composer) return false;
-  composer.focus();
-  return true;
-}
-"""
-
-_JS_CLICK_SEND = """
-() => {
-  // The icon's data attribute is locale-independent; an aria-label is not.
-  const icon = document.querySelector('[data-icon="send"]');
-  const target = (icon && icon.closest('button')) ||
-    document.querySelector('button[aria-label="Send"]') ||
-    document.querySelector('[data-testid="send"]');
-  if (!target) return false;
-  target.click();
-  return true;
-}
-"""
-
 #: Is this exact text now an outgoing message in the conversation?
 #:
 #: **Found by geometry, not by class name**, and that is not a shortcut. The
@@ -749,8 +669,7 @@ _JS_CLICK_SEND = """
 #:   pane centre of 957 is left-aligned, and the window-midpoint rule said
 #:   otherwise.
 #:
-#: This is the same geometric reasoning `whatsapp_desktop.py` is built on: where
-#: there is no identity in the DOM, position is the identity.
+#: Where there is no identity in the DOM, position is the identity.
 #:
 #: The whole string is compared, because a bubble carries its clock too and a
 #: substring test would accept the wrong message.
@@ -835,6 +754,7 @@ async def search_number(number: str) -> str | None:
     that exists only in the DOM.
     """
     page = await whatsapp_page()
+    await web.clear_chat_search(page)
     focused = await page.evaluate(_JS_FOCUS_SEARCH)
     if not focused:
         raise ToolError(MSG_NO_BODY)
@@ -897,29 +817,7 @@ async def draft_message(text: str) -> bool:
     is open even when the header could not be read, and typing here is what
     ``open_chat`` is trusting when it cannot verify a title.
     """
-    state = await web.composer()
-    if not state.get("found"):
-        # No composer means no conversation is open, which after a click means
-        # the click did not land. This is the refusal `open_chat` cannot make.
-        raise ToolError(MSG_NO_COMPOSER)
-    if not state.get("empty", True):
-        raise ToolError(
-            "There's already something written in WhatsApp's message box, so I "
-            "didn't add to it. Send or clear that first, then ask me again. "
-            "Nothing was sent."
-        )
-    page = await whatsapp_page()
-    focused = await page.evaluate(_JS_FOCUS_COMPOSER)
-    if not focused:
-        raise ToolError("I can't see the message box on this chat. Nothing was typed.")
-    await page.keyboard.type(text)
-    typed = str((await web.composer()).get("text") or "")
-    # WhatsApp marks its own messages with directional marks. They are rendering,
-    # not content, and comparing them would fail every single message.
-    cleaned = typed.replace("\u200e", "").replace("\u200f", "").strip()
-    if cleaned != " ".join(str(text or "").split()):
-        await web._clear_composer()
-        return False
+    await web.type_message(text)
     return True
 
 
@@ -939,14 +837,8 @@ async def discard_draft() -> bool:
 
 
 async def press_send() -> None:
-    """Click the send control; fall back to Enter, which WhatsApp treats as send."""
-    page = await whatsapp_page()
-    clicked = await page.evaluate(_JS_CLICK_SEND)
-    if not clicked:
-        focused = await page.evaluate(_JS_FOCUS_COMPOSER)
-        if not focused:
-            raise ToolError("I can't see the message box on this chat. Nothing was sent.")
-        await page.keyboard.press("Enter")
+    """Use the verified Web click or its focused Enter fallback."""
+    await web.press_send()
 
 
 async def delivery_seen(text: str) -> bool:
@@ -960,7 +852,7 @@ async def delivery_seen(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# The automation seam: one send sequence, two paths behind it
+# The automation seam: one send sequence on WhatsApp Web
 # ---------------------------------------------------------------------------
 
 
@@ -980,29 +872,17 @@ class Observation:
 
 @dataclass(frozen=True)
 class Backend:
-    """One WhatsApp path, as the send sequence sees it.
+    """The WhatsApp Web path, as the send sequence sees it.
 
-    Desktop and Web differ in every operation but not in the *shape* of
-    the sequence, which is what lets the ordering rules -- resolve before
-    gate, gate before typing, uncertain before retry -- live in one place
-    instead of being enforced twice and believed once. `check` returns
-    ``None`` when the path is ready, or its refusal sentence when not;
-    `delivery_seen` returns an `Observation`, never a bare verdict.
+    `check` returns ``None`` when the page is ready or its refusal sentence
+    otherwise; `delivery_seen` returns an `Observation`, never a bare verdict.
     """
 
     name: str
     check: Callable[[], Awaitable[str | None]]
     list_contacts: Callable[[str], Awaitable[list[str]]]
     search_number: Callable[[str], Awaitable[str | None]]
-    #: Search chats by a spoken *name*, through WhatsApp's own search box.
-    #:
-    #: This member exists so that the path is chosen exactly once. It used to be a
-    #: module-level function that decided for itself -- Web first, then Desktop --
-    #: which meant a send could resolve the name on Desktop and then send through
-    #: Web, or the reverse. Two applications, two chat lists, two sets of answers,
-    #: and a user being told the paths contradicted each other. With the operation
-    #: on the backend, the name is looked up on the same path that will type into
-    #: it, and the two cannot disagree.
+    #: Search chats by a spoken name through WhatsApp Web's own search box.
     search_name: Callable[[str], Awaitable[list[dict[str, Any]]]]
     open_chat: Callable[[str], Awaitable[bool]]
     draft: Callable[[str], Awaitable[bool]]
@@ -1056,120 +936,20 @@ def web_backend() -> Backend:
     )
 
 
-def desktop_backend() -> Backend:
-    """WhatsApp Desktop through UI Automation -- see `whatsapp_desktop`.
-
-    The capability is checked first and the state read second, because
-    they answer different questions: whether the app *can* be driven
-    (platform, driver, window) and whether it currently *has* a chat list
-    to drive. A capable path with nothing to show still falls through to
-    Web, with both answers available to the refusal.
-    """
-
-    async def check() -> str | None:
-        capability = desktop.desktop_capability()
-        if not capability["available"]:
-            return str(capability["reason"])
-        token = await desktop.state()
-        return None if token == "ready" else desktop.state_reason(token)
-
-    async def observe(text: str) -> Observation:
-        return Observation(await desktop.delivery_seen(text), time.monotonic())
-
-    async def draft(text: str) -> bool:
-        # No composer read on this path: the desktop adapter already refuses when
-        # a draft is present, and re-walking the tree to confirm the text arrived
-        # would cost a second full traversal for a check the type already implies.
-        await desktop.type_message(text)
-        return True
-
-    async def drop() -> bool:
-        return await desktop.clear_composer()
-
-    return Backend(
-        name="WhatsApp Desktop",
-        check=check,
-        list_contacts=desktop.list_contacts,
-        search_number=desktop.search_number,
-        search_name=_desktop_contact_search,
-        open_chat=desktop.open_chat,
-        draft=draft,
-        discard_draft=drop,
-        press_send=desktop.press_send,
-        delivery_seen=observe,
-    )
-
-
-def _refusal(reasons: list[str]) -> str:
-    """Every path that said no, in one sentence that says "nothing sent" once."""
-    bodies = [reason.removesuffix(" Nothing was sent.") for reason in reasons]
-    return f"{' '.join(bodies)} Nothing was sent."
-
-
 async def choose_backend(verb: str = "send_text") -> Backend:
-    """WhatsApp Web, and only WhatsApp Web.
-
-    There used to be a second candidate. The Desktop adapter was a fallback for
-    ``send_text`` and ``prepare_draft`` on the reasoning that a working desktop
-    path starts nothing -- no browser, no profile, no QR code. In practice it
-    meant a send whose Web tab was still loading silently went out through the
-    desktop app instead, so the user watched two applications answer one sentence,
-    and a name resolved on one path could not be opened on the other.
-
-    ``verb`` is still checked against the operation table first. That check is not
-    about choosing between paths any more -- there is one -- but it is what keeps
-    an operation the Web path genuinely cannot do from being attempted and
-    reported as something else.
-
-    When Web is not ready, the refusal says *that*, in one sentence naming Web,
-    rather than naming two applications and letting the user work out which one
-    she meant.
-    """
-    reasons: list[str] = []
-    for candidate in backend_candidates():
-        path = _path_of(candidate)
-        if path != "web":
-            # Belt and braces. `backend_candidates()` reads `PATH_PREFERENCE`,
-            # which is one entry, so this cannot fire today -- and a guard that
-            # cannot fire is still the cheapest place to catch a second path being
-            # added, because it fails here rather than in front of a user.
-            logger.warning(
-                "[whatsapp] %r asked for a path this build does not use", path
-            )
-            continue
-        if not ops.supported_by(verb, path):
-            reasons.append(ops.refusal_for(verb, path))
-            continue
-        why = await candidate.check()
-        if why is None:
-            return candidate
-        reasons.append(why)
-    raise ToolError(_refusal(reasons))
-
-
-def _path_of(backend: Any) -> str:
-    """``"web"`` or ``"desktop"``, from a backend's own name."""
-    return "web" if "Web" in str(getattr(backend, "name", "")) else "desktop"
+    """Validate the operation and use the sole WhatsApp Web backend."""
+    if not ops.supported_by(verb, "web"):
+        raise ToolError(ops.refusal_for(verb, "web"))
+    candidate = web_backend()
+    why = await candidate.check()
+    if why is not None:
+        raise ToolError(why)
+    return candidate
 
 
 def backend_candidates() -> tuple[Backend, ...]:
-    """The messaging paths, in order. One of them.
-
-    Built on each call rather than once, because each backend reads its
-    operations from this module's namespace when it is *built* -- so whichever
-    functions are in place, live ones or test doubles, are the ones that run.
-    Nothing is bound at import time, for the same reason nothing is cached at
-    import time.
-
-    ``desktop_backend`` is deliberately **not** in ``factories``. It still exists
-    as a function and ``whatsapp_desktop`` still exists as a module, because
-    deleting the record of what the adapter could do loses the reason it was not
-    used; but nothing a tool can call reaches either. That is the whole of "remove
-    every action regarding WhatsApp Desktop" -- an unreachable adapter and a
-    launchable application are different states, and only one of them is gone.
-    """
-    factories = {"web": web_backend}
-    return tuple(factories[name]() for name in PATH_PREFERENCE if name in factories)
+    """Build the only messaging backend."""
+    return (web_backend(),)
 
 
 
@@ -1209,28 +989,31 @@ async def _resolve_contact(backend: Any, name: str):
     unavailable, so a path that can read chats but has no search box still gets a
     genuine attempt rather than an immediate refusal.
     """
-    rows = await search_contact(backend, name)
+    rows = await search_contact(backend, name, preserve_search=True)
     if rows:
-        return choose_contact(name, rows, allow_group=True)
-    titles = await backend.list_contacts(name)
-    return choose_contact(name, [ChatCandidate(title=title) for title in titles], allow_group=True)
+        choice = choose_contact(name, rows, allow_group=True)
+    else:
+        titles = await backend.list_contacts(name)
+        choice = choose_contact(
+            name, [ChatCandidate(title=title) for title in titles], allow_group=True
+        )
+    if not choice.ok or choice.chosen is None:
+        await web.clear_chat_search()
+    return choice
 
 
-async def _number_for_name(context: RunContext, name: str) -> str | None:
-    """The number behind a contact name, or ``None`` when there isn't one.
+async def _number_for_name(
+    context: RunContext, name: str
+) -> tuple[str | None, str | None]:
+    """Return a resolved contact's number and title, when safely available.
 
     Draft mode exists so the *user* presses send, which is a reason to prepare a
-    ``whatsapp://`` link -- not a reason to require the user to read a phone
-    number aloud. Asking for one was the original reported bug: the same name
-    that WhatsApp's own search box had just matched a moment earlier could not be
-    turned into anything, so the conversation dead-ended on "give me her number".
-
-    So the name is resolved through the account's own search box and the chat's
-    JID, which *is* the number for a one-to-one chat. Three refusals stay
-    refusals: a group has no number, a chat the account does not have is not
-    invented, and a name that matches several chats asks rather than picks. The
-    lookup is a read, so it is gated like every other read -- asking for approval
-    must not be a side door around the tools page.
+    ``whatsapp://`` link when WhatsApp exposes a JID. Recent WhatsApp builds
+    hide that JID, though, so a uniquely matched saved contact may have a title
+    but no number; the caller can then prepare an unsent Web draft by that title.
+    Ambiguous matches still refuse. A group resolves, and so does an ordinary
+    chat row whose kind this build cannot answer -- see the note at the choice.
+    The lookup is a read, gated like every other read.
     """
     await require_approval(
         context,
@@ -1240,11 +1023,13 @@ async def _number_for_name(context: RunContext, name: str) -> str | None:
         summary=f"Look up WhatsApp contacts matching {clip(name, 30)}",
     )
     try:
-        rows = await web.search_chats(name)
+        rows = await web.search_chats(name, preserve_search=True)
     except ToolError:
-        return None
+        await web.clear_chat_search()
+        return None, None
     except Exception:  # noqa: BLE001 - an unreachable page is a refusal, not a crash
-        return None
+        await web.clear_chat_search()
+        return None, None
     candidates = [
         ChatCandidate(
             title=str(row.get("title") or "").strip(),
@@ -1253,17 +1038,44 @@ async def _number_for_name(context: RunContext, name: str) -> str | None:
         for row in rows
         if str(row.get("title") or "").strip()
     ]
-    choice = choose_contact(name, candidates)
+    # `allow_group=True`, and that is the whole of the reported fault "she
+    # searched for the contact, it came up, and she still asked me for a phone
+    # number". Two rows WhatsApp renders today carry *no* positive signal either
+    # way -- the reader emits `group: null` (WhatsApp dropped `data-id`, so
+    # "is this a group?" is unanswerable) and `contact: false` on an ordinary
+    # chat row -- and `kind_for_row` honestly answers "unknown" for them. That is
+    # `maybe_group`, so `choose` refused an **exact single match** and this
+    # function returned `(None, None)`; the caller then raised `MSG_NEED_NUMBER`,
+    # whose advice -- read out a phone number -- is useless for a contact that
+    # was on screen a moment earlier. The search had succeeded and the resolver
+    # had thrown the row away.
+    #
+    # Groups are acceptable recipients here, and the rule that a group is never
+    # silently substituted for a person is kept by *naming* the chat rather than
+    # by refusing one. Nothing sends by itself on this path: a resolved name
+    # becomes a Web draft in that chat, behind an approval card that quotes the
+    # chat's own title, and the user presses send. Both modes resolve groups
+    # consistently rather than silently classifying unknown rows as people.
+    #
+    # Ambiguity is untouched and is still the refusal that matters: two chats
+    # matching one name ask rather than pick.
+    choice = choose_contact(name, candidates, allow_group=True)
     if not choice.ok or choice.chosen is None:
-        return None
+        await web.clear_chat_search()
+        return None, None
     chosen = choice.chosen.title
     for row in rows:
         if str(row.get("title") or "").strip() == chosen:
-            return web.number_from_jid(row.get("jid")) or None
-    return None
+            number = web.number_from_jid(row.get("jid")) or None
+            if number is not None:
+                await web.clear_chat_search()
+            return number, chosen
+    await web.clear_chat_search()
+    return None, None
 
 
 @function_tool()
+@_serialize_send
 async def send_whatsapp(
     context: RunContext,
     recipient: str,
@@ -1274,8 +1086,10 @@ async def send_whatsapp(
 ) -> str:
     """Message someone on WhatsApp from the user's own account, after approval.
 
-    Give a number in international form (+15551234567). In the default mode a
-    draft opens with the text filled in and the *user* presses send. With
+    Each call handles one recipient and one message; use separate sequential calls
+    to message multiple people in the same conversation. Give a number in
+    international form (+15551234567). In the default mode a draft opens with
+    the text filled in and the *user* presses send. With
     automation on, a contact name works too; if several match, the call returns
     them to choose from -- ask, then call again with that exact name.
 
@@ -1329,9 +1143,35 @@ async def send_whatsapp(
             with progress_step(
                 context, ops.SEND_TOOL, "find", f"Looking for {clip(target, 24)}", index=1, total=2
             ):
-                number = await _number_for_name(context, target)
+                number, contact_name = await _number_for_name(context, target)
             if number is None:
-                raise ToolError(MSG_NEED_NUMBER)
+                if contact_name is None:
+                    raise ToolError(MSG_NEED_NUMBER)
+                backend = await choose_backend("send_text")
+                previous = ledger.check(contact_name, text or file_path)
+                if previous == "sent":
+                    return MSG_ALREADY_PREPARED
+                await require_approval(
+                    context,
+                    tool=ops.SEND_TOOL,
+                    action="prepare",
+                    action_class="act",
+                    summary=(
+                        f"Prepare a WhatsApp draft for {clip(contact_name, 30)}: "
+                        f"{clip(text or os.path.basename(file_path), 40)}"
+                    ),
+                    target=clip(contact_name, 40),
+                )
+                return await _send_whatsapp_flow(
+                    context=context,
+                    backend=backend,
+                    who=contact_name,
+                    number=None,
+                    text=text,
+                    file_path=file_path,
+                    reply_to=reply_to,
+                    draft_only=True,
+                )
         previous = ledger.check(number, text)
         if previous == "sent":
             # Not an error the user needs to hear twice: it is the dedup
@@ -1341,7 +1181,7 @@ async def send_whatsapp(
             context,
             tool=ops.SEND_TOOL,
             action="prepare",
-            action_class="sensitive",
+            action_class="act",
             summary=f"WhatsApp draft to +{number}: {clip(text, 40)}",
             target=f"+{number}",
         )
@@ -1474,11 +1314,6 @@ async def _send_whatsapp_flow(
     # dropped: a parameter that silently does nothing is worse than no parameter,
     # because the model will report a reply where the user received a message.
     quote_index = refs.parse_handle(reply_to) if reply_to else 0
-    if quote_index and _path_of(backend) != "web":
-        raise ToolError(
-            "Replying to a specific message needs WhatsApp Web -- WhatsApp Desktop "
-            "can send, but not quote which message it answers. Nothing was sent."
-        )
     # The order here is the whole point of the flow. Ask first and the user
     # approves a sentence they cannot see; type first and the approval is about
     # something that is physically on their screen, in their own WhatsApp.
@@ -1501,8 +1336,6 @@ async def _send_whatsapp_flow(
             # done it rather than reporting a failure with no explanation. The
             # desktop attach button opens a *native* file dialog, which UI
             # Automation cannot type a path into.
-            if _path_of(backend) != "web":
-                raise ToolError(web.MSG_NO_ATTACH)
             if not await web.attach(file_path, caption=text):
                 raise ToolError(web.MSG_NO_ATTACH)
     elif text:
@@ -1527,7 +1360,7 @@ async def _send_whatsapp_flow(
                     )
             try:
                 drafted = await backend.draft(text)
-            except desktop.DirtyText:
+            except web.DirtyText:
                 # Nothing went out, but the composer has leftovers a blind retry
                 # would type on top of -- so the ledger holds it exactly like an
                 # unconfirmed send, because from the user's side that is what it is.
@@ -1541,6 +1374,7 @@ async def _send_whatsapp_flow(
 
     if draft_only:
         ledger.mark(who, text or file_path, "sent")
+        preserve_whatsapp_on_release()
         return (
             f"Drafted message to {who} on WhatsApp: '{text or file_path}'. "
             "It is ready in your composer for you to review and send."
@@ -1603,6 +1437,9 @@ async def _send_whatsapp_flow(
     try:
         await backend.press_send()
         observation = await backend.delivery_seen(text)
+    except web.SendNotAttempted as exc:
+        await backend.discard_draft()
+        raise ToolError(str(exc)) from None
     except ToolError as exc:
         # The attempt is over and its result is not ours. This includes a
         # refusal that *sounds* pre-send -- "could not take the keyboard" is
@@ -1611,16 +1448,20 @@ async def _send_whatsapp_flow(
         # user nothing was sent, which is the one thing we do not know.
         logger.info("[whatsapp] send outcome unknown: %s", exc)
         ledger.mark(who, text or file_path, "uncertain")
+        preserve_whatsapp_on_release()
         raise ToolError(MSG_UNCERTAIN) from None
-    except desktop.DirtyText:
+    except web.DirtyText:
         ledger.mark(who, text or file_path, "uncertain")
+        preserve_whatsapp_on_release()
         raise ToolError(MSG_UNCERTAIN) from None
     except Exception as exc:  # noqa: BLE001 - after the attempt, this is uncertain
         logger.warning("[whatsapp] send outcome unknown: %s", exc, exc_info=True)
         ledger.mark(who, text or file_path, "uncertain")
+        preserve_whatsapp_on_release()
         raise ToolError(MSG_UNCERTAIN) from None
     if not (observation.delivered and observation.observed_at >= attempted_at):
         ledger.mark(who, text or file_path, "uncertain")
+        preserve_whatsapp_on_release()
         raise ToolError(MSG_UNCERTAIN)
 
     # The confirmation is **spoken once, from here**, at the moment delivery is

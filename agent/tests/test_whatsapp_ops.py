@@ -107,60 +107,29 @@ class OperationTableTests(unittest.TestCase):
 
     def test_a_sensitive_operation_holds_only_when_it_changes_something_outside(self):
         # `sensitive` is the awkward class here: blocking is sensitive *and* has
-        # an effect the account keeps, while preparing a draft is sensitive and
-        # has none. The set is written out so that adding a hold somewhere
-        # unexpected is a test failure rather than a quiet behaviour change.
+        # an effect the account keeps. Draft preparation is an ordinary action:
+        # it leaves text unsent and requires no default approval. The set is
+        # written out so that adding a hold somewhere unexpected is a test failure
+        # rather than a quiet behaviour change.
         holding = {
             row.verb for row in ops.OPERATIONS
             if row.action_class == "sensitive" and row.hold_seconds > 0
         }
         self.assertEqual(holding, {"block"})
 
-    def test_no_verb_is_reachable_on_the_desktop_path(self):
-        """Messaging is Web, so no operation may name a second path.
+    def test_draft_preparation_is_not_classed_as_a_permission_prompt(self):
+        self.assertEqual(ops.operation("prepare_draft").action_class, "act")
 
-        The Windows adapter drives an accessibility tree: it could search a chat and
-        type into one, and could not address a message, read history, or change a
-        chat's settings. Two rows claimed `desktop=True` as a *fallback*, and that
-        fallback is the reported bug -- a send whose Web tab was still loading went
-        out through the desktop app, so two applications answered one sentence and a
-        name resolved on one path could not be opened on the other.
-
-        Asserted through `supported_by` rather than the `desktop` field, because
-        `supports()` is what `choose_backend` asks and it answers from
-        `ONLY_PATH` -- so the field alone cannot make the adapter reachable again.
-        """
-        desktop_verbs = {
-            row.verb for row in ops.OPERATIONS if ops.supported_by(row.verb, "desktop")
-        }
-        self.assertEqual(desktop_verbs, set())
-
-    def test_no_row_even_claims_the_desktop_field(self):
-        # Belt and braces over the check above: no row sets it either, so the
-        # record is unambiguous rather than merely overridden at runtime.
-        for row in ops.OPERATIONS:
-            with self.subTest(verb=row.verb):
-                self.assertFalse(
-                    row.desktop,
-                    "a row marked for the desktop path is one edit away from "
-                    "reintroducing the fallback",
-                )
-
-    def test_the_desktop_field_is_kept_as_the_record_of_what_the_adapter_could_do(self):
-        # The column stays so the next question -- "could it have done this?" --
-        # has an answer with a row to point at. Deleting it would have been a
-        # tidier diff and a worse one.
-        self.assertIn("desktop", ops.PATHS)
-        self.assertTrue(hasattr(ops.Operation, "desktop"))
+    def test_whatsapp_operations_expose_only_the_web_path(self):
+        self.assertEqual(ops.PATHS, ("web",))
         self.assertEqual(ops.ONLY_PATH, "web")
+        self.assertTrue(all(ops.supported_by(row.verb, "web") for row in ops.OPERATIONS))
+        self.assertFalse(any(ops.supported_by(row.verb, "desktop") for row in ops.OPERATIONS))
 
-    def test_a_refusal_names_the_path_and_the_verb(self):
-        sentence = ops.refusal_for("delete", "desktop")
-        self.assertIn("WhatsApp Desktop", sentence)
+    def test_a_refusal_names_the_web_path_and_the_verb(self):
+        sentence = ops.refusal_for("delete", "web")
+        self.assertIn("WhatsApp Web", sentence)
         self.assertIn("delete", sentence)
-        # And an unknown verb is refused rather than raising: callers use this to
-        # ask "do I know how to do that", and an exception from a lookup table
-        # would read as a crash.
         self.assertIn("cannot", ops.refusal_for("teleport", "web"))
 
     def test_the_registry_and_the_cards_agree_about_every_messaging_tool(self):

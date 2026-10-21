@@ -148,6 +148,11 @@ class ToolPolicyTests(unittest.TestCase):
     def test_policy_limits_one_tool_per_reply(self):
         self.assertIn("at most one tool per reply", TOOL_USAGE_POLICY)
 
+    def test_policy_offers_a_safe_alternative_after_failure(self):
+        self.assertIn("offer one safe,", TOOL_USAGE_POLICY)
+        self.assertIn("Never repeat the failed action", TOOL_USAGE_POLICY)
+        self.assertIn("or bypass a refusal or denied approval", TOOL_USAGE_POLICY)
+
     def test_the_policy_keeps_the_browser_verbs_small(self):
         # Two things the model will get wrong without being told, both of which
         # cost a turn each time it does.
@@ -163,6 +168,10 @@ class ToolPolicyTests(unittest.TestCase):
         # turn of the conversation.
         self.assertIn("for_model", TOOL_USAGE_POLICY)
         self.assertIn("describe only what is in the picture", TOOL_USAGE_POLICY)
+
+    def test_screenshots_are_a_fallback_when_structured_page_text_is_insufficient(self):
+        self.assertIn("skip it when the text already told you what you needed", TOOL_USAGE_POLICY)
+        self.assertIn("A canvas, map or chart has no text", TOOL_USAGE_POLICY)
 
     def test_policy_asks_for_short_spoken_replies(self):
         self.assertIn("one or two short sentences", TOOL_USAGE_POLICY)

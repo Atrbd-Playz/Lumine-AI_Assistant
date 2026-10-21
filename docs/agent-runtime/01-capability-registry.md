@@ -271,7 +271,7 @@ must be read from its implementation, **not guessed**: `list`/`focus`/`minimize`
 | `communication.search_contact` | `whatsapp_read` | `find` | `read` | `low` |
 | `communication.read_contact` | `whatsapp_read` | `contact` | `read` | `low` |
 | `communication.read_messages` | `whatsapp_read` | `messages` | `sensitive` | `high` |
-| `communication.prepare_message` | `send_whatsapp` | `prepare_draft` | `sensitive` | `low` |
+| `communication.prepare_message` | `send_whatsapp` | `prepare_draft` | `act` | `low` |
 | `communication.send_message` | `send_whatsapp` | `send_text` | `destructive` | `critical` |
 | `communication.reply_message` | `send_whatsapp` | `reply` | `destructive` | `high` |
 | `communication.forward_message` | `send_whatsapp` | `forward` | `destructive` | `high` |
