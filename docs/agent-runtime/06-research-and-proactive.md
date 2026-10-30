@@ -7,6 +7,12 @@ The two phases where this track stops being invisible.
 # Phase 9 — `ResearchWorker`
 
 - **Status:** specified, **not approved.**
+- **Depends on:** Phase 5 (events; worker progress rides the bus/trace), and
+  Phase 7 (the context discipline that keeps the worker's own context lean).
+  Phase 8 precedes it in numbering only — sequence, not a dependency.
+- **Retention:** the artefact registers with the central retention service
+  ([Phase 3 §7](03-persistent-task-store.md#7-retention-is-centralised-here));
+  the stream never grows unbounded.
 
 ## 1. The slice
 
@@ -64,6 +70,28 @@ paid for on every later turn."* Research needs the same treatment.
 - a permission-classed action inside research is refused or escalated, never
   silently attempted
 
+### 5.1 Acceptance criteria (provisional)
+
+- worker receives **0** conversation-history items — asserted per run
+- artefact written **once** per task, read any number of times — the artefact
+  read-count is observable in the event record
+- 100% of the fetched source list preserved verbatim into the result
+- 0 worker-owned permission requests
+- the digest's token cost ≤ 400 *— provisional*; measured the same way
+  `tool_results` measures, and it stays a cap, not a target
+
+## 6. Negative scope — must not implement
+
+- No general subagent mechanism — this is one worker, one job, and a spawn
+  count of 1 is the design.
+- No worker holding a permission request — it has no voice, and an approval it
+  raised could not be answered.
+- No conversation history in the worker context.
+- No recommendation beyond what the sources support — `web_search` returns
+  titles and links only; the worker never describes data it was not given.
+- No `.lumine/projects/` style layout — rejected in Phase 7 with reasons and
+  not reconsidered here.
+
 ---
 
 # Phase 10 — Proactive Lumine
@@ -111,3 +139,17 @@ suggestions · long-running workers.
 
 Both are prevented by the companion track's lifecycle before this phase begins.
 That ordering is the point.
+
+## 5. Negative scope — must not implement (binding even when deferred)
+
+- Nothing in `agent/` touches a wake engine — [ADR-0003](../decisions/0003-wake-layer-separation.md)
+  stands independent of this phase's status.
+- No microphone opening, no audio capture in `agent/` — capture lives in the
+  wake service's process, if and when it exists.
+- No proactive scheduling before companion Phase 3 (lifecycle) exists; a
+  stray process is worse than silence, and remains the cost of getting the
+  order wrong.
+- No unread-count or engagement mechanics; unprompted utterances per day is a
+  reported number that going **up** counts as a regression.
+- No scheduled task that cannot be cancelled and observed before it is
+  allowed to exist at all.

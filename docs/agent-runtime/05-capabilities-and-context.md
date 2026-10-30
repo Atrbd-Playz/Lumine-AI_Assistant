@@ -9,6 +9,12 @@ new one.
 # Phase 6 — Read-only filesystem
 
 - **Status:** specified, **not approved.**
+- **Negative-adjacency, recorded:** `filesystem.write` is **not** a Phase 6
+  feature, now or later. Any write authority enters the tree
+  [ADR-0016](../decisions/0016-filesystem-write-scoped-worktrees.md)-scoped and
+  Phase-11-bound — a worktree the delegate owns, never a user path the model
+  may edit. This phase cannot be cited by Phase 11 as satisfying a write need;
+  the ADR is the write authority.
 
 ## 1. The slice
 
@@ -58,7 +64,19 @@ This is worth stating explicitly because it looks like a gap and is not.
 - Load a large file whole.
 - Follow a symlink out of the roots, even to a file the user can obviously see.
 
-## 6. Tests
+## 6. Negative scope — must not implement
+
+- No `filesystem.write` row of any kind — not "as a config option", not "for
+  Phase 11's convenience": [ADR-0016](../decisions/0016-filesystem-write-scoped-worktrees.md)
+  is the write authority and it is worktree-only.
+- No rename, move, delete, or trash verbs.
+- No `.lumine/` reads that expose the task store's internals to the model as
+  files — the model already gets summarized, bounded context; the raw task
+  evidence is not a filesystem read away.
+- No network fetches, no package installs, no `open_app` — the family is one
+  read family, by decision, and growing it is growing authority.
+
+## 7. Tests
 
 - `..`, absolute, and symlink-out all refuse, each by name
 - a resolved short `8.3` path inside the root is accepted (the `scan(root=…)`
@@ -67,11 +85,23 @@ This is worth stating explicitly because it looks like a gap and is not.
 - an oversized file is clipped, not truncated mid-encoding
 - the boundary is identical to the attachment check's, asserted against it
 
+### 7.1 Acceptance criteria (provisional)
+
+- **0 escapes** across the fixture corpus (`..`, absolute, symlink-out,
+  junction) — asserted per name
+- **0 unwrapped contents** — every result through `tool_results.wrap_untrusted`
+- oversized reads clamp at the cap; a clipped read is never mid-encoding
+- `tool_catalog.py --check` unchanged, cards byte-identical
+- `2232+ tests pass`
+
 ---
 
 # Phase 7 — Selective context retrieval
 
 - **Status:** specified, **not approved.**
+- **Depends on:** Phase 1.5 (the budget counts the *loaded* tool set, not a
+  static one) and Phase 5 (tool/runtime state events feed layer 5). Phase 6
+  precedes it in numbering only — the sequence, not a dependency.
 
 ## 1. The five layers
 
@@ -86,6 +116,16 @@ This is worth stating explicitly because it looks like a gap and is not.
 Only the trimmer exists, and it is a **backstop, not a strategy** — its own
 docstring says so.
 
+**Where the 2026-10-30 "context manager" proposal lands:** here, as this phase's
+layers 2/4/5 — relevance tagging, summarising old turns, keeping durable facts
+separate from task context, removing redundant tool outputs. Its one hard rule
+is the separation of systems: **conversation history is not persistent
+memory** ([companion Phase 7 owns the durable side](../../ROADMAP.md#phase-7--memory-context--personality)),
+and *memory never influences a permission decision*. Summarisation must be
+measured before it is ranked against the Phase 9 verdict that GSD's context-rot
+cures were refused for voice turns — bounded, local, charged against the
+session, never a subagent. Full mapping: [expansion reconciliation §A](09-expansion-reconciliation.md).
+
 ## 2. Do
 
 Layers 2, 4 and 5. Each must **justify its tokens at the point it is added**,
@@ -95,9 +135,27 @@ against the principle the request itself stated:
 > correct decision.*
 
 The cost that governs this is measured: `tools_policy.py` records the whole
-instruction set at **~4.7k tokens per completion**. A tool result is re-sent on
-every later turn, so a context layer that grows without bound is a per-minute
-bill.
+instruction set at **~4.7k tokens per completion**. *(That figure predates the
+registry at 17 tools and the measured ~8.5k tokens counted in
+[Phase 1.5 §1](07-capability-discovery.md#1-the-measured-problem) — the
+correction stands, and it makes the rule stricter, not looser.)* A tool result
+is re-sent on every later turn, so a context layer that grows without bound
+is a per-minute bill.
+
+### 2.1 Budgets (provisional, pending measurement)
+
+| Layer | Cap per turn | Note |
+|---|---|---|
+| 2 — current task | ≤ 300 tokens | task goal + step state, no tool payloads |
+| 4 — user preferences | ≤ 200 tokens | durable facts only |
+| 5 — tool/runtime state | ≤ 300 tokens | what the gate/engine *needs*, not what happened |
+| **layers 2/4/5 combined** | **≤ 800 tokens p95** | measured over a 50-turn session |
+| summaries | ≤ 200 tokens each | written once, read many |
+
+What "measured" means here: `estimate_tokens` at injection time, persona
+excluded, the same way [Phase 1.5](07-capability-discovery.md) measures its
+catalog — and the caps are revised **downward**, never upward, without a
+per-phase note explaining what new evidence forced the change.
 
 ## 3. Do not implement `.lumine/projects/`
 
@@ -125,11 +183,39 @@ thing they are working on — not from GSD's layout.
 - Keep a transcript. Memory retrieval must be selective, bounded, and
   user-visible and deletable.
 
+### 4.1 Acceptance criteria (provisional)
+
+- layered-injection p95 across a 50-turn session ≤ 800 tokens combined
+  (definition in §2.1)
+- each layer's tokens *justified at the point added*: the injection records
+  what it added and why, and a test fails on a bus "always add" drift
+- summaries ≤ 200 tokens, ≤ 1 per N turns, written once and read many —
+  never regenerated per turn
+- 0 permission-decision code paths read a memory store — asserted by source
+  check, not by intention
+- on the baseline corpus, token cost reduced ≥ 20% and task success
+  **non-inferior** — the A/B is the gate, the token number alone is not
+
+## 5. Negative scope — must not implement
+
+- **No `.lumine/projects/`** — see §3, rejected with reasons.
+- No subagent summariser — the Phase 9 verdict stands; summarisation is
+  bounded and local, charged against the session.
+- No memory influence on permission decisions — the gate reads policy, never
+  preference.
+- No voice replay of old turns — the model may see history; the user does not
+  re-hear it.
+- No unbounded context layer; every layer has a cap or it is not shipped.
+- No second context system beside `context_trim.py` — this phase replaces the
+  backstop *assumption* with a strategy; the trimmer stays as the backstop.
+
 ---
 
 # Phase 8 — LLM planner fallback
 
 - **Status:** specified, **not approved.**
+- **Depends on:** Phase 2 (the runtime/planner seam), Phase 5 (events and
+  trace), Phase 7 (the context discipline the fallback inherits).
 
 ## 1. The problem
 
@@ -167,3 +253,25 @@ hard ceiling. Some requests simply are not the scenarios anyone anticipated.
 - a malformed LLM plan is refused by validation, not executed
 - `MAX_STEPS` is enforced
 - a fallback plan cannot carry a lighter action class than the call site enforces
+
+### 4.1 Acceptance criteria (provisional)
+
+- 100% of the existing scenario corpus returns the identical plan it returns
+  today (golden file)
+- every malformed LLM plan is refused at validation, 100% — never at run time
+- fallback `MAX_STEPS` respected in every case
+- 0 model-authorable authority-class downgrades (property test)
+- the fallback's own latency stays on the cascade path (never a realtime
+  reconnect) — measured, provisional ceiling 2 s p95
+
+## 5. Negative scope — must not implement
+
+- No replacing of `plan_for` — the deterministic table stays authoritative
+  for every scenario it matches, forever in this phase.
+- No model-authored authority class; no "hints" that can lighten a class.
+- No step names outside `STEP_IMPLEMENTATIONS` — a plan that can't run must
+  fail at construction, never mid-execution.
+- No planner that runs when the deterministic table matches — escalation only
+  on unmatched routes.
+- No second plan vocabulary; the fallback writes into the existing plan shape
+  or it fails validation.

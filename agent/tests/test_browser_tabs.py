@@ -213,19 +213,62 @@ class TabRegistryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ToolError, "name a page title or site"):
             await browser._resolve_target("title:spotify")
 
-    async def test_joining_does_not_navigate_an_existing_page_to_blank(self):
+    async def test_joining_borrows_the_tab_in_use_instead_of_opening_a_blank(self):
+        # The reported bug: a join manufactured an about:blank tab, Chromium
+        # put it in front, and a read-first call left it blank and visible
+        # with nobody to navigate it ("she opens the browser but the tabs
+        # are blank"). A join borrows the tab in use and creates nothing.
         existing = FakePage("https://www.youtube.com/")
-        new_page = FakePage()
         context = SimpleNamespace(
             pages=[existing],
-            new_page=mock.AsyncMock(return_value=new_page),
+            new_page=mock.AsyncMock(return_value=FakePage()),
         )
 
         selected = await session._joined_start_page(context)
 
-        self.assertIs(selected, new_page)
+        self.assertIs(selected, existing)
         self.assertEqual(existing.url, "https://www.youtube.com/")
         self.assertEqual(existing.navigations, [])
+        context.new_page.assert_not_awaited()
+
+    async def test_joining_borrows_the_most_recent_page_not_the_first(self):
+        first = FakePage("https://one.example/")
+        latest = FakePage("https://two.example/")
+        context = SimpleNamespace(
+            pages=[first, latest],
+            new_page=mock.AsyncMock(),
+        )
+
+        selected = await session._joined_start_page(context)
+
+        self.assertIs(selected, latest)
+        context.new_page.assert_not_awaited()
+
+    async def test_joining_never_borrows_the_whatsapp_tab(self):
+        # The consent-gated messaging surface must not become a generic work
+        # tab: observe would read messages around messaging.whatsapp.history.
+        work = FakePage("https://www.youtube.com/")
+        whatsapp = FakePage("https://web.whatsapp.com/")
+        context = SimpleNamespace(
+            pages=[work, whatsapp],
+            new_page=mock.AsyncMock(),
+        )
+
+        selected = await session._joined_start_page(context)
+
+        self.assertIs(selected, work)
+        context.new_page.assert_not_awaited()
+
+    async def test_a_whatsapp_only_browser_gets_a_tab_of_its_own(self):
+        made = FakePage()
+        context = SimpleNamespace(
+            pages=[FakePage("https://web.whatsapp.com/")],
+            new_page=mock.AsyncMock(return_value=made),
+        )
+
+        selected = await session._joined_start_page(context)
+
+        self.assertIs(selected, made)
         context.new_page.assert_awaited_once_with()
 
     async def test_joining_reuses_an_existing_blank_tab(self):

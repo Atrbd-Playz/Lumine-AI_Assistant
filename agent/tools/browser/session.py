@@ -715,6 +715,50 @@ def profile_dir() -> Path:
     return Path(base) / "lumine" / "browser-profile"
 
 
+def spare_profile_dir(engine: str | None = None) -> Path:
+    """A user-data directory of Lumine's own, for when the first choice is held.
+
+    **A locked profile is a fact about one directory, not about the machine.**
+    Chromium takes an exclusive lock on a *user-data directory* -- on Windows and
+    Linux a ``SingletonLock``/mutex at its root, on macOS a symlink -- and no
+    amount of argument gets a second process past it. But that lock says nothing
+    about any *other* directory, so a browser that cannot have the profile it
+    wanted can still have a window. This is that window's directory.
+
+    It exists because of a reported failure: the user kept Brave open on the
+    ``Lumine`` profile, asked for a YouTube search, and was told to go and close
+    their own browser first. The profile is the *personal* one -- it holds the
+    user's cookies, their signed-in WhatsApp, their session state -- so it is
+    the right first choice and stays the first choice. It is no longer the only
+    one. Being told to close a window so the assistant can open one is exactly
+    backwards, and it is the one answer a companion must not give.
+
+    Two rules carry it, and neither is cosmetic:
+
+    - **It is named per engine.** The two engines must not contend on one
+      directory, for the same reason their endpoint files are
+      ``browser-cdp.txt`` and ``browser-cdp-brave.txt`` rather than one: two
+      browsers cannot share a profile, and a fallback that turned into that
+      would trade a refusal for a lock. A Brave spare and a Chromium launch are
+      therefore never the same path, whatever the settings say.
+    - **It sits beside the isolated profile rather than inside it.** ``profile_dir()``
+      honours ``LUMINE_BROWSER_PROFILE``, and a person who pointed that at a
+      directory of their own still gets a spare that is theirs to delete -- one
+      sibling with a name that says what it is, not a subdirectory of a live
+      browser profile that a scan might one day walk into.
+
+    The cost is real and is worth naming: this browser is **not signed in**.
+    WhatsApp in it asks for a QR scan, and any site the user was logged into
+    starts logged out. That is the honest price of a profile somebody else is
+    already using -- the alternative is not a signed-in browser, it is no
+    browser at all -- and it degrades to a sentence the product already says
+    ("scan the QR code in the window this opened") rather than to a failure.
+    """
+    base = profile_dir()
+    selected = engine or "chromium"
+    return base.parent / f"{base.name}-spare-{selected}"
+
+
 def brave_user_data_dir() -> Path:
     """Brave's native user-data directory, which contains all named profiles."""
     raw = (os.getenv(BRAVE_USER_DATA_DIR_VAR, "") or "").strip()
@@ -832,13 +876,34 @@ def _configured_browser_engine() -> str:
 
 
 async def _joined_start_page(context: Any) -> Any:
-    """Use an existing blank tab or create one without changing joined pages."""
+    """The tab a joining process works in -- borrowed, not manufactured.
+
+    A join hands back the most recently opened page that is not the WhatsApp
+    tab, and calls ``new_page()`` only when there is nothing to borrow. The
+    previous shape always created a fresh ``about:blank`` unless one was
+    already lying around, and that is the reported *"she opens the browser but
+    the tabs are blank"*: Chromium puts a new tab **in front**, so the shared
+    window flipped to a blank page, and a joining call that was a *read*
+    (``observe`` refuses on ``about:blank``) or whose navigation failed left
+    it blank with nobody ever navigating it.
+
+    Borrowing also removes the cross-process activation this exposed. A
+    ``new_page()`` raises the **owner's** ``context.on("page")`` handler too,
+    which adopts and activates the foreign page as the owner's own -- measured,
+    the owner's ``_page`` read the joiner's URL for the whole hold. With
+    nothing created, neither side's registry moves.
+
+    The WhatsApp tab is never borrowed: it is the consent-gated messaging
+    surface, and a work tab pointed at it would read messages around
+    ``messaging.whatsapp.history``. A browser holding only that tab gets one
+    tab of its own.
+    """
     pages = list(getattr(context, "pages", []) or [])
-    for page in pages:
+    for page in reversed(pages):
         try:
-            if str(page.url or "") == "about:blank":
+            if not _is_whatsapp(getattr(page, "url", "")):
                 return page
-        except Exception:  # noqa: BLE001 -- an unreadable page is not ours to navigate
+        except Exception:  # noqa: BLE001 -- an unreadable page is simply skipped
             continue
     try:
         return await context.new_page()
@@ -1972,23 +2037,73 @@ class _Browser:
                 context = None
 
             if context is None:
-                context = await _launch_persistent(
-                    playwright,
-                    directory,
-                    executable_path=str(brave_path) if brave_path else None,
-                    personal_engine=selected_engine,
-                    profile_directory=profile_directory,
-                )
-                if selected_engine == "brave":
-                    logger.info(
-                        "[Browser] started Brave with the existing %r profile",
-                        BRAVE_PROFILE_NAME,
+                # The profile we launch *into*, which is not always the one we
+                # asked for. See `spare_profile_dir` for why the second exists.
+                launched_on = directory
+                try:
+                    context = await _launch_persistent(
+                        playwright,
+                        directory,
+                        executable_path=str(brave_path) if brave_path else None,
+                        personal_engine=selected_engine,
+                        profile_directory=profile_directory,
                     )
-                else:
+                except Exception as exc:
+                    if not _profile_locked(str(exc)):
+                        raise
+                    # Somebody is holding the profile and is not publishing an
+                    # endpoint to join -- usually the user's own browser window
+                    # on it, which no protocol can attach to. The lock is a fact
+                    # about *this* directory and says nothing about any other,
+                    # so the window opens beside it rather than not at all.
+                    #
+                    # This used to be the refusal `MSG_PROFILE_LOCKED` describes,
+                    # and it was the wrong answer to a companion: the user had
+                    # Brave open on the 'Lumine' profile, asked for a YouTube
+                    # search, and was told to go and close their own browser
+                    # first. The profile is the right *first* choice because it
+                    # is the one already signed in; it is no longer the only one.
+                    launched_on = spare_profile_dir(selected_engine)
+                    try:
+                        launched_on.mkdir(parents=True, exist_ok=True)
+                    except OSError as mkdir_exc:
+                        raise ToolError(
+                            f"I can't use {clip(str(launched_on), 60)} for a spare "
+                            f"browser profile: {clip(str(mkdir_exc), 80)}"
+                        ) from None
                     logger.info(
-                        "[Browser] started Playwright Chromium with Lumine's isolated profile"
+                        "[Browser] %s is held by another window; opened a separate "
+                        "%s window on Lumine's own profile at %s",
+                        directory,
+                        selected_engine,
+                        launched_on,
                     )
-                port = _discover_devtools_port(directory)
+                    # No `profile_directory`: a user-data directory of our own
+                    # has only `Default` in it, and naming the personal profile
+                    # here would quietly recreate the directory we were refused.
+                    context = await _launch_persistent(
+                        playwright,
+                        launched_on,
+                        executable_path=str(brave_path) if brave_path else None,
+                        personal_engine=selected_engine,
+                        profile_directory=None,
+                    )
+                if launched_on == directory:
+                    if selected_engine == "brave":
+                        logger.info(
+                            "[Browser] started Brave with the existing %r profile",
+                            BRAVE_PROFILE_NAME,
+                        )
+                    else:
+                        logger.info(
+                            "[Browser] started Playwright Chromium with Lumine's isolated profile"
+                        )
+                # The port is read from whichever directory actually got the
+                # browser, because that is the directory Chromium wrote it in --
+                # and the endpoint published for it is still the *engine's*, so a
+                # later process joins this window whether it was the first choice
+                # or the fallback. One browser, either way.
+                port = _discover_devtools_port(launched_on)
                 if port:
                     _publish_endpoint(port, endpoint_path)
                     logger.info("[Browser] published a DevTools endpoint on %s", port)
@@ -2037,10 +2152,10 @@ class _Browser:
         # not like.
         pages = list(getattr(context, "pages", []) or [])
         if shared:
-            # A joined context belongs to another process and may contain the
-            # user's active page. Reuse only an existing blank tab; otherwise
-            # create a Lumine tab instead of navigating somebody else's page to
-            # about:blank.
+            # A joined context belongs to another process. Borrow the tab in
+            # use -- its most recent non-WhatsApp page -- and create a tab
+            # only when there is nothing to borrow, so a join never drops a
+            # blank page in front of the user.
             try:
                 page = await _joined_start_page(context)
             except ToolError:

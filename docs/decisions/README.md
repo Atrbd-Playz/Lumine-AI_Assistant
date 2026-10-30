@@ -25,10 +25,16 @@ file. "We tried the other thing" is the most useful sentence in this directory.
 | [0012](0012-process-vs-companion-state.md) | Process state and companion state are different types | Accepted |
 | [0013](0013-greeting-conditional.md) | Greeting is conditional on having nothing to do | Accepted |
 | [0014](0014-canonical-capability-namespace.md) | Canonical capability ids do not split the model-facing tools | Accepted |
+| [0015](0015-coding-delegate.md) | Lumine delegates engineering work to external coding agents | **Proposed — not accepted** (bound to runtime Phase 11) |
+| [0016](0016-filesystem-write-scoped-worktrees.md) | `filesystem.write` is scoped to Phase 11 worktrees, and nowhere else | **Proposed — not accepted** (bound to runtime Phase 11) |
 
 Also see [`../../VISION.md`](../../VISION.md) for the decision rule these records
 serve, and [`../../ROADMAP.md`](../../ROADMAP.md) for which phase consumes them.
 
 0011–0014 bind the **runtime** track rather than the companion track. Their
 phases, goals and definition of done are in
-[`../agent-runtime/`](../agent-runtime/README.md).
+[`../agent-runtime/`](../agent-runtime/README.md). **0015 and 0016 are runtime
+drafts proposed alongside runtime Phase 11** — they are recorded here so the
+amendments are explicit, and they do not authorise work; acceptance arrives
+only with Phase 11 approval. The reconciliation record they belong to is
+[`../agent-runtime/10-consistency-audit.md`](../agent-runtime/10-consistency-audit.md).

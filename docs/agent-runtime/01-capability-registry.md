@@ -400,14 +400,20 @@ python agent\validate_config.py --describe
 
 ---
 
-## 10. Explicit non-goals
+## 10. Negative scope — must not implement
 
-- Splitting any function tool into per-verb tools
-- Unifying the fail-open and fail-closed switches
-- Changing any `action_class` value
-- Rewriting `permission_gate` semantics to make metadata look cleaner
-- Writing `filesystem.*` rows (Phase 6) — the ids are reserved, the rows are not
-- Anything from Phases 2–10
+Adjacent phases, named so scope creep has something to miss by:
+
+- Splitting any function tool into per-verb tools (ADR-0014; [Phase 1.5](07-capability-discovery.md)
+  changes *when a schema is present*, never how many tools exist).
+- Unifying the fail-open and fail-closed switches.
+- Changing any `action_class` value, any card, any Tools-page behaviour.
+- Rewriting `permission_gate` semantics to make metadata look cleaner.
+- Writing `filesystem.*` rows ([Phase 6](05-capabilities-and-context.md) owns
+  the read family; `filesystem.write` is reserved **for** the
+  [ADR-0016](../decisions/0016-filesystem-write-scoped-worktrees.md) worktree
+  authority, not for this phase or Phase 6).
+- Anything from Phases 2–11.
 
 ---
 

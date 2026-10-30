@@ -579,8 +579,19 @@ Platform-specific considerations that should be isolated later include:
       WhatsApp tab as an unregistered popup, adopted it as the working page, and closed
       the page the user had open; `_reserve` reclassifies it after the page object
       exists, which cannot miss. Closing the last tab opens a blank one on the live
-      context rather than reaching `_start`, which would launch a second Chromium and
-      report the profile as locked
+      context rather than reaching `_start`, which would launch a second Chromium —
+      and with the spare-profile fallback that second launch opens a second *window*
+      rather than refusing, which is no better an answer to "close the last tab"
+- [x] A join **borrows** the tab in use instead of opening a blank one.
+      `_joined_start_page` used to manufacture an `about:blank` tab whenever the
+      joined browser had none lying around — Chromium put it in front, so the shared
+      window showed a blank page and a read-first call left it there with nobody to
+      navigate it: the reported *"she opens the browser but the tabs are blank"*. It
+      now borrows the most recent page that is not the WhatsApp tab (the
+      consent-gated messaging surface is never a work tab) and creates one only when
+      there is nothing to borrow. That also removes the cross-process activation,
+      since `new_page()` fires the *owner* process's `page` handler too and the owner
+      adopted the foreign tab as its own active page
 - [x] Attachments are limited to an allowlisted folder by resolved path, with a
       whitelist of extensions and no URL downloads
 - [x] WhatsApp messaging is Web-only. The desktop messaging adapter and execution

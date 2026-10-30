@@ -571,6 +571,144 @@ class LaunchPersistentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("ignore_default_args", kwargs)
 
 
+class SpareProfileDirTests(unittest.TestCase):
+    """Where the fallback window's directory lives, and why one per engine."""
+
+    def test_each_engine_gets_its_own_spare_beside_the_first_choice(self):
+        with mock.patch.object(
+            session, "profile_dir", return_value=Path("C:/base/browser-profile")
+        ):
+            # Per engine, for the same reason the endpoint files are
+            # `browser-cdp.txt` and `browser-cdp-brave.txt`: two browsers
+            # cannot share a user-data directory, and a fallback that turned
+            # into that would trade a refusal for a lock.
+            self.assertEqual(
+                session.spare_profile_dir("brave"),
+                Path("C:/base/browser-profile-spare-brave"),
+            )
+            self.assertEqual(
+                session.spare_profile_dir(),
+                Path("C:/base/browser-profile-spare-chromium"),
+            )
+
+
+class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """A held profile opens a window beside it, rather than refusing.
+
+    The reported failure: the user kept Brave open on the ``Lumine`` profile,
+    asked for a YouTube search, and was told to go and close their own browser
+    first. ``MSG_PROFILE_LOCKED`` was the *whole* answer, and it is the one
+    answer a companion must not give -- the lock is a fact about one directory,
+    and every other directory on the machine is unaffected by it. The personal
+    profile stays the first choice because it is the one already signed in; it
+    is no longer the only one.
+    """
+
+    def _locked(self) -> Exception:
+        return _Locked("Existing browser session: the profile is in use")
+
+    def _fake_playwright(self):
+        pw = mock.Mock()
+        pw.stop = mock.AsyncMock()
+        manager = mock.Mock()
+        manager.start = mock.AsyncMock(return_value=pw)
+        return mock.Mock(return_value=manager), pw
+
+    def _fake_context(self):
+        context = mock.Mock()
+        context.pages = []
+        page = mock.Mock()
+        page.is_closed = mock.Mock(return_value=False)
+        context.new_page = mock.AsyncMock(return_value=page)
+        context.route = mock.AsyncMock()
+        context.on = mock.Mock()
+        return context, page
+
+    async def test_a_locked_brave_profile_falls_back_to_a_spare_directory(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            brave_data = root / "User Data"
+            (brave_data / "Profile 1").mkdir(parents=True)
+            context, page = self._fake_context()
+            launch = mock.AsyncMock(side_effect=[self._locked(), context])
+            factory, _ = self._fake_playwright()
+            endpoint = root / "browser-cdp-brave.txt"
+            browser = session._Browser()
+            with mock.patch("playwright.async_api.async_playwright", factory), \
+                    mock.patch.object(session, "_configured_browser_engine", return_value="brave"), \
+                    mock.patch.object(session, "brave_executable", return_value=root / "brave.exe"), \
+                    mock.patch.object(session, "brave_user_data_dir", return_value=brave_data), \
+                    mock.patch.object(session, "brave_profile_directory", return_value=brave_data / "Profile 1"), \
+                    mock.patch.object(session, "profile_dir", return_value=root / "lumine" / "browser-profile"), \
+                    mock.patch.object(session, "_endpoint_file", return_value=endpoint), \
+                    mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "_launch_persistent", launch), \
+                    mock.patch.object(session, "_discover_devtools_port", return_value=9333) as discover, \
+                    mock.patch.object(session, "_publish_endpoint") as publish:
+                result = await browser._start(asyncio.get_running_loop())
+                # Inside the patch: `spare_profile_dir` derives from
+                # `profile_dir()`, which is mocked to the temp root above.
+                spare = session.spare_profile_dir("brave")
+
+            self.assertIs(result, page)
+            self.assertEqual(launch.await_count, 2)
+            first, second = launch.await_args_list
+            # The personal profile is still the first choice, by name.
+            self.assertEqual(first.args[1], brave_data)
+            self.assertEqual(first.kwargs["profile_directory"], "Profile 1")
+            # ...and the spare is the second, with no `profile_directory`: a
+            # fresh user-data directory has only `Default` in it, and naming
+            # the personal profile here would quietly recreate the very
+            # directory we were just refused.
+            self.assertEqual(second.args[1], spare)
+            self.assertIsNone(second.kwargs["profile_directory"])
+            self.assertTrue(spare.is_dir())
+            # The endpoint published is still the *engine's* one, discovered
+            # from the directory that actually got the browser -- so a later
+            # process joins this window exactly as it would have joined the
+            # first choice. One browser, either way.
+            discover.assert_called_once_with(spare)
+            publish.assert_called_once_with(9333, endpoint)
+
+    async def test_a_failure_that_is_not_a_lock_is_not_given_a_spare(self):
+        """A missing executable or a broken profile is not a lock, and opening
+        a second window for it would bury the real cause one directory over."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            launch = mock.AsyncMock(side_effect=OSError("browser executable not found"))
+            factory, _ = self._fake_playwright()
+            browser = session._Browser()
+            with mock.patch("playwright.async_api.async_playwright", factory), \
+                    mock.patch.object(session, "_configured_browser_engine", return_value="chromium"), \
+                    mock.patch.object(session, "profile_dir", return_value=root / "browser-profile"), \
+                    mock.patch.object(session, "_endpoint_file", return_value=root / "browser-cdp.txt"), \
+                    mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "_launch_persistent", launch):
+                with self.assertRaises(ToolError) as caught:
+                    await browser._start(asyncio.get_running_loop())
+            self.assertEqual(launch.await_count, 1)
+            self.assertEqual(str(caught.exception), session.MSG_NOT_INSTALLED)
+
+    async def test_when_even_the_spare_is_held_the_refusal_is_the_honest_one(self):
+        """The fallback has a floor, and it is the sentence that used to fire
+        on the *first* lock: two held directories are two held directories."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            launch = mock.AsyncMock(side_effect=[self._locked(), self._locked()])
+            factory, _ = self._fake_playwright()
+            browser = session._Browser()
+            with mock.patch("playwright.async_api.async_playwright", factory), \
+                    mock.patch.object(session, "_configured_browser_engine", return_value="chromium"), \
+                    mock.patch.object(session, "profile_dir", return_value=root / "browser-profile"), \
+                    mock.patch.object(session, "_endpoint_file", return_value=root / "browser-cdp.txt"), \
+                    mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "_launch_persistent", launch):
+                with self.assertRaises(ToolError) as caught:
+                    await browser._start(asyncio.get_running_loop())
+            self.assertEqual(launch.await_count, 2)
+            self.assertEqual(str(caught.exception), session.MSG_PROFILE_LOCKED)
+
+
 class ScrollVerbTests(unittest.IsolatedAsyncioTestCase):
     """`web_control scroll`, and why it is a read rather than an act."""
 

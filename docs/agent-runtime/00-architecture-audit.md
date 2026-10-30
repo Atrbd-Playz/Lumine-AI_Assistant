@@ -178,3 +178,9 @@ roots, mirroring the attachment path check that already exists. Phase 6.
 ## Next
 
 [`01-capability-registry.md`](01-capability-registry.md) — approved, ready to build.
+
+The full phase sequence, dependency graph, and acceptance matrix are in
+[`10-consistency-audit.md`](10-consistency-audit.md) — including the
+reconciliation of the 2026-10-30 expansion proposal, from which this audit's
+class-resolution finding and the "one capability, one row" model carry through
+unchanged. No decision in that reconciliation amends this audit.

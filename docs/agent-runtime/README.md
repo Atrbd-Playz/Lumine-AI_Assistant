@@ -16,7 +16,16 @@ person says something.
 | Consumer | the user | the model, the planner, the gate |
 | Surface | island, tray, full UI, voice | none — invisible by design |
 
-**Status: Phase 0 complete. Phase 1 approved. Phases 2–10 specified, not approved.**
+**Status: Phase 0 complete. Phase 1 approved. Phases 1.5 and 2–11 specified,
+not approved** (1.5 = [capability discovery](07-capability-discovery.md); 11 =
+[coding delegate](08-coding-delegate.md); ADRs [0015](../decisions/0015-coding-delegate.md)
+and [0016](../decisions/0016-filesystem-write-scoped-worktrees.md) are **drafts**,
+status *Proposed — not accepted*).
+
+**Dependency graph, acceptance matrix, and the cross-document consistency
+audit:** [`10-consistency-audit.md`](10-consistency-audit.md). Every
+provisional threshold and every negative scope lives there or in the phase
+doc that owns it.
 
 ---
 
@@ -36,8 +45,19 @@ across time. The personality layer makes all of it feel like **Lumine**.
 The runtime is done when **all** of these are true. This is the checklist the
 phases are sized against, and it is deliberately not "the classes exist".
 
-- [ ] There is one owner of the agent lifecycle (`AgentRuntime`)
+- [ ] There is one owner of the agent lifecycle (`AgentRuntime`) — and
+      **cancellation has one work-scope owner plus a separate turn scope**;
+      acknowledgement and termination are reported separately
+- [ ] Tool context is loaded on demand — the always-sent set is the catalog, not every schema ([Phase 1.5](07-capability-discovery.md)); **the loader is session-owned, injected, event-driven, and never reads task state**
 - [ ] Capabilities have canonical dotted identities with **one** authority
+- [ ] Tasks carry an **embedded effect ledger** — every potentially-executed
+      effect persisted before invocation, `may_have_happened` surviving crashes
+- [ ] **Trace identity has one owner** (Phase 5): `task_id` per task,
+      `trace_id` per execution turn, `event_id` per event
+- [ ] **Retention is centralised, configurable, bounded** — uncertain and
+      actively reviewed evidence is never auto-deleted
+- [ ] Every phase doc carries a **canonical negative scope** section
+- [ ] Coding agents can be delegated repaired, worktree-isolated work — propose-only, human-merge-only ([Phase 11](08-coding-delegate.md), [ADR-0015](../decisions/0015-coding-delegate.md))
 - [ ] Tasks have persistent state that survives a worker restart
 - [ ] Complex requests are decomposed into dependency-ordered steps
 - [ ] Steps execute independently, with bounded concurrency
@@ -83,6 +103,7 @@ So the work is **consolidation, not construction**. Full findings:
 |---|---|---|---|
 | 0 | Architecture audit | ✅ done | no |
 | **1** | [`CapabilityRegistry` — canonical dotted ids](01-capability-registry.md) | **✅ approved** | **no** |
+| 1.5 | [Capability discovery — deferred tool exposure](07-capability-discovery.md) | specified, not approved, **consumes Phase 1** | partly |
 | 2 | [`AgentRuntime` façade](02-agent-runtime.md) | specified | no |
 | 3 | [Persistent task store](03-persistent-task-store.md) | specified | **yes** — survives restart |
 | 4 | [`RecoveryEngine`](04-recovery-and-events.md#phase-4--recoveryengine) | specified | partly |
@@ -91,11 +112,23 @@ So the work is **consolidation, not construction**. Full findings:
 | 7 | [Selective context retrieval](05-capabilities-and-context.md#phase-7--selective-context-retrieval) | specified | partly |
 | 8 | [LLM planner fallback](05-capabilities-and-context.md#phase-8--llm-planner-fallback) | specified | partly |
 | 9 | [Research worker](06-research-and-proactive.md#phase-9--researchworker) | specified | **yes** |
-| 10 | [Proactive Lumine](06-research-and-proactive.md#phase-10--proactive-lumine-deferred) | deferred | **yes** |
+| 10 | [Proactive Lumine](06-research-and-proactive.md#phase-10--proactive-lumine) | deferred | **yes** |
+| 11 | [Coding delegate](08-coding-delegate.md) | specified, not approved — **ADR 0015 required first** | **yes** |
 
 **Phases 1, 2 and 5 add no user-visible capability.** That ordering is the point:
 the foundation is made explicit before anything is built on top of it. A registry
 nothing reads is not progress.
+
+> **Beyond the phases:** the 2026-10-30 expansion proposal (context manager,
+> unified cancellation, idempotency, authority model, observability, replay and
+> friends) is mapped into these phases item by item in
+> [`09-expansion-reconciliation.md`](09-expansion-reconciliation.md) — most of it
+> extends what is already built, none of it authorises work. The twelve
+> decisions reconciling it are resolved in
+> [`10-consistency-audit.md`](10-consistency-audit.md), and the two ADRs that
+> amend recorded positions are filed there as drafts:
+> [0015](../decisions/0015-coding-delegate.md),
+> [0016](../decisions/0016-filesystem-write-scoped-worktrees.md).
 
 ---
 
@@ -120,6 +153,14 @@ nothing reads is not progress.
 9. **Never log secrets, keys, tokens, or message bodies.**
 10. **Docstrings carry the *why*** — usually because the obvious version was tried
     and measured first. New modules match the house style.
+11. **Every phase doc carries `## Negative scope — must not implement`** —
+    adjacent-phase features named by number and name, so scope creep has to
+    walk past a list. The canon — heading, assembly rule, per-phase index —
+    lives in
+    [`10-consistency-audit.md §10`](10-consistency-audit.md#10-the-negative-scope-canon).
+12. **Numeric thresholds are provisional until proven** — [§2](10-consistency-audit.md#2-phase-acceptance-matrix)
+    of the consistency audit records the definition and the feasibility note a
+    number needs before it becomes a gate.
 
 ---
 
@@ -135,12 +176,14 @@ Not a list of verbs. A list of **situations**, with the phase that delivers each
 | "Send this WhatsApp message." — draft on your screen, ask, send, verify | ✅ now |
 | "Delete this file." — **refused, because the capability does not exist** | ✅ now, by design |
 | …and the task survives a worker restart | Phase 3 |
+| …and the schemas she carries stay small, whatever she can do — the catalog is always present, the details load only when needed | [Phase 1.5](07-capability-discovery.md) |
 | …and a browser failure re-observes and recovers instead of lying | Phase 4 |
 | …and a long research runs without filling the conversation | Phase 9 |
 | "Read the notes file I keep in Documents." | Phase 6 |
 | "Continue where we left off." — task and preference context, selectively | Phase 7 |
 | "Find something on my PC I half-remember." — a request the scenario table cannot express | Phase 8 |
 | "Research this and tell me when you're done." | Phase 9 |
+| "Add a feature to yourself, test it, and tell me when it's ready." — spec read back, a coding agent works, she reports what *may* be merged | [Phase 11](08-coding-delegate.md) |
 | "Hey Lumine, what's the weather?" — one interaction, window never opened | [companion Phase 1](../../ROADMAP.md#phase-1--always-on-wake-runtime-first-vertical-slice) |
 
 The last row is not this track, and that is the point: **the runtime is built so
