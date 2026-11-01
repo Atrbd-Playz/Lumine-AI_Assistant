@@ -814,6 +814,73 @@ def brave_profile_directory(
     return candidate
 
 
+def profile_in_use(directory: Path) -> bool:
+    """Whether a running Chromium already owns *this* user-data directory.
+
+    This is asked **before** a launch, and only on Windows, because there the
+    lock is invisible to the launch itself: a second ``brave.exe`` started
+    against a directory a running Brave owns hands its command line to that
+    process and exits **0**. Playwright therefore sees a launch that succeeded
+    and then spends its discovery window waiting for a DevTools port that will
+    never appear -- and `_profile_locked` never sees Chromium's "user data
+    directory is already in use" sentence, because no second browser started to
+    print it. Measured on this machine with Brave open on another profile: the
+    child exited immediately and the report was a timeout, not a lock.
+
+    The lock itself is the one `whatsapp_probe._lock_held` reads, asked the way
+    Windows answers it: Chromium holds ``lockfile`` with an exclusive share
+    mode, so deleting it fails with a sharing violation and trying the delete
+    *is* the test. A stale lock -- the usual state after a crash -- simply
+    deletes, and cleaning it up here means a crash does not cost the profile.
+
+    POSIX is deliberately not pre-checked. There the lock is a symlink whose
+    presence says nothing about whether the process behind it is alive, so a
+    stale one would push every launch onto the spare; Chromium reports a real
+    collision through the launch error that `_profile_locked` already reads.
+    """
+    if os.name != "nt":
+        return False
+    if not directory.is_dir():
+        return False
+    for name in ("lockfile", "SingletonLock"):
+        candidate = directory / name
+        if not candidate.exists():
+            continue
+        try:
+            os.remove(candidate)
+        except OSError:
+            return True
+    return False
+
+
+def settle_profile_lock(directory: Path) -> bool:
+    """Watch a held directory for a lock that is *on its way out*. True when free.
+
+    `profile_in_use` answers the question "is this held *now*", and that is the
+    right question before a launch but the wrong one in the one case this code
+    actually creates for itself: `release()` closes the browser and the next
+    `ensure()` arrives while Chromium is still letting go of the directory. The
+    pre-check cannot tell those two states apart -- a lock being released and a
+    lock somebody holds look identical -- and the cost of guessing wrongly is
+    the wrong way round: a lock on its way out would send the very next window
+    to the spare profile, which is *not signed in*, and the session's endpoint
+    would then point at that window for the rest of the conversation.
+
+    So the pre-check gets the same grace `_launch_persistent` gives Chromium's
+    own error message: a bounded few checks spaced by `_LAUNCH_RETRY_SECONDS`.
+    A lock somebody genuinely holds does not clear, and the spare is still the
+    answer one and a half seconds later -- that delay is the whole cost, and it
+    is paid once, on the first browser request of a session, only when a window
+    is already open on the profile Lumine wanted.
+    """
+    for attempt in range(_LAUNCH_ATTEMPTS):
+        if not profile_in_use(directory):
+            return True
+        if attempt + 1 < _LAUNCH_ATTEMPTS:
+            time.sleep(_LAUNCH_RETRY_SECONDS)
+    return False
+
+
 def brave_executable() -> Path | None:
     """Find the installed Brave executable."""
     override = (os.getenv(BRAVE_EXECUTABLE_VAR, "") or "").strip()
@@ -852,7 +919,7 @@ def _browser_engine_preference(
     *,
     brave_available: bool,
 ) -> str:
-    """Resolve the saved personal-browser choice, then the environment."""
+    """Resolve the saved browser-engine choice, then the environment."""
     desktop = (document or {}).get("desktop")
     browsers = desktop.get("browsers") if isinstance(desktop, Mapping) else None
     saved = browsers.get("personalEngine") if isinstance(browsers, Mapping) else None
@@ -1715,6 +1782,13 @@ class _Browser:
             else:
                 await route.continue_()
             return
+        if scheme in ("brave", "chrome"):
+            parts = urlsplit(url)
+            if request.is_navigation_request() and parts.netloc == "newtab":
+                await route.continue_()
+            else:
+                await route.abort()
+            return
         ok, _why = await self.allowed(url)
         if ok:
             await route.continue_()
@@ -2040,30 +2114,64 @@ class _Browser:
                 # The profile we launch *into*, which is not always the one we
                 # asked for. See `spare_profile_dir` for why the second exists.
                 launched_on = directory
-                try:
-                    context = await _launch_persistent(
-                        playwright,
-                        directory,
-                        executable_path=str(brave_path) if brave_path else None,
-                        personal_engine=selected_engine,
-                        profile_directory=profile_directory,
+                spare = spare_profile_dir(selected_engine)
+
+                # Ask before launching, because Windows does not answer through
+                # the error. A second `brave.exe` against a directory a running
+                # Brave owns hands off and exits **0**, so Playwright waits out
+                # its full discovery timeout and reports a launch that never
+                # happened. See `profile_in_use`.
+                #
+                # A held directory is watched for a moment first, because the
+                # lock this code itself creates -- `release()` then `ensure()`
+                # on the next turn -- is on its way out and would otherwise be
+                # indistinguishable from one the user's own Brave holds. See
+                # `settle_profile_lock`, which sleeps between its checks and is
+                # therefore run off this loop -- the same loop as the room's
+                # audio, which a slow lock must not stall.
+                held = profile_in_use(directory)
+                if held and await asyncio.to_thread(settle_profile_lock, directory):
+                    # Worth a line: the wait is short but visible, and without
+                    # this it is indistinguishable from a slow launch.
+                    logger.info(
+                        "[Browser] %s was being released; using it", directory
                     )
-                except Exception as exc:
-                    if not _profile_locked(str(exc)):
-                        raise
-                    # Somebody is holding the profile and is not publishing an
-                    # endpoint to join -- usually the user's own browser window
-                    # on it, which no protocol can attach to. The lock is a fact
-                    # about *this* directory and says nothing about any other,
-                    # so the window opens beside it rather than not at all.
-                    #
-                    # This used to be the refusal `MSG_PROFILE_LOCKED` describes,
-                    # and it was the wrong answer to a companion: the user had
-                    # Brave open on the 'Lumine' profile, asked for a YouTube
-                    # search, and was told to go and close their own browser
-                    # first. The profile is the right *first* choice because it
-                    # is the one already signed in; it is no longer the only one.
-                    launched_on = spare_profile_dir(selected_engine)
+                    held = False
+                if held:
+                    logger.info(
+                        "[Browser] %s is held by a running browser; opening Lumine's "
+                        "own window at %s instead",
+                        directory,
+                        spare,
+                    )
+                else:
+                    try:
+                        context = await _launch_persistent(
+                            playwright,
+                            directory,
+                            executable_path=str(brave_path) if brave_path else None,
+                            personal_engine=selected_engine,
+                            profile_directory=profile_directory,
+                        )
+                    except Exception as exc:
+                        if not _profile_locked(str(exc)):
+                            raise
+                        # Somebody is holding the profile and is not publishing an
+                        # endpoint to join -- usually the user's own browser window
+                        # on it, which no protocol can attach to. The lock is a fact
+                        # about *this* directory and says nothing about any other,
+                        # so the window opens beside it rather than not at all.
+                        #
+                        # This used to be the refusal `MSG_PROFILE_LOCKED` describes,
+                        # and it was the wrong answer to a companion: the user had
+                        # Brave open on the 'Lumine' profile, asked for a YouTube
+                        # search, and was told to go and close their own browser
+                        # first. The profile is the right *first* choice because it
+                        # is the one already signed in; it is no longer the only one.
+                        context = None
+
+                if context is None:
+                    launched_on = spare
                     try:
                         launched_on.mkdir(parents=True, exist_ok=True)
                     except OSError as mkdir_exc:
@@ -2071,10 +2179,13 @@ class _Browser:
                             f"I can't use {clip(str(launched_on), 60)} for a spare "
                             f"browser profile: {clip(str(mkdir_exc), 80)}"
                         ) from None
+                    if profile_in_use(launched_on) and not await asyncio.to_thread(
+                        settle_profile_lock, launched_on
+                    ):
+                        raise ToolError(MSG_PROFILE_LOCKED)
                     logger.info(
-                        "[Browser] %s is held by another window; opened a separate "
-                        "%s window on Lumine's own profile at %s",
-                        directory,
+                        "[Browser] opened a separate %s window on Lumine's own "
+                        "profile at %s",
                         selected_engine,
                         launched_on,
                     )
@@ -2108,6 +2219,8 @@ class _Browser:
                     _publish_endpoint(port, endpoint_path)
                     logger.info("[Browser] published a DevTools endpoint on %s", port)
         except Exception as exc:  # noqa: BLE001 -- any launch failure becomes a sentence
+            if isinstance(exc, ToolError):
+                raise
             # Detach, do not shut down, when we joined somebody else's browser.
             #
             # `playwright.stop()` on a CDP connection closes the *remote* browser.

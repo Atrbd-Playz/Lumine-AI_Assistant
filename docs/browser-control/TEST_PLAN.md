@@ -69,8 +69,12 @@ verified; uninterrupted media playback was not an acceptance check.
 
 The browser lifecycle tests cover saved/environment engine precedence, automatic
 Brave discovery, clear refusal when explicitly selected Brave is unavailable,
-resolving the native profile named `Lumine`, and passing its on-disk profile
-directory into the launcher. Endpoint files are isolated by engine and owner
+resolving the native profile named `Lumine`, passing its on-disk profile
+directory into the launcher, and falling back to a spare user-data directory
+when that profile is held. A held directory is re-checked for about a second and
+a half before that fallback, so a lock Chromium is still releasing keeps the
+personal profile; a lock somebody holds does not clear and the spare is used.
+Endpoint files are isolated by engine and owner
 teardown only removes the matching endpoint. They also assert the Brave launch restores
 component updates, background networking, and extensions, while Chromium keeps
 Playwright's default arguments. The media DNS test exercises two consecutive
@@ -82,6 +86,160 @@ site, asking when a name is ambiguous, and giving a useful not-found response.
 These are local tests: ad delivery and uninterrupted playback on YouTube are not
 asserted, and Brave Shields cannot guarantee either. Lumine no longer ships or
 applies a custom ad filter; Brave Shields handles ad blocking.
+
+## Background media acceptance — measured on a retired profile
+
+These runs were made against a separate, Lumine-owned Brave profile that the
+product no longer uses; browser tools now open the personal Brave `Lumine`
+profile, where playback and ad blocking are reported working. Keep the table as
+a manual checklist for background playback rather than as a description of a
+shipped failure. The evidence below is retained because it records what was
+measured, and because a future profile change should be re-tested against it.
+
+| # | Scenario | Procedure and pass condition |
+|---|---|---|
+| 1 | Foreground, video and audio | Play for at least 10 minutes with the browser visible. Playback time advances for the full interval without an unintentional pause or error. |
+| 2 | Minimized | Repeat while the browser is minimized for 10 minutes; restore it and record whether media time advanced continuously. |
+| 3 | Occluded | Repeat with another application fully covering the browser for 10 minutes; return and record media time and playback state. |
+| 4 | Tab switch | Play in one tab, switch to another tab for 10 minutes, then inspect the original tab. |
+| 5 | Multiple tabs | Keep several tabs open while the video plays for 10 minutes; verify the video tab was not discarded and media time advanced. |
+| 6 | Unrelated automation | Run a bounded browser action in a different tab while the video plays; verify the original media remains uninterrupted. |
+| 7 | CDP reconnect | Detach and reconnect the automation client without closing the browser; verify playback and media time continue. |
+| 8 | Recovery | Interrupt the automation connection, recover it, and verify there is no duplicate video tab and no playback restart. |
+| 9 | Browser restart | Close and reopen the dedicated browser for at least three sessions; record each playback duration and verify no stale endpoint prevents startup. |
+| 10 | Persistent profile | Sign in in the dedicated profile, restart the browser, then verify the sign-in remains and the video plays for 10 minutes. |
+
+Run the foreground/minimized/occluded cases against personal Brave, the prior
+Lumine runtime when available, and the independent Lumine profile. Test an
+audio-focused YouTube session as well as a video session. On Windows, record
+Brave version, GPU/hardware-acceleration setting, codec shown by YouTube Stats
+for nerds, power mode, and any relevant Media Foundation/GPU errors. Keep the
+network constant and record the time of any network interruption. Until these
+actual-browser runs are recorded, background-playback compatibility is **not
+verified**; the existing DNS and launch-argument unit tests are not evidence of
+10-minute playback.
+
+### Live playback investigation — 2026-10-30
+
+One foreground attempt was made in Lumine's independent Brave profile
+(Brave `156.0.8078.74`), not personal Brave. The public, audio-and-video
+`1 A.M Study Session` video loaded and advanced briefly (`readyState=4`,
+854×480), then failed within the first minute. The failure state was
+`paused=true`, `currentTime=0`, `duration=NaN`, `readyState=0`,
+`networkState=0`, no `MediaError`, `visibilityState=visible`, and
+`wasDiscarded=false`; the page showed YouTube's generic playback error. The
+Brave process and local CDP endpoint remained available. An explicit Play-button
+retry did not recover playback.
+
+A reload with CDP network events enabled recorded repeated
+`googlevideo.com` `/videoplayback` Fetch failures as
+`net::ERR_BLOCKED_BY_CLIENT`; no HTTP error response or DNS-resolution failure
+was observed. YouTube logging/advertising requests were also blocked by the
+client. This is browser-side request blocking, strongly consistent with Brave's
+default Shields in the fresh dedicated profile; it is not evidence of a DNS,
+decoder, tab-discard, visibility, or browser-crash failure. The exact internal
+filter responsible has not been isolated, so the finding is not attributed to
+Shields with certainty in this initial sample; no security setting was changed
+for it. The unrelated blank-tab path is a separate CDP/startup lifecycle issue.
+
+### Site-only Shields comparison — 2026-10-30
+
+A second foreground run used the public `Big Buck Bunny 60fps 4K` video in the
+same dedicated Brave profile. YouTube-only Shields was set to **Allow all
+trackers & ads** for this comparison; no global Shields setting was changed.
+Playback advanced to `currentTime=32.5` with `readyState=4` and an 854×480
+video. At 45.2 seconds the video had stopped: `paused=true`, `currentTime=0`,
+`duration=NaN`, `readyState=0`, `networkState=0`, no `MediaError`, visible
+document, and `wasDiscarded=false`. YouTube showed its generic playback error.
+The page was observed passively for the full 90 seconds; playback did not
+recover, and no play/reload action was issued.
+
+The sanitized CDP record contained six `googlevideo.com` `/videoplayback`
+Fetch responses with HTTP 403. The browser process and CDP endpoint remained
+healthy. This differs from the earlier `ERR_BLOCKED_BY_CLIENT` sample: allowing
+YouTube trackers and ads did **not** make playback reliable, and this result
+does not establish that Shields is the sole cause. It does rule out a
+10-minute pass and leaves the server/CDN rejection unexplained. After the run,
+the dedicated profile's YouTube setting was restored to **Block trackers &
+ads** and verified in the Shields panel; personal Brave and global settings
+were not changed.
+
+To isolate the client-blocked requests, the exact same `aqz-KE-bpKQ` video was
+then replayed in the same foreground window with standard YouTube Shields
+restored. It advanced to `currentTime=31.2` and failed by 45.1 seconds with the
+same paused/empty media state. Six `googlevideo.com` `/videoplayback` Fetch
+requests failed as `net::ERR_BLOCKED_BY_CLIENT` (`blockedReason=other`); no
+HTTP error response was received. Comparing these runs shows that default
+Shields filtering causes the client-side block in this path. The YouTube-only
+allow choice removes that local block, but the same video then receives HTTP
+403 from `googlevideo.com` and still fails. Shields is therefore a confirmed
+contributor, not the complete root cause and not a sufficient fix. Standard
+YouTube Shields is restored in the dedicated profile.
+
+Additional evidence separates this from CDP. The same video was navigated to
+through Brave's ordinary address bar, then left running for 60 seconds with no
+CDP client attached. With standard Shields selected, the media had already
+failed to `paused=true`, `currentTime=0`, `readyState=0`, `networkState=0`,
+no `MediaError`, visible document, and `wasDiscarded=false`; YouTube showed
+the generic playback error. Repeating the normal-UI test with the YouTube-only
+allow choice produced the same failure state within 60 seconds. CDP was attached
+only after each observation. The dedicated site's standard Shields setting was
+then restored and verified in the Shields panel. This rules out CDP attachment
+as a necessary cause of the interruption; it does not identify why the CDN
+rejects the request.
+
+On a further allow-mode run, one `rr5---sn-t0a7lnee.googlevideo.com` media host
+failed with `net::ERR_NAME_NOT_RESOLVED`. A lookup for that exact host failed
+through the machine resolver and through both 1.1.1.1 and 8.8.8.8, while other
+sampled `googlevideo.com` hosts resolved. A separate allow-mode run sent
+`/videoplayback` requests to `rr5---sn-ntqe6n7r.googlevideo.com` and received
+HTTP 403 (`text/plain`, server `gvs 1.0`). The response body was not captured,
+so no more specific denial reason is claimed. These are distinct, observed
+CDN/network failures and neither supports a profile-isolation or decoder root
+cause.
+
+The latest instrumented allow-mode run again advanced briefly (`currentTime`
+30.7 seconds, `readyState=4`), then stopped by 45.1 seconds with
+`paused=true`, `currentTime=0`, `readyState=0`, `networkState=0`, no
+`MediaError`, a visible page, and `wasDiscarded=false`; YouTube showed its
+generic player error. The browser process and CDP endpoint were still healthy.
+Sanitized media responses were HTTP 403 with `text/plain` from `gvs 1.0`.
+No response body or signed URL was retained. An expiry-delta value from that
+diagnostic was implausible and is not used as evidence. Afterward, the dedicated
+profile's Shields panel reported “trackers, ads, and more blocked” and offered
+“Allow all trackers & ads” as an action, confirming the site was no longer in
+the temporary allow mode. No global setting or Personal Brave setting changed.
+
+### Personal Brave baseline — 2026-10-30
+
+Personal Brave was not running, so a normal, non-debugging `--new-window`
+launch opened only the public `Big Buck Bunny` test video in its existing
+personal profile. No remote-debugging flag was used, no personal setting was
+changed, and no existing personal tab was inspected. Screenshots of the test
+window's video area at 35 and 65 seconds both showed YouTube's generic
+“Something went wrong” screen. This is a reproduced visible failure, but the
+normal-profile run did not expose a trustworthy media-time reading; it is not a
+measured 35-second playback duration or a 10-minute test. The test window was
+closed afterward. This makes profile isolation alone an unlikely explanation
+for the matching dedicated-profile failure, but does not identify whether
+Personal Brave's own Shields or extensions contributed.
+
+This is a **reproduced playback failure**, not a passing playback test. The
+10-minute foreground/minimized/occluded runs, tab-switch and CDP-reconnect
+scenarios, audio-only media, Personal Brave playback-time measurements, and the
+previous Lumine runtime remain untested. In particular, do not infer background
+playback reliability from the initial few seconds of successful decoding or
+from a live process/CDP endpoint.
+
+At an interruption, record the video `paused` state, `currentTime`,
+`readyState`, `networkState`, and `MediaError` code/message; page
+`visibilityState` and `document.wasDiscarded`; recent `Page.lifecycleEvent`
+names; console error categories; failed-request host/resource type/error (never
+the full URL or query string); Brave process presence; and whether a local CDP
+round-trip succeeds. Record whether the user intentionally paused before
+classifying a paused video. Capture this before restoring or replaying anything.
+Treat a connected CDP socket as control-plane evidence only, not proof that
+playback continued.
 
 ## Phase 1 — engine completion
 

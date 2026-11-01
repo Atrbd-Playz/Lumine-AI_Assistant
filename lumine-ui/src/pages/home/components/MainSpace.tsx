@@ -111,6 +111,8 @@ type MainSpaceProps = {
    * macOS and actively misleading everywhere else.
    */
   onOpenPalette: () => void;
+  onOpenBrowser: () => void;
+  browserOpening: boolean;
   paletteHint: string;
   /**
    * The audio level subscription, forwarded to the avatar engine.
@@ -179,6 +181,8 @@ export function MainSpace({
   glassMode,
   onGlassModeToggle,
   onOpenPalette,
+  onOpenBrowser,
+  browserOpening,
   paletteHint,
   subscribeEnergy,
   panel,
@@ -267,6 +271,18 @@ export function MainSpace({
               <Icon name="search" size={15} />
               <span>Search</span>
               <kbd>{paletteHint}</kbd>
+            </button>
+            <button
+              type="button"
+              className="open-browser-button"
+              onClick={onOpenBrowser}
+              disabled={browserOpening}
+              aria-busy={browserOpening}
+              aria-label={browserOpening ? "Opening Lumine's browser" : "Open Lumine's browser"}
+              title={browserOpening ? "Opening browser…" : "Open browser"}
+            >
+              <Icon name="globe" size={16} />
+              <span>{browserOpening ? "Opening…" : "Open browser"}</span>
             </button>
             <button
               type="button"

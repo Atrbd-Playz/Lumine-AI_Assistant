@@ -99,7 +99,7 @@ export function BrowserPage() {
         <Field
           label="Browser engine"
           help="Brave uses its existing profile named Lumine, including its saved sign-ins, settings, and extensions."
-          hint="Close Brave before Lumine starts it. Brave does not allow the same profile to be used by two running browser processes."
+          hint="If Brave is already open, Lumine opens a separate window on her own profile. That window is not signed in."
           className="mt-3"
         >
           <Dropdown

@@ -397,6 +397,30 @@ class ExplicitBrowserEngineTests(unittest.IsolatedAsyncioTestCase):
                 await browser._start(asyncio.get_running_loop())
 
 
+class BraveUserDataDirTests(unittest.TestCase):
+    def test_the_native_user_data_directory_is_used_unless_overridden(self):
+        with mock.patch.dict(os.environ, {session.BRAVE_USER_DATA_DIR_VAR: ""}), \
+                mock.patch.object(session.sys, "platform", "win32"), \
+                mock.patch.dict(
+                    os.environ,
+                    {"LOCALAPPDATA": "C:/Users/example/AppData/Local"},
+                ):
+            self.assertEqual(
+                session.brave_user_data_dir(),
+                Path("C:/Users/example/AppData/Local/BraveSoftware/Brave-Browser/User Data"),
+            )
+
+    def test_an_explicit_brave_user_data_directory_is_honored(self):
+        with mock.patch.dict(
+            os.environ,
+            {session.BRAVE_USER_DATA_DIR_VAR: "C:/Lumine/Brave"},
+        ):
+            self.assertEqual(
+                session.brave_user_data_dir(),
+                Path("C:/Lumine/Brave"),
+            )
+
+
 class BraveProfileDirectoryTests(unittest.TestCase):
     def test_resolves_the_profile_display_name_to_its_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -451,6 +475,85 @@ class BraveProfileDirectoryTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "directory is missing"):
                 session.brave_profile_directory(root)
+
+
+class ProfileInUseTests(unittest.TestCase):
+    """The pre-launch question Windows does not answer through the launch."""
+
+    def test_a_directory_with_no_lock_file_is_free(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertFalse(session.profile_in_use(Path(directory)))
+
+    def test_a_stale_lock_file_is_removed_and_the_profile_is_free(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / "lockfile"
+            lock.write_text("", encoding="utf-8")
+            with mock.patch.object(session.os, "name", "nt"):
+                self.assertFalse(session.profile_in_use(Path(directory)))
+            self.assertFalse(lock.exists())
+
+    def test_a_held_lock_file_is_reported_as_in_use(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / "lockfile"
+            lock.write_text("", encoding="utf-8")
+            with mock.patch.object(session.os, "name", "nt"), \
+                    mock.patch.object(session.os, "remove", side_effect=OSError("sharing violation")):
+                self.assertTrue(session.profile_in_use(Path(directory)))
+
+    def test_posix_is_not_pre_checked(self):
+        """The POSIX singleton lock outlives a crashed browser, so presence is
+        not evidence; the launch error is, and `_profile_locked` reads it."""
+        with tempfile.TemporaryDirectory() as directory:
+            lock = Path(directory) / "SingletonLock"
+            lock.write_text("", encoding="utf-8")
+            with mock.patch.object(session.os, "name", "posix"):
+                self.assertFalse(session.profile_in_use(Path(directory)))
+            self.assertTrue(lock.exists())
+
+
+class SettleProfileLockTests(unittest.TestCase):
+    """A lock that is *being* released looks exactly like one somebody holds.
+
+    The pre-check asks "is this held now", which is the right question before a
+    launch -- but `release()` then `ensure()` on the next turn is a lock this
+    code created and is already letting go of, and sending that window to the
+    unsigned-in spare for it is the worse mistake of the two.
+    """
+
+    def test_a_free_directory_is_not_waited_on(self):
+        with mock.patch.object(session, "profile_in_use", return_value=False) as in_use, \
+                mock.patch.object(session.time, "sleep") as sleep:
+            self.assertTrue(session.settle_profile_lock(Path("C:/profile")))
+        self.assertEqual(in_use.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_a_lock_that_is_being_released_is_given_a_moment(self):
+        with mock.patch.object(
+            session, "profile_in_use", side_effect=[True, True, False]
+        ) as in_use, \
+                mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0.5), \
+                mock.patch.object(session.time, "sleep") as sleep:
+            self.assertTrue(session.settle_profile_lock(Path("C:/profile")))
+        self.assertEqual(in_use.call_count, 3)
+        self.assertEqual([entry.args[0] for entry in sleep.call_args_list], [0.5, 0.5])
+
+    def test_a_lock_somebody_holds_is_not_waited_on_forever(self):
+        with mock.patch.object(session, "profile_in_use", return_value=True) as in_use, \
+                mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
+                mock.patch.object(session.time, "sleep"):
+            self.assertFalse(session.settle_profile_lock(Path("C:/profile")))
+        self.assertEqual(in_use.call_count, session._LAUNCH_ATTEMPTS)
+
+    def test_the_settle_window_stays_under_two_seconds(self):
+        """The whole cost of guessing "hold on a moment" instead of "spare".
+
+        A held profile the user is genuinely using pays this on the first
+        browser request of a session, so it has to stay short enough not to
+        read as a hang -- and it shares the budget `_launch_persistent` already
+        spends on Chromium's own lock message.
+        """
+        window = (session._LAUNCH_ATTEMPTS - 1) * session._LAUNCH_RETRY_SECONDS
+        self.assertLess(window, 2.0)
 
 
 class LaunchPersistentTests(unittest.IsolatedAsyncioTestCase):
@@ -642,6 +745,7 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(session, "profile_dir", return_value=root / "lumine" / "browser-profile"), \
                     mock.patch.object(session, "_endpoint_file", return_value=endpoint), \
                     mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "profile_in_use", return_value=False), \
                     mock.patch.object(session, "_launch_persistent", launch), \
                     mock.patch.object(session, "_discover_devtools_port", return_value=9333) as discover, \
                     mock.patch.object(session, "_publish_endpoint") as publish:
@@ -670,6 +774,100 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
             discover.assert_called_once_with(spare)
             publish.assert_called_once_with(9333, endpoint)
 
+    async def test_a_profile_already_held_never_attempts_to_launch_on_it(self):
+        """Windows hands a second launch off and exits 0, so the check is
+        *before* the launch and the first attempt is already the spare."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            brave_data = root / "User Data"
+            (brave_data / "Profile 1").mkdir(parents=True)
+            context, page = self._fake_context()
+            launch = mock.AsyncMock(return_value=context)
+            factory, _ = self._fake_playwright()
+            endpoint = root / "browser-cdp-brave.txt"
+            browser = session._Browser()
+            with mock.patch("playwright.async_api.async_playwright", factory), \
+                    mock.patch.object(session, "_configured_browser_engine", return_value="brave"), \
+                    mock.patch.object(session, "brave_executable", return_value=root / "brave.exe"), \
+                    mock.patch.object(session, "brave_user_data_dir", return_value=brave_data), \
+                    mock.patch.object(session, "brave_profile_directory", return_value=brave_data / "Profile 1"), \
+                    mock.patch.object(session, "profile_dir", return_value=root / "lumine" / "browser-profile"), \
+                    mock.patch.object(session, "_endpoint_file", return_value=endpoint), \
+                    mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
+                    mock.patch.object(
+                        session,
+                        "profile_in_use",
+                        side_effect=lambda directory: Path(directory) == brave_data,
+                    ), \
+                    mock.patch.object(session, "_launch_persistent", launch), \
+                    mock.patch.object(session, "_discover_devtools_port", return_value=9333), \
+                    mock.patch.object(session, "_publish_endpoint"):
+                result = await browser._start(asyncio.get_running_loop())
+                spare = session.spare_profile_dir("brave")
+
+            self.assertIs(result, page)
+            self.assertEqual(launch.await_count, 1)
+            self.assertEqual(launch.await_args.args[1], spare)
+            self.assertIsNone(launch.await_args.kwargs["profile_directory"])
+
+    async def test_a_lock_that_is_being_released_keeps_the_personal_profile(self):
+        """`release()` then `ensure()`: the very next window must not be the
+        unsigned-in spare because Chromium had not finished letting go."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            brave_data = root / "User Data"
+            (brave_data / "Profile 1").mkdir(parents=True)
+            context, page = self._fake_context()
+            launch = mock.AsyncMock(return_value=context)
+            factory, _ = self._fake_playwright()
+            endpoint = root / "browser-cdp-brave.txt"
+            browser = session._Browser()
+            with mock.patch("playwright.async_api.async_playwright", factory), \
+                    mock.patch.object(session, "_configured_browser_engine", return_value="brave"), \
+                    mock.patch.object(session, "brave_executable", return_value=root / "brave.exe"), \
+                    mock.patch.object(session, "brave_user_data_dir", return_value=brave_data), \
+                    mock.patch.object(session, "brave_profile_directory", return_value=brave_data / "Profile 1"), \
+                    mock.patch.object(session, "profile_dir", return_value=root / "lumine" / "browser-profile"), \
+                    mock.patch.object(session, "_endpoint_file", return_value=endpoint), \
+                    mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
+                    mock.patch.object(session, "profile_in_use", side_effect=[True, False]), \
+                    mock.patch.object(session, "_launch_persistent", launch), \
+                    mock.patch.object(session, "_discover_devtools_port", return_value=9333) as discover, \
+                    mock.patch.object(session, "_publish_endpoint"):
+                result = await browser._start(asyncio.get_running_loop())
+
+            self.assertIs(result, page)
+            self.assertEqual(launch.await_count, 1)
+            self.assertEqual(launch.await_args.args[1], brave_data)
+            self.assertEqual(launch.await_args.kwargs["profile_directory"], "Profile 1")
+            discover.assert_called_once_with(brave_data)
+
+    async def test_both_directories_held_refuses_before_waiting_on_a_timeout(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            brave_data = root / "User Data"
+            (brave_data / "Profile 1").mkdir(parents=True)
+            factory, _ = self._fake_playwright()
+            browser = session._Browser()
+            with mock.patch("playwright.async_api.async_playwright", factory), \
+                    mock.patch.object(session, "_configured_browser_engine", return_value="brave"), \
+                    mock.patch.object(session, "brave_executable", return_value=root / "brave.exe"), \
+                    mock.patch.object(session, "brave_user_data_dir", return_value=brave_data), \
+                    mock.patch.object(session, "brave_profile_directory", return_value=brave_data / "Profile 1"), \
+                    mock.patch.object(session, "profile_dir", return_value=root / "lumine" / "browser-profile"), \
+                    mock.patch.object(session, "_endpoint_file", return_value=root / "browser-cdp-brave.txt"), \
+                    mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
+                    mock.patch.object(session, "profile_in_use", return_value=True), \
+                    mock.patch.object(session, "_launch_persistent") as launch:
+                with self.assertRaises(ToolError) as caught:
+                    await browser._start(asyncio.get_running_loop())
+
+            self.assertEqual(str(caught.exception), session.MSG_PROFILE_LOCKED)
+            launch.assert_not_called()
+
     async def test_a_failure_that_is_not_a_lock_is_not_given_a_spare(self):
         """A missing executable or a broken profile is not a lock, and opening
         a second window for it would bury the real cause one directory over."""
@@ -683,6 +881,7 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(session, "profile_dir", return_value=root / "browser-profile"), \
                     mock.patch.object(session, "_endpoint_file", return_value=root / "browser-cdp.txt"), \
                     mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "profile_in_use", return_value=False), \
                     mock.patch.object(session, "_launch_persistent", launch):
                 with self.assertRaises(ToolError) as caught:
                     await browser._start(asyncio.get_running_loop())
@@ -702,6 +901,7 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(session, "profile_dir", return_value=root / "browser-profile"), \
                     mock.patch.object(session, "_endpoint_file", return_value=root / "browser-cdp.txt"), \
                     mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "profile_in_use", return_value=False), \
                     mock.patch.object(session, "_launch_persistent", launch):
                 with self.assertRaises(ToolError) as caught:
                     await browser._start(asyncio.get_running_loop())

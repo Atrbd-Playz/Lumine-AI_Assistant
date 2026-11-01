@@ -49,16 +49,31 @@ browser launches at 960×680 with a dark appearance and background media
 suspension disabled; these launch defaults apply when Lumine owns a new browser,
 not when it joins an already-running Chromium process.
 
-The personal browser engine is selected in Settings → Browser (or with
+The browser engine is selected in Settings → Browser (or with
 `LUMINE_BROWSER_ENGINE`): `auto` prefers an installed Brave and otherwise uses
 Playwright Chromium; `brave` and `chromium` explicitly select one. Brave uses
 the existing native profile named `Lumine`, resolved from Brave's `Local State`
-metadata, so its cookies, settings, and extensions are shared. Brave must be
-closed before Lumine starts that profile; Chromium permits only one running
-process per user-data directory. A custom Brave executable may be supplied with
-`LUMINE_BRAVE_EXECUTABLE`; a non-standard user-data directory may be set with
-`LUMINE_BRAVE_USER_DATA_DIR`. Switching engines applies on the next browser start.
-For Brave launches, Lumine opts out of Playwright's default
+metadata, so its cookies, settings, and extensions are shared. Brave permits
+only one running process per user-data directory. When Brave is already open on
+that directory, Lumine opens a window of her own on a spare profile beside the
+isolated Chromium one (`browser-profile-spare-brave`) rather than refusing: that
+window is **not signed in**, which is the honest price of a profile somebody
+else is already using, and the alternative is not a signed-in browser but no
+browser at all. `MSG_PROFILE_LOCKED` therefore fires only when the chosen
+directory and the spare are both held. On Windows the "already in use" question
+is asked *before* the launch, because a second `brave.exe` against a held
+user-data directory hands off and exits 0 — Playwright would then wait out its
+discovery timeout and report a launch that never happened. That question is
+asked a few times over roughly a second and a half before the spare is used,
+because a browser that is *closing* holds its directory exactly as one that is
+open does, and Chromium's hand-off takes a moment to release it; the fallback is
+reserved for a lock that stays held. The Open browser
+command resolves the same profile, starts or focuses it, and publishes its
+loopback DevTools endpoint so the worker joins the same process. A custom Brave
+executable may be supplied with `LUMINE_BRAVE_EXECUTABLE`; a non-standard
+user-data directory may be set with `LUMINE_BRAVE_USER_DATA_DIR`. Switching
+engines applies on the next browser start.
+For Playwright-launched Brave sessions, Lumine opts out of Playwright's default
 `--disable-background-networking`, `--disable-component-update`, and extension
 disabling switches so Brave runs with normal component updates and installed
 extensions. Lumine has no custom ad filter or cosmetic ad-hiding code; Brave
@@ -69,8 +84,16 @@ so changing engines cannot join or tear down the other browser.
 
 YouTube media host resolution retries two transient DNS failures for a
 `googlevideo.com` segment host and logs if the request still cannot be resolved.
-This can avoid a dropped segment after temporary lookup failures, but does not
-guarantee uninterrupted playback or remove YouTube ads.
+This is a bounded preflight in the Playwright request guard and cannot change the
+browser's own resolver result or guarantee uninterrupted playback.
+
+The 2026-10-30 playback investigation in `TEST_PLAN.md` was run against a
+separate, Lumine-owned Brave profile that the product no longer uses. That
+profile blocked YouTube's media segments and then received CDN 403 responses, and
+a normal Personal Brave window showed the same generic player error in that run.
+The shipped configuration now uses the personal Brave `Lumine` profile, where
+playback and ad blocking are reported working. The investigation is kept as a
+record of the measurements, not as a description of the current configuration.
 
 ## Component map (what grows, what is added)
 

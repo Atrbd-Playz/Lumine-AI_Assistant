@@ -1477,6 +1477,19 @@ class RouteGuardTests(unittest.TestCase):
         page = self._guard("data:text/html,<h1>hi</h1>", navigation=True)
         self.assertTrue(page.aborted)
 
+    def test_only_the_browser_new_tab_page_is_allowed_as_an_internal_navigation(self):
+        for url in ("brave://newtab/", "chrome://newtab/"):
+            with self.subTest(url=url):
+                route = self._guard(url)
+                self.assertTrue(route.continued)
+                self.assertFalse(route.aborted)
+
+        for url in ("brave://settings/", "chrome://downloads/"):
+            with self.subTest(url=url):
+                route = self._guard(url)
+                self.assertTrue(route.aborted)
+                self.assertFalse(route.continued)
+
 
 class AllowedUrlTests(unittest.TestCase):
     def test_a_url_is_openable_only_if_it_is_public_web(self):

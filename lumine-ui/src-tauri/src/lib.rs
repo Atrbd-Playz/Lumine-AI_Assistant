@@ -359,6 +359,18 @@ async fn get_tool_catalog() -> Result<Value, String> {
     Ok(resolved)
 }
 
+#[tauri::command]
+async fn open_browser() -> Result<(), String> {
+    run_off_thread("Opening Lumine's browser", || {
+        let output = python_env::run_agent_script("open_browser.py", &[])?;
+        if output.trim().is_empty() {
+            return Err("The browser helper did not confirm that a browser opened.".to_string());
+        }
+        Ok(())
+    })
+    .await
+}
+
 fn read_tool_catalog() -> Result<Value, String> {
     let stdout = python_env::run_agent_script("tool_catalog.py", &[])?;
     serde_json::from_str(&stdout).map_err(|err| format!("The tool catalog was not valid JSON: {err}"))
@@ -594,6 +606,7 @@ pub fn run() {
             delete_livekit_room,
             get_provider_catalog,
             get_tool_catalog,
+            open_browser,
             clear_tool_catalog,
             discover_local_models,
             get_config,

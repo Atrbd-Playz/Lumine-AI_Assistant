@@ -9,6 +9,7 @@ import { getReadableForeground, getReadableTextColor, fontStack } from "./home/u
 import { usePreferences } from "./home/hooks/usePreferences";
 import { useDocumentTheme } from "./home/hooks/useDocumentTheme";
 import { useNotify } from "../features/toast/useNotify";
+import { openLumineBrowser } from "../features/browser/browserClient";
 import { stageActivity } from "../features/stage/stageActivity";
 import { useAgentRuntime } from "../lib/agentRuntime";
 import { categorizeError } from "../lib/errors";
@@ -178,7 +179,27 @@ export default function Home() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("voice");
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [browserOpening, setBrowserOpening] = useState(false);
+  const browserOpeningRef = useRef(false);
   const notify = useNotify();
+  const handleOpenBrowser = async () => {
+    if (browserOpeningRef.current) return;
+    browserOpeningRef.current = true;
+    setBrowserOpening(true);
+    try {
+      await openLumineBrowser();
+      notify({ tone: "success", message: "Lumine’s browser is open." });
+    } catch (cause) {
+      notify({
+        tone: "error",
+        title: "Browser didn’t open",
+        message: cause instanceof Error ? cause.message : "Lumine couldn’t open the browser. Try again.",
+      });
+    } finally {
+      browserOpeningRef.current = false;
+      setBrowserOpening(false);
+    }
+  };
   const conversation = useConversation();
   const { mode, setMode, cursorGaze, setCursorGaze, appearance, setAppearance, resetAppearance, resetAllAppearance, presets, savePreset, importPresets, deletePreset } = usePreferences();
   const aiConfig = useAiConfig();
@@ -1085,6 +1106,8 @@ export default function Home() {
       glassMode={glassMode}
       onGlassModeToggle={toggleGlassMode}
       onOpenPalette={() => setPaletteOpen(true)}
+      onOpenBrowser={() => { void handleOpenBrowser(); }}
+      browserOpening={browserOpening}
       paletteHint={describeBinding("mod+k")}
       subscribeEnergy={session.subscribeAudioLevel}
       panel={panel}
