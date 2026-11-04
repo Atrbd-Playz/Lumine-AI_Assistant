@@ -25,7 +25,11 @@ class OpenBrowserCommandTests(unittest.TestCase):
             command,
         )
         self.assertIn("--profile-directory=Profile 1", command)
-        self.assertIn("--remote-debugging-port=0", command)
+        port_flag = next(
+            argument for argument in command
+            if argument.startswith("--remote-debugging-port=")
+        )
+        self.assertNotEqual(port_flag, "--remote-debugging-port=0")
         self.assertEqual(command[-1], "brave://newtab/")
         self.assertFalse(any("disable" in argument.casefold() for argument in command))
 
@@ -70,7 +74,13 @@ class OpenBrowserCommandTests(unittest.TestCase):
         self.assertIn(f"--user-data-dir={profile}", command)
         self.assertIn("--profile-directory=Profile 1", command)
         self.assertEqual(command[-1], "brave://newtab/")
-        wait.assert_called_once_with(profile, process)
+        self.assertEqual(wait.call_args.args[:2], (profile, process))
+        # The number in the command line is the number waited on -- the two
+        # lose each other exactly when everything page-facing breaks.
+        port_flag = next(
+            a for a in command if a.startswith("--remote-debugging-port=")
+        )
+        self.assertEqual(port_flag.split("=")[1], str(wait.call_args.args[2]))
         publish.assert_called_once_with(
             9471,
             root / "browser-cdp-brave.txt",
@@ -107,7 +117,8 @@ class OpenBrowserCommandTests(unittest.TestCase):
         command = launch.call_args.args[0]
         self.assertIn(f"--user-data-dir={spare}", command)
         self.assertFalse(any(arg.startswith("--profile-directory=") for arg in command))
-        wait.assert_called_once_with(spare, process)
+        self.assertEqual(wait.call_args.args[:2], (spare, process))
+        self.assertTrue(wait.call_args.args[2])
 
     def test_a_lock_that_is_being_released_keeps_the_personal_profile(self):
         """A browser that is *closing* holds the directory exactly as one that
@@ -136,7 +147,8 @@ class OpenBrowserCommandTests(unittest.TestCase):
         command = launch.call_args.args[0]
         self.assertIn(f"--user-data-dir={profile}", command)
         self.assertIn("--profile-directory=Profile 1", command)
-        wait.assert_called_once_with(profile, process)
+        self.assertEqual(wait.call_args.args[:2], (profile, process))
+        self.assertTrue(wait.call_args.args[2])
 
     def test_both_directories_held_is_the_one_refusal(self):
         with tempfile.TemporaryDirectory() as raw:

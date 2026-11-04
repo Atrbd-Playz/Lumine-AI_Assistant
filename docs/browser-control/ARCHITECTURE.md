@@ -73,14 +73,38 @@ loopback DevTools endpoint so the worker joins the same process. A custom Brave
 executable may be supplied with `LUMINE_BRAVE_EXECUTABLE`; a non-standard
 user-data directory may be set with `LUMINE_BRAVE_USER_DATA_DIR`. Switching
 engines applies on the next browser start.
-For Playwright-launched Brave sessions, Lumine opts out of Playwright's default
-`--disable-background-networking`, `--disable-component-update`, and extension
-disabling switches so Brave runs with normal component updates and installed
-extensions. Lumine has no custom ad filter or cosmetic ad-hiding code; Brave
-Shields handles ads. The route guard still checks public-network boundaries for
-every request. The shared DevTools endpoint is engine-specific
+**Lumine launches her browser the way a person opens one, then attaches to it.**
+An ordinary detached process carries a command line Chromium would get by hand
+(window size, dark appearance, autoplay policy — `_window_args`), and Playwright
+is used only to *attach* over CDP. It deliberately does not go through
+`launch_persistent_context`, which starts Chromium over
+`--remote-debugging-pipe`: measured side by side on the same profile, flags and
+engine, a pipe-launched browser stalls YouTube playback at ~40 s (media request
+401, "Something went wrong"), and one launched as a normal process plays on.
+The same measurements later isolated a second variable in the healthy shape:
+with `--remote-debugging-port=0` (the OS choosing the port every launch) every
+run still stalled at the same mark, and with an explicit number every run
+played. `session.free_debug_port()` therefore picks an OS-assigned port, closes
+its probe socket, and passes the number explicitly — never a fixed constant,
+never `=0` — and `wait_for_devtools` polls the number the launcher owns,
+because Chromium writes no `DevToolsActivePort` for a port it did not choose
+(measured: endpoint live, file absent). None of Playwright's default switches
+are applied, so Brave runs with its own features and extensions untouched.
+Lumine has no custom ad filter or cosmetic ad-hiding code; Brave Shields
+handles ads. The route guard still checks public-network boundaries for every
+request. The shared DevTools endpoint is engine-specific
 (`browser-cdp.txt` for Playwright Chromium and `browser-cdp-brave.txt` for Brave)
 so changing engines cannot join or tear down the other browser.
+
+Back and forward (`go_history`) wait on `commit` and take the **URL as the
+witness of the move**. The launch above deliberately keeps the back-forward
+cache, and with the cache on plus the route guard registered, a *restored*
+entry is a navigation Playwright cannot witness at all: the interception never
+fires, so `go_back(wait_until="domcontentloaded")` hangs out its whole
+navigation budget and `commit` answers `null` while the tab has visibly moved.
+`HISTORY_SETTLE_MS` gives only a **refetched** entry a bounded moment to present
+its DOM; a rate the settle cannot see is still reported as where the tab is,
+never as a refusal.
 
 YouTube media host resolution retries two transient DNS failures for a
 `googlevideo.com` segment host and logs if the request still cannot be resolved.

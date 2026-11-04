@@ -38,11 +38,12 @@ import logging
 import os
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from urllib.parse import parse_qs, urlsplit
 
 try:
@@ -83,6 +84,14 @@ HEADLESS_VAR = "LUMINE_BROWSER_HEADLESS"
 #: How long a navigation may take before we report failure instead of
 #: claiming a page we never saw.
 NAV_TIMEOUT_MS = 15000
+
+#: A history step is confirmed the moment the tab commits to the entry (see
+#: `go_history`); this is only how long it may take the *document* to pick
+#: that moment up. The restored-entry case returns instantly -- the settle is
+#: unpicked after the hop is already true, so a slow page is reported as
+#: where it is going rather than held as a refusal, and the budget is short
+#: because it spends a voice turn's breath, not a navigation's.
+HISTORY_SETTLE_MS = 3000
 
 #: How long a key press waits for its control to become pressable. Far
 #: shorter than Playwright's 30-second default: this is a voice turn, and a
@@ -820,12 +829,12 @@ def profile_in_use(directory: Path) -> bool:
     This is asked **before** a launch, and only on Windows, because there the
     lock is invisible to the launch itself: a second ``brave.exe`` started
     against a directory a running Brave owns hands its command line to that
-    process and exits **0**. Playwright therefore sees a launch that succeeded
-    and then spends its discovery window waiting for a DevTools port that will
-    never appear -- and `_profile_locked` never sees Chromium's "user data
-    directory is already in use" sentence, because no second browser started to
-    print it. Measured on this machine with Brave open on another profile: the
-    child exited immediately and the report was a timeout, not a lock.
+    process and exits **0**. The launcher therefore sees a process that started
+    successfully and then spends its discovery window waiting for a DevTools port
+    that will never appear -- and there is no Chromium sentence to read, because no
+    second browser started to print one. Measured on this machine with Brave open
+    on another profile: the child exited immediately and the report was a timeout,
+    not a lock.
 
     The lock itself is the one `whatsapp_probe._lock_held` reads, asked the way
     Windows answers it: Chromium holds ``lockfile`` with an exclusive share
@@ -835,8 +844,8 @@ def profile_in_use(directory: Path) -> bool:
 
     POSIX is deliberately not pre-checked. There the lock is a symlink whose
     presence says nothing about whether the process behind it is alive, so a
-    stale one would push every launch onto the spare; Chromium reports a real
-    collision through the launch error that `_profile_locked` already reads.
+    stale one would push every launch onto the spare; on POSIX the collision
+    surfaces as a launch that exits without an endpoint, which is `ProfileBusy`.
     """
     if os.name != "nt":
         return False
@@ -866,8 +875,8 @@ def settle_profile_lock(directory: Path) -> bool:
     to the spare profile, which is *not signed in*, and the session's endpoint
     would then point at that window for the rest of the conversation.
 
-    So the pre-check gets the same grace `_launch_persistent` gives Chromium's
-    own error message: a bounded few checks spaced by `_LAUNCH_RETRY_SECONDS`.
+    So the pre-check gets the same grace the launcher gives a lock that is on its
+    way out: a bounded few checks spaced by `_LAUNCH_RETRY_SECONDS`.
     A lock somebody genuinely holds does not clear, and the spare is still the
     answer one and a half seconds later -- that delay is the whole cost, and it
     is paid once, on the first browser request of a session, only when a window
@@ -1051,90 +1060,337 @@ _LAUNCH_ATTEMPTS = 3
 _LAUNCH_RETRY_SECONDS = 0.7
 
 
-def _profile_locked(message: str) -> bool:
-    """Chromium's two spellings of "this profile is already in use".
+#: How long a launch waits for the browser to publish its control endpoint. The
+#: same budget `open_browser.py` has always used: a cold Brave on a full profile is
+#: several seconds, and anything past this is a launch that did not happen rather
+#: than one that is still happening.
+LAUNCH_TIMEOUT_SECONDS = 15.0
 
-    Lower-cased on both sides: the message comes from the browser, and matching it
-    case-sensitively meant a capitalised variant slipped past and became the
-    generic "I couldn't start the browser" instead of the sentence that tells the
-    user which window to close.
+#: Spacing between endpoint probes, and between the probes that watch a browser
+#: exit after it has been asked to close.
+LAUNCH_POLL_SECONDS = 0.1
+
+#: How long ``Browser.close`` is given to actually close the browser before the
+#: process is ended. Measured: Chromium is gone well inside a second, and the
+#: window closing is what the user is waiting on.
+SHUTDOWN_GRACE_SECONDS = 3.0
+
+
+class ProfileBusy(RuntimeError):
+    """A launch produced no browser, because something already owns the directory.
+
+    **This exists because the lock can no longer be read out of the launch.** When
+    Playwright started the browser, a held profile arrived as Chromium's own
+    paragraph about "an existing browser session" and `_profile_locked` read it. A
+    browser started as a normal process reports nothing: on Windows the child hands
+    its command line to the running instance and exits **0**, so the only evidence
+    is that no endpoint ever appeared. Same condition, different witness.
     """
-    lowered = str(message or "").lower()
-    return "existing browser session" in lowered or "user data directory is already in use" in lowered
 
 
-async def _launch_persistent(
-    playwright: Any,
-    directory: Path,
-    *,
-    executable_path: str | None = None,
-    personal_engine: str = "chromium",
+class LaunchTimeout(RuntimeError):
+    """The browser started but never published its control endpoint."""
+
+
+def free_debug_port() -> int:
+    """A debugging port our side picks, so Chromium does not have to choose.
+
+    The flag above was ``--remote-debugging-port=0`` -- "OS, assign the port" --
+    for the same defence written in its comment: two launches can never want
+    the same number. That is what made it the **YouTube stall**. Measured
+    today, side by side, holding engine, flags, profile state and attach style
+    constant: a launch carried by port ``0`` stalled video at the same ~40 s
+    mark in all ten runs (two fresh profiles, the reused spare, and the real
+    `ensure()` tool path), and a launch carried by an **explicit** port played
+    past a minute in all seven. Same command but for one number.
+
+    So the number is picked here: bind an OS-assigned port, read it, close the
+    socket, pass the value through. The old defence survives the right way --
+    this side never hardcodes a number, and two calls still cannot *want* the
+    same one by construction -- while the milliseconds between this bind
+    closing and Chromium opening its own listener are the honest cost of being
+    explicit. A collision there shows up as a :class:`LaunchTimeout` from
+    `wait_for_devtools`, which names itself rather than going quietly.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def browser_command(
+    engine: str,
+    executable: str,
+    user_data_dir: Path,
     profile_directory: str | None = None,
-) -> Any:
-    """Launch the profile's browser, retrying a lock that is on its way out.
+    *,
+    extra_args: Iterable[str] = (),
+    start_url: str | None = None,
+    debug_port: int | None = None,
+) -> list[str]:
+    """The command line for a browser that a person opened.
 
-    **A lock that is *being* released looks exactly like one somebody holds**, and
-    this is the path that has to reopen the browser in the same session: `release`
-    has just closed the previous one, and the teardown it schedules onto the owning
-    loop is not awaited by the caller -- so the next `ensure` can arrive while
-    Chromium is still letting go of the directory. One attempt would translate that
-    into `MSG_PROFILE_LOCKED`, which tells the user to go and close a window that is
-    already closing, and the reopen would fail for a reason that is no longer true.
+    **Lumine launches the browser herself and only then attaches to it**, and this
+    is the whole of the YouTube fix. Playwright's ``launch_persistent_context``
+    starts Chromium through its driver over ``--remote-debugging-pipe``, and a
+    browser started that way stalls YouTube playback at ~40 s: the player clears
+    its source, shows "Something went wrong. Refresh or try again later.", and the
+    media request comes back **401**. Measured side by side, the launch mode is the
+    only variable -- the same profile, the same flags, the same engine. Every run
+    Playwright launched stalled; every run started as an ordinary process and
+    merely attached to over a debugging *port* played past a minute, including the
+    user's own signed-in ``Lumine`` Brave profile. Playwright cannot launch over a
+    port (measured: it times out even with Chromium already listening), so the
+    launch has to happen here and ``connect_over_cdp`` does the attaching.
 
-    Only the locked outcome is retried, and only a bounded number of times. A lock
-    genuinely held by another window does not clear, and every extra attempt is time
-    the user spends waiting for a refusal that was correct on the first try -- so
-    `_LAUNCH_ATTEMPTS` and `_LAUNCH_RETRY_SECONDS` keep that under two seconds, and
-    anything else (a missing executable, a broken profile) is raised on the first
-    attempt exactly as before.
+    **The port number is the second half, and it was found later.** Even in this
+    healthy shape the stall returned, and it followed one flag: port ``0`` (the
+    OS assigned it every launch) stopped video at the same ~40 s mark in every
+    run, on fresh profiles and the reused spare alike, while an explicit number
+    played. See `free_debug_port` -- the port is chosen by us now, and "two
+    launches cannot collide" is still true by construction, not by luck.
+
+    Three things follow, and they are why this is one shared function rather than
+    two shapes: no Playwright default flags are applied (so Brave's own features
+    and extensions are no longer switched off), ``--profile-directory`` reaches the
+    browser directly instead of through a launch option, and ``open_browser.py`` --
+    the "Open browser" button, which has always been healthy -- calls this, so the
+    button and the tool cannot drift apart.
+
+    ``debug_port`` is written into the flag so the same number survives the
+    launch: callers that must wait for the endpoint by *polling the number*
+    pick it with `free_debug_port` and hand it here as well, because a
+    Chromium that was not asked to choose its port does not write the port
+    file this module otherwise reads (measured: explicit port, endpoint live,
+    no ``DevToolsActivePort`` at all). Without it a fresh OS-assigned number
+    is used and the caller's `wait_for_devtools` finds it in the file, the
+    older route.
     """
+    command = [
+        executable,
+        f"--user-data-dir={user_data_dir}",
+        f"--remote-debugging-port={debug_port if debug_port is not None else free_debug_port()}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        *extra_args,
+    ]
+    if profile_directory:
+        command.append(f"--profile-directory={profile_directory}")
+    command.append(start_url or "about:blank")
+    return command
+
+
+def launch_detached(command: Sequence[str]) -> subprocess.Popen[bytes]:
+    """Start the browser as its own process, with no pipe back to this one."""
+    options: dict[str, object] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if sys.platform == "win32":
+        options["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        )
+    else:
+        options["start_new_session"] = True
+    return subprocess.Popen(list(command), **options)
+
+
+def wait_for_devtools(
+    user_data_dir: Path, process: Any, owned_port: int | None = None
+) -> int:
+    """Block until the browser publishes a live endpoint, and return its port.
+
+    Chromium writes the port it actually bound -- asked for ``0``, so two launches
+    cannot both want 9222 -- into ``DevToolsActivePort``. Reading the file *and*
+    checking the socket is what separates a fresh port from a stale file left by a
+    browser that has already gone.
+
+    **A launch that was handed an explicit number cannot be read this way:**
+    Chromium only writes that file when it chose the port itself (measured: an
+    explicit port runs, lives, and the file is never created), so the caller
+    passes it as ``owned_port`` and this polls the socket directly. The file
+    route stays for a launch whose port arrived the old way.
+    """
+    deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if owned_port is not None:
+            port = owned_port if _endpoint_alive(f"http://127.0.0.1:{owned_port}") else 0
+        else:
+            port = _discover_devtools_port(user_data_dir, attempts=1)
+            if port and _endpoint_alive(f"http://127.0.0.1:{port}"):
+                pass
+            else:
+                port = 0
+        if port:
+            return port
+        if process.poll() is not None:
+            raise ProfileBusy(
+                "The browser closed before its local control endpoint was ready. "
+                "Something else may be using this profile."
+            )
+        time.sleep(LAUNCH_POLL_SECONDS)
+    raise LaunchTimeout(
+        "The browser did not publish its local control endpoint in time. "
+        "Nothing else was opened."
+    )
+
+
+def terminate_process(process: Any, *, timeout: float = 3.0) -> None:
+    """End a browser process we started. Never raises, never waits forever."""
+    try:
+        if process is None or process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - teardown must not raise
+        logger.info("[Browser] could not end the browser process: %s", exc)
+
+
+class _Launched(NamedTuple):
+    """A browser this process started, and the Playwright client attached to it."""
+
+    context: Any
+    browser: Any
+    process: Any
+    port: int
+
+
+def launch_args() -> list[str]:
+    """The flags a Lumine-owned window starts with.
+
+    ``_window_args`` plus headlessness, and nothing from Playwright: this is the
+    command line Chromium would have been given by hand, which is the shape that
+    plays video normally. See `browser_command`.
+    """
+    args = list(_window_args())
+    if headless_default():
+        args.append("--headless=new")
+    return args
+
+
+async def launch_and_attach(
+    playwright: Any,
+    *,
+    executable: str,
+    engine: str,
+    directory: Path,
+    profile_directory: str | None = None,
+) -> _Launched:
+    """Start the browser as its own process, then attach to it over CDP.
+
+    **A profile that is *being* released looks exactly like one somebody holds**,
+    and this path has to reopen the browser in the same session: `release` closes
+    the previous window and the next `ensure` can arrive while Chromium is still
+    letting go of the directory. On Windows that launch hands off to the running
+    instance and exits 0, so the outcome is `ProfileBusy` and no endpoint -- one
+    attempt would turn a window that is already closing into `MSG_PROFILE_LOCKED`,
+    which tells the user to go and close it.
+
+    Only that outcome is retried, and only a bounded number of times: a directory
+    somebody genuinely holds never clears, and every extra attempt is time spent
+    waiting for a refusal that was correct on the first try. A missing executable
+    raises on the first attempt, exactly as before.
+    """
+    # The port is picked once, before the launch, so the number in the
+    # command line is the number the endpoint is waited on: Chromium does not
+    # write the port file for a port it did not choose, so the older
+    # file-discovery route cannot see this launch (see `wait_for_devtools`).
+    port = free_debug_port()
+    command = browser_command(
+        engine,
+        executable,
+        directory,
+        profile_directory,
+        extra_args=launch_args(),
+        start_url="about:blank",
+        debug_port=port,
+    )
+    process: Any = None
     attempts = 0
     while True:
         attempts += 1
+        process = launch_detached(command)
         try:
-            args = _window_args() + ["--remote-debugging-port=0"]
-            if profile_directory:
-                args.append(f"--profile-directory={profile_directory}")
-            options = {
-                "headless": headless_default(),
-                # Downloads are cancelled at the source: a browser the
-                # assistant drives is not a browser that drops files on the
-                # user's disk without a conversation about it.
-                "accept_downloads": False,
-                # There is no synthetic viewport: the browser window is the
-                # viewport, and its default appearance is explicitly dark.
-                "no_viewport": True,
-                "color_scheme": "dark",
-                # A DevTools endpoint, so another process can join this browser.
-                # Port 0 lets the OS choose it, because two processes launching
-                # at once would otherwise both ask for the same fixed one.
-                "args": args,
-            }
-            if executable_path:
-                options["executable_path"] = executable_path
-            if personal_engine == "brave":
-                # Restore Brave features Playwright disables in its automation
-                # defaults so the selected native profile behaves normally.
-                options["ignore_default_args"] = [
-                    "--disable-background-networking",
-                    "--disable-component-update",
-                    "--disable-extensions",
-                    "--disable-component-extensions-with-background-pages",
-                ]
-            return await playwright.chromium.launch_persistent_context(
-                str(directory),
-                **options,
+            port = await asyncio.to_thread(
+                wait_for_devtools, directory, process, port
             )
-        except Exception as exc:  # noqa: BLE001 - re-raised unless locked
-            if attempts >= _LAUNCH_ATTEMPTS or not _profile_locked(str(exc)):
+        except ProfileBusy:
+            await asyncio.to_thread(terminate_process, process)
+            if attempts >= _LAUNCH_ATTEMPTS:
                 raise
             logger.info(
-                "[Browser] the profile is still busy; launch attempt %d/%d in %.1fs",
+                "[Browser] no endpoint from the launch; attempt %d/%d in %.1fs",
                 attempts + 1,
                 _LAUNCH_ATTEMPTS,
                 _LAUNCH_RETRY_SECONDS,
             )
             await asyncio.sleep(_LAUNCH_RETRY_SECONDS)
+            continue
+        except BaseException:  # a cancelled launch must not leave a browser behind
+            await asyncio.to_thread(terminate_process, process)
+            raise
+        break
+
+    endpoint = f"http://127.0.0.1:{port}"
+    try:
+        browser = await playwright.chromium.connect_over_cdp(endpoint)
+    except Exception as exc:  # noqa: BLE001 - translated into a sentence
+        await asyncio.to_thread(terminate_process, process)
+        raise ToolError(
+            f"I started the browser but couldn't attach to it: {clip(str(exc), 120)}"
+        ) from None
+    contexts = list(getattr(browser, "contexts", []) or [])
+    if not contexts:
+        await asyncio.to_thread(terminate_process, process)
+        raise ToolError(
+            "The browser I started is not serving any window I can use. "
+            "Nothing was opened."
+        )
+    logger.info("[Browser] started %s on %s (port %d)", engine, directory, port)
+    return _Launched(contexts[0], browser, process, port)
+
+
+async def shutdown_launched(browser: Any, process: Any) -> None:
+    """Close a browser this process launched and attached to. Never raises.
+
+    **Neither `context.close()` nor `playwright.stop()` closes a CDP browser.**
+    That is measured on the installed Playwright, not assumed: after each one,
+    ``/json/version`` still answers and the page is still there. The old comment
+    here claimed the opposite, and it never mattered before because the browser
+    was always started through ``launch_persistent_context``, whose ``close()``
+    *does* end it. It matters now.
+
+    So the browser is asked to close over CDP -- Chromium's own shutdown path,
+    which writes the profile on the way out -- and the process is ended only if
+    that does not land inside the grace period. A window that refuses to close
+    is still closed; the difference is only whether it was tidy about it.
+    """
+    if browser is not None:
+        try:
+            session = await browser.new_browser_cdp_session()
+            try:
+                await session.send("Browser.close")
+            finally:
+                try:
+                    await session.detach()
+                except Exception:  # noqa: BLE001 -- the browser is going away
+                    pass
+        except Exception as exc:  # noqa: BLE001 - falls through to the process
+            logger.info("[Browser] could not ask the browser to close: %s", exc)
+    if process is None:
+        return
+    deadline = time.monotonic() + SHUTDOWN_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return
+        await asyncio.sleep(LAUNCH_POLL_SECONDS)
+    await asyncio.to_thread(terminate_process, process)
 
 
 def _publish_endpoint(port: int, target: Path | None = None) -> None:
@@ -1257,18 +1513,18 @@ def _discover_devtools_port(profile: Path, attempts: int = 40) -> int:
 #
 # Two things were wrong with the window, both reported as "it looks kinda odd".
 #
-# **It overflowed the screen.** With no viewport and no window geometry,
-# `launch_persistent_context` sizes the window itself, and the result is a window
-# that can be wider than the display and offset by whatever was on screen before.
-# The fix is to size it to the *screen*, from the screen, and to turn off Playwright
-# viewport emulation so the page sees the real window size rather than a
-# substituted one.
+# **It overflowed the screen.** With no window geometry the browser sizes itself,
+# and the result is a window that can be wider than the display and offset by
+# whatever was on screen before. The fix is to size it to the *screen*, from the
+# screen. There is also no viewport emulation any more, because there is no
+# Playwright launch to ask for one: the window is the viewport.
 #
-# **It changed the theme.** Playwright's default for `color_scheme` is `light`, so
-# the browser rendered every site in light regardless of what the machine is set to
-# -- which is why WhatsApp looked unlike the user's own browser. Playwright accepts
-# `None` for "emulate nothing", which is the honest setting: the browser follows the
-# OS like any other window the user opened.
+# **It changed the theme.** Playwright's default for `color_scheme` was `light`,
+# so the browser rendered every site in light regardless of what the machine is
+# set to -- which is why WhatsApp looked unlike the user's own browser. With the
+# launch in our hands the honest answer is a flag rather than an emulation
+# setting, and `--force-dark-mode` is what the previous `color_scheme="dark"`
+# meant.
 #
 # `device_scale_factor` is left alone deliberately. Forcing 1.0 makes everything
 # small on a HiDPI display; leaving it alone makes the window agree with the rest of
@@ -1279,18 +1535,27 @@ def _discover_devtools_port(profile: Path, attempts: int = 40) -> int:
 #: slow, and two LiveKit rooms reaching it at once is two windows fighting over the
 def _window_args() -> list[str]:
     """Chromium flags for the default browser size, dark theme and playback.
-    Playwright already passes `--disable-background-timer-throttling`,
-    `--disable-backgrounding-occluded-windows` and `--disable-renderer-backgrounding`
-    (read out of the driver's own switch list). The media-suspend flag prevents
-    Chromium from suspending audio/video when its window loses focus.
+
+    **These replace Playwright's default switch list, rather than adding to it.**
+    The browser is launched by this process now (see `browser_command`), so the
+    three throttling flags Playwright used to pass -- including
+    ``--disable-background-timer-throttling``, which is not spelled out in the old
+    comment because we never passed it -- have to be named here. Without the last
+    one a background tab's timers are clamped to once a second, which is a
+    media player's progress bar moving in visible steps.
     """
     return [
         "--window-size=960,680",
         "--window-position=0,0",
         "--disable-features=CalculateNativeWinOcclusion",
+        "--disable-background-timer-throttling",
         "--disable-backgrounding-occluded-windows",
         "--disable-renderer-backgrounding",
         "--disable-background-media-suspend",
+        # Playwright used to pass this for us. A page opened to play something is
+        # a page the user asked to play, and without it Chromium's default policy
+        # refuses the first sound until the page sees a click.
+        "--autoplay-policy=no-user-gesture-required",
         "--force-dark-mode",
     ]
 
@@ -1456,6 +1721,16 @@ class _Browser:
         #: "detach from the browser" from "close the context", which for a CDP
         #: connection are very different operations.
         self._joined_browser: Any = None
+        #: The same handle for a browser **this process launched** and then attached
+        #: to. Kept separately from `_joined_browser` because the two need opposite
+        #: teardown: a guest detaches, an owner closes. See `shutdown_launched`.
+        self._cdp_browser: Any = None
+        #: The detached Chromium process, when this process started it. The handle
+        #: is what makes "close Lumine's own window" a fact rather than a hope --
+        #: `context.close()` and `playwright.stop()` both leave a CDP browser
+        #: running (measured), so the window is closed by asking the browser to
+        #: shut down and, if it will not, by ending this process.
+        self._process: Any = None
         self._route_handler: Any = None
         self._preserved_clients: list[tuple[Any, Any]] = []
         self._preserve_whatsapp = False
@@ -1840,6 +2115,34 @@ class _Browser:
         self._register(page, activate=True)
 
     @staticmethod
+    def _refuse_download(download: Any) -> None:
+        """Cancel a download a page we are driving started, and delete the file.
+
+        Chromium writes the body to a temp path before anyone can inspect it, so
+        "refuse" means cancel the transfer and then remove what landed. Both are
+        best-effort and neither may raise: this runs as an event handler on a loop
+        that has a conversation on it.
+
+        The *reason* is the one the constructor option carried: a browser the
+        assistant drives is not a browser that drops files on the user's disk
+        without a conversation about it. `whatsapp_files` is the only path that may
+        hand a file to a page, and it is an allowlist.
+        """
+
+        async def cancel() -> None:
+            for step in (download.cancel, download.delete):
+                try:
+                    await step()
+                except Exception as exc:  # noqa: BLE001 - see the docstring
+                    logger.info("[Browser] could not refuse a download: %s", exc)
+
+        try:
+            asyncio.get_running_loop().create_task(cancel())
+        except RuntimeError:  # noqa: BLE001 - no loop; nothing can be cancelled
+            pass
+        logger.info("[Browser] refused a download the page started")
+
+    @staticmethod
     async def _close_quietly(page: Any) -> None:
         try:
             await page.close()
@@ -1992,7 +2295,18 @@ class _Browser:
                 self._owner_token = None
                 self._start_lock = None
                 self._wa_lock = None
-                self._wa_lock = None
+                # The browser is a **detached process** now, so it outlives the
+                # loop that started it -- which is why these are dropped rather
+                # than closed. The published endpoint is still alive and the
+                # takeover joins it as a guest (below), which is the same
+                # arrangement `open_browser.py` leaves behind. What must not
+                # survive is `_cdp_browser`: that client belongs to the dead
+                # loop, and touching it from this one is the `MSG_OTHER_LOOP`
+                # bug in a quieter form.
+                self._cdp_browser = None
+                self._process = None
+                self._joined_browser = None
+                self._endpoint_path = None
             # The page we would hand out is settled here rather than at every
             # call site: the window is the user's, so a tab can be closed from
             # its toolbar at any moment, and a registry entry for a page that no
@@ -2061,13 +2375,15 @@ class _Browser:
 
         playwright = await async_playwright().start()
         shared = False
+        process: Any = None
+        cdp_browser: Any = None
         try:
             # Share the browser if one is already running for this profile.
             #
             # Chromium holds an exclusive lock on the profile directory, so a
-            # second `launch_persistent_context` cannot succeed -- and it failed
-            # with Chromium's own paragraph about sessions, which reads like a
-            # product fault. Connecting to the running one instead is what makes
+            # second browser started against it cannot own it -- and it used to
+            # fail with Chromium's own paragraph about sessions, which reads like
+            # a product fault. Connecting to the running one instead is what makes
             # the browser usable by the worker, the desktop app, every dispatched
             # room and a diagnostic CLI at the same time. See `_endpoint_file`.
             existing = _read_endpoint(endpoint_path)
@@ -2115,11 +2431,20 @@ class _Browser:
                 # asked for. See `spare_profile_dir` for why the second exists.
                 launched_on = directory
                 spare = spare_profile_dir(selected_engine)
+                # Brave's own executable, or the Chromium Playwright installed.
+                # The second raises when the browsers were never installed, and
+                # the handler below turns that into the setup sentence.
+                executable = (
+                    str(brave_path)
+                    if brave_path is not None
+                    else playwright.chromium.executable_path
+                )
+                launched: _Launched | None = None
 
                 # Ask before launching, because Windows does not answer through
                 # the error. A second `brave.exe` against a directory a running
-                # Brave owns hands off and exits **0**, so Playwright waits out
-                # its full discovery timeout and reports a launch that never
+                # Brave owns hands off and exits **0**, so the launcher waits out
+                # its full discovery window and reports a launch that never
                 # happened. See `profile_in_use`.
                 #
                 # A held directory is watched for a moment first, because the
@@ -2146,16 +2471,14 @@ class _Browser:
                     )
                 else:
                     try:
-                        context = await _launch_persistent(
+                        launched = await launch_and_attach(
                             playwright,
-                            directory,
-                            executable_path=str(brave_path) if brave_path else None,
-                            personal_engine=selected_engine,
+                            executable=executable,
+                            engine=selected_engine,
+                            directory=directory,
                             profile_directory=profile_directory,
                         )
-                    except Exception as exc:
-                        if not _profile_locked(str(exc)):
-                            raise
+                    except ProfileBusy:
                         # Somebody is holding the profile and is not publishing an
                         # endpoint to join -- usually the user's own browser window
                         # on it, which no protocol can attach to. The lock is a fact
@@ -2168,9 +2491,16 @@ class _Browser:
                         # search, and was told to go and close their own browser
                         # first. The profile is the right *first* choice because it
                         # is the one already signed in; it is no longer the only one.
-                        context = None
+                        launched = None
+                    except LaunchTimeout as exc:
+                        # **Not a fallback.** A browser that started and never
+                        # published is still running, and opening the unsigned-in
+                        # spare beside it would give the user two windows and an
+                        # answer to a question nobody asked. The launcher has
+                        # already ended the process it started.
+                        raise ToolError(str(exc)) from None
 
-                if context is None:
+                if launched is None:
                     launched_on = spare
                     try:
                         launched_on.mkdir(parents=True, exist_ok=True)
@@ -2192,13 +2522,24 @@ class _Browser:
                     # No `profile_directory`: a user-data directory of our own
                     # has only `Default` in it, and naming the personal profile
                     # here would quietly recreate the directory we were refused.
-                    context = await _launch_persistent(
-                        playwright,
-                        launched_on,
-                        executable_path=str(brave_path) if brave_path else None,
-                        personal_engine=selected_engine,
-                        profile_directory=None,
-                    )
+                    try:
+                        launched = await launch_and_attach(
+                            playwright,
+                            executable=executable,
+                            engine=selected_engine,
+                            directory=launched_on,
+                            profile_directory=None,
+                        )
+                    except ProfileBusy:
+                        raise ToolError(MSG_PROFILE_LOCKED) from None
+                    except LaunchTimeout as exc:
+                        # Both directories failing to publish is the same fact
+                        # twice, and the spare's own sentence would name the wrong
+                        # directory. The timeout already says what happened.
+                        raise ToolError(str(exc)) from None
+                context = launched.context
+                cdp_browser = launched.browser
+                process = launched.process
                 if launched_on == directory:
                     if selected_engine == "brave":
                         logger.info(
@@ -2209,26 +2550,40 @@ class _Browser:
                         logger.info(
                             "[Browser] started Playwright Chromium with Lumine's isolated profile"
                         )
-                # The port is read from whichever directory actually got the
+                # The port comes from whichever directory actually got the
                 # browser, because that is the directory Chromium wrote it in --
                 # and the endpoint published for it is still the *engine's*, so a
                 # later process joins this window whether it was the first choice
                 # or the fallback. One browser, either way.
-                port = _discover_devtools_port(launched_on)
-                if port:
-                    _publish_endpoint(port, endpoint_path)
-                    logger.info("[Browser] published a DevTools endpoint on %s", port)
+                _publish_endpoint(launched.port, endpoint_path)
+                logger.info(
+                    "[Browser] published a DevTools endpoint on %s", launched.port
+                )
         except Exception as exc:  # noqa: BLE001 -- any launch failure becomes a sentence
             if isinstance(exc, ToolError):
+                # The browser we started, if any, has to go with the failure.
+                if process is not None or cdp_browser is not None:
+                    await shutdown_launched(cdp_browser, process)
+                if not shared:
+                    try:
+                        await playwright.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
                 raise
-            # Detach, do not shut down, when we joined somebody else's browser.
+            # A launch failure is ours, and so is the browser it started: left
+            # alone, a failed start leaves a window nobody can reach and a profile
+            # nobody can reopen.
             #
-            # `playwright.stop()` on a CDP connection closes the *remote* browser.
-            # Doing that in a failure handler -- which is where every unexpected
-            # shape arrives -- means the first error in a joining process kills the
-            # browser the agent that owns it is using. Measured: a holder with nine
-            # Chromium processes was at zero the moment a second process failed to
-            # attach. A launch failure is ours; the browser is not.
+            # A *joined* browser is a different thing entirely, and the guard is
+            # not decoration. `playwright.stop()` was once held responsible for
+            # tearing down a remote browser (a holder with nine Chromium processes
+            # was at zero after a second process failed to attach), and while that
+            # does not reproduce on the installed Playwright -- measured, a CDP
+            # connection survives `stop()` -- the ownership rule is the independent
+            # reason: our client leaving must never be the thing that ends a window
+            # another agent is using.
+            if process is not None or cdp_browser is not None:
+                await shutdown_launched(cdp_browser, process)
             if not shared:
                 try:
                     await playwright.stop()
@@ -2237,13 +2592,6 @@ class _Browser:
             message = str(exc)
             if "Executable" in message or "executable" in message:
                 raise ToolError(MSG_NOT_INSTALLED) from None
-            if _profile_locked(message):
-                # The profile is locked, which means a Lumine browser window is
-                # already open somewhere -- usually the Tauri app, or a probe that
-                # did not exit cleanly. Chromium's own wording here is a paragraph
-                # about profiles and about "Opening in existing browser session",
-                # and the actionable sentence is one line long.
-                raise ToolError(MSG_PROFILE_LOCKED) from None
             raise ToolError(
                 f"I couldn't start the browser: {clip(message, 120)}"
             ) from None
@@ -2291,6 +2639,7 @@ class _Browser:
             try:
                 page = await context.new_page()
             except Exception as exc:  # noqa: BLE001 -- translated into a sentence
+                await shutdown_launched(cdp_browser, process)
                 try:
                     await context.close()
                     await playwright.stop()
@@ -2303,12 +2652,24 @@ class _Browser:
         self._route_handler = self._guard
         await context.route("**/*", self._route_handler)
         context.on("page", self._on_page)
+        # **A browser the assistant drives never drops files on the user's disk.**
+        # This used to be an option on `launch_persistent_context`
+        # (`accept_downloads=False`), and moving the launch into this process took
+        # the option with it -- a guarantee that exists only because a constructor
+        # argument was passed is a guarantee the next rewrite silently drops. The
+        # event is precise: it fires for the download itself, so the user's own
+        # saves in a browser we merely joined are untouched.
+        context.on("download", self._refuse_download)
 
         self._pw = playwright
         self._context = context
         self._endpoint_path = endpoint_path
         self._loop = loop
         self._shared = shared
+        # The handle on the browser *we* started, and on its process. Both are
+        # dropped by `release`, which closes the window through them.
+        self._cdp_browser = cdp_browser
+        self._process = process
         # Registered rather than assigned, so the first tab is a tab like any
         # other and holds a document number of its own.
         self._register(page, activate=True)
@@ -2615,6 +2976,8 @@ class _Browser:
             endpoint_path = self._endpoint_path
             owner = self._loop
             shared = self._shared
+            process = self._process
+            cdp_browser = self._cdp_browser
             preserve_whatsapp = self._preserve_whatsapp
             self._preserve_whatsapp = False
             wa_page = self._wa_page
@@ -2622,6 +2985,8 @@ class _Browser:
             self._context = self._page = self._pw = None
             self._endpoint_path = None
             self._shared = False
+            self._process = None
+            self._cdp_browser = None
             self._wa_page = None
             self._route_handler = None
             # We are no longer attached to that browser, so nothing here may keep
@@ -2736,6 +3101,8 @@ class _Browser:
                             playwright,
                             shared=shared,
                             endpoint_path=endpoint_path,
+                            process=process,
+                            browser=cdp_browser,
                         ),
                         owner,
                     )
@@ -2743,7 +3110,12 @@ class _Browser:
                     pass
             return
         await self._close_remote(
-            context, playwright, shared=shared, endpoint_path=endpoint_path
+            context,
+            playwright,
+            shared=shared,
+            endpoint_path=endpoint_path,
+            process=process,
+            browser=cdp_browser,
         )
 
     @staticmethod
@@ -2753,18 +3125,27 @@ class _Browser:
         *,
         shared: bool = False,
         endpoint_path: Path | None = None,
+        process: Any = None,
+        browser: Any = None,
     ) -> None:
-        """Detach from a context and stop Playwright, ignoring every failure.
+        """Close, or detach from, the browser, ignoring every failure.
 
         **A shared browser is detached from, not closed.** This is the difference
-        between one agent leaving and the browser dying under everybody else.
-        `connect_over_cdp` hands back a context whose `close()` tears down the whole
-        browser -- including the WhatsApp tab another room is mid-read on, and the
-        window the user is looking at. So when we joined rather than launched, the
-        only thing we close is our own Playwright client.
+        between one agent leaving and the browser dying under everybody else. The
+        context belongs to another process, and the window is one the user is
+        looking at. So when we joined rather than launched, the only thing we close
+        is our own Playwright client, and the endpoint stays published: the browser
+        is still running and the next process should still find it.
 
-        It also does not unpublish the endpoint, for the same reason: the browser is
-        still running and the next process should still find it.
+        **A browser we launched is closed through the process we launched.** That
+        is not belt and braces; it is the only thing that works. A CDP context
+        survives both `context.close()` and `playwright.stop()` -- measured on the
+        installed Playwright, where the endpoint kept answering and the page was
+        still there afterwards. `shutdown_launched` asks the browser to close over
+        CDP and falls back to the process handle, so "close Lumine's browser" stays
+        true rather than becoming a window left behind with a forgotten endpoint.
+
+        The no-handles case is kept for callers that have only a context.
         """
         if shared:
             if playwright is not None:
@@ -2773,7 +3154,11 @@ class _Browser:
                 except Exception:  # noqa: BLE001
                     pass
             return
-        if context is not None:
+        if process is not None or browser is not None:
+            # A browser we started and attached to. See `shutdown_launched`: the
+            # context is not what ends it, and neither is Playwright.
+            await shutdown_launched(browser, process)
+        elif context is not None:
             try:
                 await context.close()
             except Exception:  # noqa: BLE001
@@ -2783,7 +3168,8 @@ class _Browser:
                 await playwright.stop()
             except Exception:  # noqa: BLE001
                 pass
-        if context is None:
+        closed_by_us = process is not None or browser is not None or context is not None
+        if not closed_by_us:
             # We had no browser of our own to close, so the published endpoint may
             # still be somebody else's: drop it only once nothing answers on it.
             if not _endpoint_alive(_read_endpoint(endpoint_path)):
@@ -3211,20 +3597,46 @@ class _Browser:
         return await page.evaluate(_JS_SCROLL, direction)
 
     async def go_history(self, direction: str) -> dict[str, Any]:
-        """One step back or forward in this tab's own history."""
+        """One step back or forward in this tab's own history.
+
+        **The wait is `commit`, and the reason is the back-forward cache.**
+        The browser this launcher starts keeps the cache, because the switch
+        that disables it -- `--disable-back-forward-cache`, first on Playwright's
+        own list with the comment *"Avoids surprises like main request not being
+        intercepted during page.goBack()"* -- is a launch-time default we
+        deliberately do not re-add: the launch is a person's command line (see
+        `browser_command`), and it is given to us by `open_browser.py` just as
+        often as we give it. Measured on the shape it actually starts:
+        on a restored entry `go_back(wait_until="domcontentloaded")` never
+        returns -- the restore hands over the *already loaded* document, no
+        `domContentLoaded` fires, and the verb hangs out its whole navigation
+        budget -- while `wait_until="commit"` answers in ~30 ms with the right
+        URL **in either launch mode**, because a commit is the one thing every
+        history step has. `commit` answers "where did the tab go", which is what
+        this verb must know; the window below gives the *document* a moment to
+        be readable only when the browser actually refetched it.
+        """
         page = await self.ensure()
         if page.url == "about:blank":
             raise ToolError(MSG_NO_PAGE)
+        # A belief about the tab waits for evidence. With the cache on and the
+        # route guard registered, a **restored** entry is a navigation
+        # Playwright cannot witness at all: the interception never fires (this
+        # is the footnote on `--disable-back-forward-cache` above), so
+        # `go_back` answers `null` even though the tab has moved. The URL is
+        # the only honest witness either way: `commit` leaves it updated, and
+        # a step that went nowhere leaves it exactly as it was.
+        before = page.url
         try:
             if direction == "back":
-                response = await page.go_back(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                response = await page.go_back(wait_until="commit", timeout=NAV_TIMEOUT_MS)
             else:
-                response = await page.go_forward(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                response = await page.go_forward(wait_until="commit", timeout=NAV_TIMEOUT_MS)
         except Exception as exc:  # noqa: BLE001 - timeout, blocked navigation, network
             raise ToolError(
                 f"I couldn't go {direction}: {clip(str(exc), 120)}"
             ) from None
-        if response is None:
+        if response is None and page.url == before:
             # Playwright answers `null` for "no entry" *and* for "cancelled"
             # (a form-resubmission confirmation, a page that refused to
             # unload). Saying which one it was would be a guess, so the
@@ -3232,6 +3644,18 @@ class _Browser:
             return {"moved": False, "url": page.url, "title": await self._title(page)}
         # A different document: the same reason `open_page` bumps it.
         self._new_document()
+        if response is not None:
+            # Only a **refetched** entry needs this -- a restored one arrives
+            # already loaded and has no lifecycle Playwright can watch (the
+            # `null` above). A page whose DOM never arrives has still *gone
+            # back*, the URL is committed and reported below, so the settle is
+            # best effort and never the refusal.
+            try:
+                await page.wait_for_load_state(
+                    "domcontentloaded", timeout=HISTORY_SETTLE_MS
+                )
+            except Exception:  # noqa: BLE001 - see above: the hop is confirmed
+                pass
         # The guard already refused anything inward on the way here; this is
         # the sentence for it, the same one `open_page` gives.
         ok, why = await self.allowed(page.url)

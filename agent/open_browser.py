@@ -1,21 +1,29 @@
-"""Open or focus Lumine's browser without opening duplicate tabs."""
+"""Open or focus Lumine's browser without opening duplicate tabs.
+
+**The launch lives in `session.py` now, and that is a fix rather than a tidy-up.**
+This module already had the healthy shape -- start Chromium as an ordinary
+detached process, then let Playwright attach over a debugging port -- while the
+`browse` tool started its browser through `launch_persistent_context`, which
+drives Chromium over `--remote-debugging-pipe`. Measured side by side on the same
+profile, same flags, same engine: everything Playwright launched stalled YouTube
+playback at ~40 s with the media request returning 401; everything started here
+and merely attached to played past a minute. Two copies of "how to start the
+browser" is how that difference stayed invisible, so there is one copy and this
+module calls it. **And the port number itself carried the second half** (see
+`session.browser_command`): launched with `--remote-debugging-port=0` this
+healthy shape stalled again, and with an explicit -- picked, not fixed -- number
+it played. The choosing lives in `session.free_debug_port`.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import subprocess
-import sys
-import time
 from pathlib import Path
 
 try:
     from .tools.browser import session
 except ImportError:  # Running as `python agent/open_browser.py`
     from tools.browser import session
-
-
-START_TIMEOUT_SECONDS = 15.0
-POLL_SECONDS = 0.1
 
 
 def _new_tab_url(engine: str) -> str:
@@ -51,60 +59,28 @@ def _browser_command(
     executable: str,
     user_data_dir: Path,
     profile_directory: str | None = None,
+    debug_port: int | None = None,
 ) -> list[str]:
-    command = [
+    """The command that opens a *window*, on the browser's own new tab page."""
+    return session.browser_command(
+        engine,
         executable,
-        f"--user-data-dir={user_data_dir}",
-        "--remote-debugging-port=0",
-        "--no-first-run",
-        "--no-default-browser-check",
-    ]
-    if profile_directory:
-        command.append(f"--profile-directory={profile_directory}")
-    command.append(_new_tab_url(engine))
-    return command
+        user_data_dir,
+        profile_directory,
+        start_url=_new_tab_url(engine),
+        debug_port=debug_port,
+    )
 
 
-def _launch_detached(command: list[str]) -> subprocess.Popen[bytes]:
-    options: dict[str, object] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-    }
-    if sys.platform == "win32":
-        options["creationflags"] = (
-            getattr(subprocess, "DETACHED_PROCESS", 0)
-            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        )
-    else:
-        options["start_new_session"] = True
-    return subprocess.Popen(command, **options)
+#: Shared with the `browse` tool, so the two cannot drift. Kept as module-level
+#: names because they are the seams their tests patch.
+_launch_detached = session.launch_detached
+_wait_for_browser = session.wait_for_devtools
 
 
 def _active_port(user_data_dir: Path) -> int | None:
-    marker = user_data_dir / "DevToolsActivePort"
-    try:
-        port = marker.read_text(encoding="utf-8").splitlines()[0].strip()
-    except (OSError, IndexError):
-        return None
-    return int(port) if port.isdigit() else None
-
-
-def _wait_for_browser(user_data_dir: Path, process: subprocess.Popen[bytes]) -> int:
-    deadline = time.monotonic() + START_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        port = _active_port(user_data_dir)
-        if port and session._endpoint_alive(f"http://127.0.0.1:{port}"):
-            return port
-        if process.poll() is not None:
-            raise RuntimeError(
-                "The browser closed before its local control endpoint was ready. Nothing else was opened."
-            )
-        time.sleep(POLL_SECONDS)
-    raise RuntimeError(
-        "The browser did not publish its local control endpoint in time. Nothing else was opened."
-    )
+    port = session._discover_devtools_port(user_data_dir, attempts=1)
+    return port or None
 
 
 def open_browser() -> str:
@@ -185,20 +161,19 @@ def open_browser() -> str:
     else:
         executable = asyncio.run(_playwright_chromium_path())
 
-    command = _browser_command(engine, executable, user_data_dir, profile_directory)
+    # One number, picked once: the command line carries it and the wait
+    # polls it, because an explicit-port launch leaves no port file for the
+    # older discovery route to read (see session.free_debug_port for the
+    # measured reason the number has to be explicit).
+    port = session.free_debug_port()
+    command = _browser_command(engine, executable, user_data_dir, profile_directory, port)
     process = _launch_detached(command)
     try:
-        port = _wait_for_browser(user_data_dir, process)
-    except Exception:
-        if process.poll() is None:
-            try:
-                process.terminate()
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            except OSError:
-                pass
+        port = _wait_for_browser(user_data_dir, process, port)
+    except BaseException:
+        # The same teardown the `browse` tool uses, so a launch that never
+        # produced a window cannot leave a browser behind either.
+        session.terminate_process(process)
         raise
 
     session._publish_endpoint(port, endpoint_file)

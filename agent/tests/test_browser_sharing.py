@@ -40,13 +40,24 @@ class WindowGeometryTests(unittest.TestCase):
         self.assertIn("--window-size=960,680", joined)
         self.assertIn("--window-position=0,0", joined)
 
-    def test_the_browser_starts_dark_and_does_not_emulate_a_viewport(self):
+    def test_the_browser_starts_dark_and_is_launched_rather_than_played_back(self):
+        """The launch mode is the whole YouTube fix, so the source is checked.
+
+        `launch_and_attach` is the healthy shape: start Chromium as an ordinary
+        process and attach over a debugging *port*. `launch_persistent_context`
+        drove it over a pipe, and everything launched that way stalled playback at
+        ~40 s. A source assertion rather than a mock because this is about which
+        call is made at all -- the mocked tests above cover what happens afterwards.
+        """
         import inspect
 
-        self.assertIn("_launch_persistent(", inspect.getsource(session._Browser._start))
+        source = inspect.getsource(session._Browser._start)
+        self.assertIn("launch_and_attach(", source)
+        self.assertNotIn("launch_persistent_context(", source)
         flags = " ".join(session._window_args())
         self.assertIn("--force-dark-mode", flags)
         self.assertIn("--disable-background-media-suspend", flags)
+        self.assertNotIn("--remote-debugging-pipe", flags)
 
 
 class SharedBrowserTests(unittest.TestCase):

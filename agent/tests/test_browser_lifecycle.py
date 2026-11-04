@@ -52,6 +52,17 @@ class ReleaseLockTests(unittest.IsolatedAsyncioTestCase):
         browser._wa_page = mock.Mock()
         browser._wa_page.is_closed.return_value = False
         browser._joined_browser = object()
+        # The handles on a browser *this process launched*. Both have to be
+        # dropped by `release`: `_cdp_browser` belongs to a loop that may be gone,
+        # and a surviving reference is how the singleton keeps pointing at a dead
+        # browser. `poll` answers "already exited", so teardown does not wait out
+        # the real grace period in a unit test.
+        browser._process = mock.Mock()
+        browser._process.poll = mock.Mock(return_value=0)
+        browser._cdp_browser = mock.Mock()
+        browser._cdp_browser.new_browser_cdp_session = mock.AsyncMock(
+            side_effect=RuntimeError("the browser is gone")
+        )
         browser._tabs = [object()]
         browser._active = 1
         return browser
@@ -113,6 +124,8 @@ class ReleaseLockTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(browser._wa_page)
         self.assertIsNone(browser._wa_lock)
         self.assertIsNone(browser._joined_browser)
+        self.assertIsNone(browser._cdp_browser)
+        self.assertIsNone(browser._process)
         self.assertEqual(browser._tabs, [])
         self.assertIsNone(browser._active)
         self.assertIsNone(browser._loop)
@@ -195,7 +208,12 @@ class PreserveWhatsAppDraftTests(unittest.IsolatedAsyncioTestCase):
             await browser.release()
 
         close_remote.assert_awaited_once_with(
-            context, playwright, shared=False, endpoint_path=None
+            context,
+            playwright,
+            shared=False,
+            endpoint_path=None,
+            process=None,
+            browser=None,
         )
         self.assertEqual(browser._preserved_clients, [])
 
@@ -283,38 +301,158 @@ class CloseRemoteEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(forget.call_count, 0)
 
 
-class _Locked(Exception):
-    """Chromium's own refusal when the profile directory is already in use."""
+class LaunchAndAttachTests(unittest.IsolatedAsyncioTestCase):
+    """Starting a browser as a process and then attaching to it.
 
+    **The launch mode is the fix, so this is the test that keeps it.** Playwright's
+    `launch_persistent_context` drives Chromium over `--remote-debugging-pipe`, and
+    everything it launched stalled YouTube playback at ~40 s with the media request
+    returning 401. Everything started as an ordinary process and merely attached to
+    over a debugging *port* played past a minute -- measured on the same profile,
+    the same flags, the same engine. Playwright cannot launch over a port (measured:
+    it times out with the port already live), so the order is launch, then attach.
 
-class ProfileLockMessageTests(unittest.TestCase):
-    """Both spellings of the refusal, and only those."""
+    A lock that is *being* released looks exactly like one somebody holds, and this
+    is the path that reopens the browser in the same session, so `ProfileBusy` is
+    retried -- bounded, because a directory somebody genuinely holds never clears.
+    """
 
-    def test_chromes_two_spellings_are_recognised(self):
-        self.assertTrue(
-            session._profile_locked(
-                "Existing browser session: The process started earlier is "
-                "using the same profile directory."
-            )
+    def _playwright(self, *, contexts=None, attach_error: Exception | None = None):
+        playwright = mock.Mock()
+        playwright.chromium.executable_path = r"C:\chrome\chrome.exe"
+        browser = mock.Mock()
+        browser.contexts = list(contexts if contexts is not None else [mock.Mock()])
+        playwright.chromium.connect_over_cdp = mock.AsyncMock(
+            side_effect=[attach_error] if attach_error else None,
+            return_value=browser,
         )
-        self.assertTrue(
-            session._profile_locked(
-                "Error: The user data directory is already in use by "
-                "another Chromium instance"
+        return playwright, browser
+
+    async def test_a_launch_that_publishes_no_endpoint_is_retried_then_reported(self):
+        """The Windows shape of a held profile: hand off, exit 0, no port."""
+        playwright, _ = self._playwright()
+        outcomes = [session.ProfileBusy("no endpoint")] * session._LAUNCH_ATTEMPTS
+        with mock.patch.object(session, "launch_detached", return_value=mock.Mock()) as spawn, \
+                mock.patch.object(
+                    session, "wait_for_devtools", side_effect=outcomes
+                ) as wait, \
+                mock.patch.object(session, "terminate_process") as end, \
+                mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0):
+            with self.assertRaises(session.ProfileBusy):
+                await session.launch_and_attach(
+                    playwright,
+                    executable=r"C:\brave\brave.exe",
+                    engine="brave",
+                    directory=Path("C:/profile"),
+                )
+        self.assertEqual(wait.call_count, session._LAUNCH_ATTEMPTS)
+        self.assertEqual(spawn.call_count, session._LAUNCH_ATTEMPTS)
+        # Every attempt that produced nothing leaves this process behind if it is
+        # not ended, and a leftover Chromium holds the profile for the next room.
+        self.assertEqual(end.call_count, session._LAUNCH_ATTEMPTS)
+
+    async def test_a_lock_that_clears_is_retried_until_the_browser_comes_up(self):
+        playwright, browser = self._playwright()
+        context = browser.contexts[0]
+        with mock.patch.object(session, "launch_detached", return_value=mock.Mock()), \
+                mock.patch.object(
+                    session,
+                    "wait_for_devtools",
+                    side_effect=[session.ProfileBusy("busy")] * (session._LAUNCH_ATTEMPTS - 1)
+                    + [9333],
+                ) as wait, \
+                mock.patch.object(session, "terminate_process"), \
+                mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0):
+            launched = await session.launch_and_attach(
+                playwright,
+                executable=r"C:\chrome\chrome.exe",
+                engine="chromium",
+                directory=Path("C:/profile"),
             )
+        self.assertIs(launched.context, context)
+        self.assertIs(launched.browser, browser)
+        self.assertEqual(launched.port, 9333)
+        self.assertEqual(wait.call_count, session._LAUNCH_ATTEMPTS)
+        playwright.chromium.connect_over_cdp.assert_awaited_once_with(
+            "http://127.0.0.1:9333"
         )
 
-    def test_the_match_is_not_case_sensitive(self):
-        # The message comes from the browser, and a capitalised variant used to
-        # slip past and become the generic "I couldn't start the browser"
-        # instead of the sentence that tells the user which window to close.
-        self.assertTrue(session._profile_locked("EXISTING BROWSER SESSION"))
-        self.assertTrue(session._profile_locked("User Data Directory Is Already In Use"))
+    async def test_a_timeout_is_not_retried(self):
+        """A browser that started and never published is still running.
 
-    def test_anything_else_is_not_a_lock(self):
-        self.assertFalse(session._profile_locked(""))
-        self.assertFalse(session._profile_locked("browser executable not found"))
-        self.assertFalse(session._profile_locked("network error"))
+        Retrying would launch a second one against the same profile -- so the
+        delay would buy a worse failure, not a recovery.
+        """
+        playwright, _ = self._playwright()
+        with mock.patch.object(session, "launch_detached", return_value=mock.Mock()) as spawn, \
+                mock.patch.object(
+                    session, "wait_for_devtools", side_effect=session.LaunchTimeout("slow")
+                ), \
+                mock.patch.object(session, "terminate_process"):
+            with self.assertRaises(session.LaunchTimeout):
+                await session.launch_and_attach(
+                    playwright,
+                    executable=r"C:\chrome\chrome.exe",
+                    engine="chromium",
+                    directory=Path("C:/profile"),
+                )
+        self.assertEqual(spawn.call_count, 1)
+
+    async def test_an_attach_failure_ends_the_browser_it_started(self):
+        playwright, _ = self._playwright(attach_error=RuntimeError("protocol error"))
+        with mock.patch.object(session, "launch_detached", return_value=mock.Mock()), \
+                mock.patch.object(session, "wait_for_devtools", return_value=9333), \
+                mock.patch.object(session, "terminate_process") as end:
+            with self.assertRaises(ToolError):
+                await session.launch_and_attach(
+                    playwright,
+                    executable=r"C:\chrome\chrome.exe",
+                    engine="chromium",
+                    directory=Path("C:/profile"),
+                )
+        end.assert_called_once()
+
+    async def test_the_command_is_the_healthy_shape(self):
+        """A person's command line, not Playwright's.
+
+        `--remote-debugging-port` rather than `--remote-debugging-pipe` is the
+        whole point: the pipe is what makes the browser behave like an automation
+        client, and the port is what makes it behave like a browser somebody
+        opened. The *number* is explicit, never `0`: measured across two launch
+        shapes, the same command with `=0` stalled YouTube playback at ~40 s in
+        every run, and with an explicit number it played (see `free_debug_port`).
+        """
+        command = session.browser_command(
+            "brave",
+            r"C:\Brave\brave.exe",
+            Path("C:/Users/example/User Data"),
+            "Profile 1",
+            extra_args=session._window_args(),
+            start_url="about:blank",
+        )
+        self.assertEqual(command[0], r"C:\Brave\brave.exe")
+        self.assertIn("--user-data-dir=C:\\Users\\example\\User Data", command)
+        ports = [
+            argument for argument in command
+            if argument.startswith("--remote-debugging-port=")
+        ]
+        self.assertEqual(len(ports), 1)
+        self.assertTrue(ports[0].startswith("--remote-debugging-port="))
+        self.assertNotEqual(ports[0], "--remote-debugging-port=0")
+        self.assertNotIn("--remote-debugging-pipe", command)
+        self.assertIn("--profile-directory=Profile 1", command)
+        self.assertIn("--window-size=960,680", command)
+        # Playwright used to pass these for us; the browser is OURS to size now.
+        self.assertIn("--disable-background-timer-throttling", command)
+        self.assertIn("--autoplay-policy=no-user-gesture-required", command)
+        self.assertEqual(command[-1], "about:blank")
+
+    def test_there_is_no_profile_directory_when_there_is_none_to_name(self):
+        command = session.browser_command(
+            "chromium", r"C:\chrome\chrome.exe", Path("C:/profile")
+        )
+        self.assertFalse(any(part.startswith("--profile-directory") for part in command))
+        self.assertEqual(command[-1], "about:blank")
 
 
 class BrowserEngineSelectionTests(unittest.TestCase):
@@ -502,7 +640,8 @@ class ProfileInUseTests(unittest.TestCase):
 
     def test_posix_is_not_pre_checked(self):
         """The POSIX singleton lock outlives a crashed browser, so presence is
-        not evidence; the launch error is, and `_profile_locked` reads it."""
+        not evidence; the launch that exits without an endpoint is, and that is
+        what `ProfileBusy` reports."""
         with tempfile.TemporaryDirectory() as directory:
             lock = Path(directory) / "SingletonLock"
             lock.write_text("", encoding="utf-8")
@@ -549,129 +688,11 @@ class SettleProfileLockTests(unittest.TestCase):
 
         A held profile the user is genuinely using pays this on the first
         browser request of a session, so it has to stay short enough not to
-        read as a hang -- and it shares the budget `_launch_persistent` already
-        spends on Chromium's own lock message.
+        read as a hang -- and it shares the budget `launch_and_attach` spends
+        retrying a launch that produced no endpoint.
         """
         window = (session._LAUNCH_ATTEMPTS - 1) * session._LAUNCH_RETRY_SECONDS
         self.assertLess(window, 2.0)
-
-
-class LaunchPersistentTests(unittest.IsolatedAsyncioTestCase):
-    """A lock that is *being* released looks exactly like one somebody holds."""
-
-    def _playwright(self, outcomes):
-        playwright = mock.Mock()
-        playwright.chromium.launch_persistent_context = mock.AsyncMock(side_effect=outcomes)
-        return playwright
-
-    def _locked(self, n: int) -> list[_Locked]:
-        return [_Locked("Existing browser session: the profile is in use") for _ in range(n)]
-
-    async def test_a_lock_that_clears_is_retried_until_the_browser_comes_up(self):
-        context = object()
-        playwright = self._playwright(self._locked(session._LAUNCH_ATTEMPTS - 1) + [context])
-        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
-                mock.patch.object(session, "_window_args", return_value=[]):
-            result = await session._launch_persistent(playwright, Path("C:/profile"))
-        self.assertIs(result, context)
-        self.assertEqual(
-            playwright.chromium.launch_persistent_context.await_count,
-            session._LAUNCH_ATTEMPTS,
-        )
-
-    async def test_a_lock_nobody_releases_is_given_up_on(self):
-        """Every extra attempt is time spent waiting for a correct refusal."""
-        playwright = self._playwright(self._locked(99))
-        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
-                mock.patch.object(session, "_window_args", return_value=[]):
-            with self.assertRaises(_Locked):
-                await session._launch_persistent(playwright, Path("C:/profile"))
-        self.assertEqual(
-            playwright.chromium.launch_persistent_context.await_count,
-            session._LAUNCH_ATTEMPTS,
-        )
-
-    async def test_anything_else_is_raised_on_the_first_attempt(self):
-        """A missing executable or a broken profile is not a lock, and waiting
-        three times for it is three quarters of a second of nothing."""
-        playwright = self._playwright([OSError("browser executable not found")])
-        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
-                mock.patch.object(session, "_window_args", return_value=[]):
-            with self.assertRaises(OSError):
-                await session._launch_persistent(playwright, Path("C:/profile"))
-        self.assertEqual(playwright.chromium.launch_persistent_context.await_count, 1)
-
-    async def test_the_launch_keeps_the_browser_defaults_and_no_viewport(self):
-        """The flags moved with the retry, and this is what keeps them here.
-
-        A source grep would go green while the flags were gone from the *call*;
-        this reads the arguments the launch actually received.
-        """
-        context = object()
-        playwright = self._playwright([context])
-        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0):
-            await session._launch_persistent(playwright, Path("C:/profile"))
-
-        _, kwargs = playwright.chromium.launch_persistent_context.await_args
-        args = kwargs["args"]
-        self.assertTrue(kwargs["no_viewport"])
-        self.assertEqual(kwargs["color_scheme"], "dark")
-        self.assertFalse(kwargs["accept_downloads"])
-        self.assertIn("--remote-debugging-port=0", args)
-        self.assertIn("--window-size=960,680", args)
-        self.assertIn("--disable-background-media-suspend", args)
-        # The directory is positional, so it is in the args tuple not the
-        # kwargs -- and compared as the code builds it, `str(Path(...))`, since
-        # a forward-slash literal comes back with the platform's separators.
-        self.assertEqual(
-            playwright.chromium.launch_persistent_context.await_args.args[0],
-            str(Path("C:/profile")),
-        )
-
-    async def test_the_profile_directory_is_passed_as_the_launch_target(self):
-        playwright = self._playwright([object()])
-        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
-                mock.patch.object(session, "_window_args", return_value=[]):
-            await session._launch_persistent(playwright, Path("D:/somewhere/else"))
-        self.assertEqual(
-            playwright.chromium.launch_persistent_context.await_args.args[0],
-            str(Path("D:/somewhere/else")),
-        )
-
-    async def test_brave_uses_the_named_profile_and_restores_normal_browser_features(self):
-        playwright = self._playwright([object()])
-        executable = r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe"
-        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0):
-            await session._launch_persistent(
-                playwright,
-                Path("C:/Users/example/AppData/Local/BraveSoftware/Brave-Browser/User Data"),
-                executable_path=executable,
-                personal_engine="brave",
-                profile_directory="Profile 1",
-            )
-        _, kwargs = playwright.chromium.launch_persistent_context.await_args
-        self.assertEqual(kwargs["executable_path"], executable)
-        self.assertEqual(
-            kwargs["ignore_default_args"],
-            [
-                "--disable-background-networking",
-                "--disable-component-update",
-                "--disable-extensions",
-                "--disable-component-extensions-with-background-pages",
-            ],
-        )
-        self.assertIn("--profile-directory=Profile 1", kwargs["args"])
-        self.assertEqual(
-            playwright.chromium.launch_persistent_context.await_args.args[0],
-            str(Path("C:/Users/example/AppData/Local/BraveSoftware/Brave-Browser/User Data")),
-        )
-
-    async def test_chromium_keeps_playwright_default_launch_arguments(self):
-        playwright = self._playwright([object()])
-        with mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0):
-            await session._launch_persistent(playwright, Path("C:/profile"))
-        _, kwargs = playwright.chromium.launch_persistent_context.await_args
-        self.assertNotIn("ignore_default_args", kwargs)
 
 
 class SpareProfileDirTests(unittest.TestCase):
@@ -707,12 +728,20 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
     is no longer the only one.
     """
 
-    def _locked(self) -> Exception:
-        return _Locked("Existing browser session: the profile is in use")
+    def _busy(self) -> Exception:
+        """What a launch that produced no endpoint reports.
+
+        Same condition as Chromium's old "existing browser session" paragraph,
+        different witness: a browser started as an ordinary process hands off and
+        exits 0, so there is no message to read -- only an endpoint that never
+        appeared.
+        """
+        return session.ProfileBusy("no endpoint")
 
     def _fake_playwright(self):
         pw = mock.Mock()
         pw.stop = mock.AsyncMock()
+        pw.chromium.executable_path = r"C:\chrome\chrome.exe"
         manager = mock.Mock()
         manager.start = mock.AsyncMock(return_value=pw)
         return mock.Mock(return_value=manager), pw
@@ -727,13 +756,19 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
         context.on = mock.Mock()
         return context, page
 
+    @staticmethod
+    def _launched(context, port: int = 9333) -> session._Launched:
+        return session._Launched(context, mock.Mock(), mock.Mock(), port)
+
     async def test_a_locked_brave_profile_falls_back_to_a_spare_directory(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             brave_data = root / "User Data"
             (brave_data / "Profile 1").mkdir(parents=True)
             context, page = self._fake_context()
-            launch = mock.AsyncMock(side_effect=[self._locked(), context])
+            launch = mock.AsyncMock(
+                side_effect=[self._busy(), self._launched(context)]
+            )
             factory, _ = self._fake_playwright()
             endpoint = root / "browser-cdp-brave.txt"
             browser = session._Browser()
@@ -746,8 +781,7 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(session, "_endpoint_file", return_value=endpoint), \
                     mock.patch.object(session, "_read_endpoint", return_value=""), \
                     mock.patch.object(session, "profile_in_use", return_value=False), \
-                    mock.patch.object(session, "_launch_persistent", launch), \
-                    mock.patch.object(session, "_discover_devtools_port", return_value=9333) as discover, \
+                    mock.patch.object(session, "launch_and_attach", launch), \
                     mock.patch.object(session, "_publish_endpoint") as publish:
                 result = await browser._start(asyncio.get_running_loop())
                 # Inside the patch: `spare_profile_dir` derives from
@@ -758,20 +792,19 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(launch.await_count, 2)
             first, second = launch.await_args_list
             # The personal profile is still the first choice, by name.
-            self.assertEqual(first.args[1], brave_data)
+            self.assertEqual(first.kwargs["directory"], brave_data)
             self.assertEqual(first.kwargs["profile_directory"], "Profile 1")
             # ...and the spare is the second, with no `profile_directory`: a
             # fresh user-data directory has only `Default` in it, and naming
             # the personal profile here would quietly recreate the very
             # directory we were just refused.
-            self.assertEqual(second.args[1], spare)
+            self.assertEqual(second.kwargs["directory"], spare)
             self.assertIsNone(second.kwargs["profile_directory"])
             self.assertTrue(spare.is_dir())
-            # The endpoint published is still the *engine's* one, discovered
-            # from the directory that actually got the browser -- so a later
-            # process joins this window exactly as it would have joined the
-            # first choice. One browser, either way.
-            discover.assert_called_once_with(spare)
+            # The endpoint published is still the *engine's* one, and it names the
+            # port the browser that actually started is listening on -- so a later
+            # process joins this window exactly as it would have joined the first
+            # choice. One browser, either way.
             publish.assert_called_once_with(9333, endpoint)
 
     async def test_a_profile_already_held_never_attempts_to_launch_on_it(self):
@@ -782,7 +815,7 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
             brave_data = root / "User Data"
             (brave_data / "Profile 1").mkdir(parents=True)
             context, page = self._fake_context()
-            launch = mock.AsyncMock(return_value=context)
+            launch = mock.AsyncMock(return_value=self._launched(context))
             factory, _ = self._fake_playwright()
             endpoint = root / "browser-cdp-brave.txt"
             browser = session._Browser()
@@ -800,15 +833,14 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                         "profile_in_use",
                         side_effect=lambda directory: Path(directory) == brave_data,
                     ), \
-                    mock.patch.object(session, "_launch_persistent", launch), \
-                    mock.patch.object(session, "_discover_devtools_port", return_value=9333), \
+                    mock.patch.object(session, "launch_and_attach", launch), \
                     mock.patch.object(session, "_publish_endpoint"):
                 result = await browser._start(asyncio.get_running_loop())
                 spare = session.spare_profile_dir("brave")
 
             self.assertIs(result, page)
             self.assertEqual(launch.await_count, 1)
-            self.assertEqual(launch.await_args.args[1], spare)
+            self.assertEqual(launch.await_args.kwargs["directory"], spare)
             self.assertIsNone(launch.await_args.kwargs["profile_directory"])
 
     async def test_a_lock_that_is_being_released_keeps_the_personal_profile(self):
@@ -819,7 +851,7 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
             brave_data = root / "User Data"
             (brave_data / "Profile 1").mkdir(parents=True)
             context, page = self._fake_context()
-            launch = mock.AsyncMock(return_value=context)
+            launch = mock.AsyncMock(return_value=self._launched(context))
             factory, _ = self._fake_playwright()
             endpoint = root / "browser-cdp-brave.txt"
             browser = session._Browser()
@@ -833,16 +865,14 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(session, "_read_endpoint", return_value=""), \
                     mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
                     mock.patch.object(session, "profile_in_use", side_effect=[True, False]), \
-                    mock.patch.object(session, "_launch_persistent", launch), \
-                    mock.patch.object(session, "_discover_devtools_port", return_value=9333) as discover, \
+                    mock.patch.object(session, "launch_and_attach", launch), \
                     mock.patch.object(session, "_publish_endpoint"):
                 result = await browser._start(asyncio.get_running_loop())
 
             self.assertIs(result, page)
             self.assertEqual(launch.await_count, 1)
-            self.assertEqual(launch.await_args.args[1], brave_data)
+            self.assertEqual(launch.await_args.kwargs["directory"], brave_data)
             self.assertEqual(launch.await_args.kwargs["profile_directory"], "Profile 1")
-            discover.assert_called_once_with(brave_data)
 
     async def test_both_directories_held_refuses_before_waiting_on_a_timeout(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -861,7 +891,7 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(session, "_read_endpoint", return_value=""), \
                     mock.patch.object(session, "_LAUNCH_RETRY_SECONDS", 0), \
                     mock.patch.object(session, "profile_in_use", return_value=True), \
-                    mock.patch.object(session, "_launch_persistent") as launch:
+                    mock.patch.object(session, "launch_and_attach") as launch:
                 with self.assertRaises(ToolError) as caught:
                     await browser._start(asyncio.get_running_loop())
 
@@ -882,18 +912,21 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(session, "_endpoint_file", return_value=root / "browser-cdp.txt"), \
                     mock.patch.object(session, "_read_endpoint", return_value=""), \
                     mock.patch.object(session, "profile_in_use", return_value=False), \
-                    mock.patch.object(session, "_launch_persistent", launch):
+                    mock.patch.object(session, "launch_and_attach", launch):
                 with self.assertRaises(ToolError) as caught:
                     await browser._start(asyncio.get_running_loop())
             self.assertEqual(launch.await_count, 1)
             self.assertEqual(str(caught.exception), session.MSG_NOT_INSTALLED)
 
-    async def test_when_even_the_spare_is_held_the_refusal_is_the_honest_one(self):
-        """The fallback has a floor, and it is the sentence that used to fire
-        on the *first* lock: two held directories are two held directories."""
+    async def test_a_launch_that_never_published_does_not_open_a_spare_beside_it(self):
+        """A timeout is not a lock, and the browser it started is still running.
+
+        Falling back would leave two windows and answer a question nobody asked;
+        the honest sentence names the timeout and nothing was opened.
+        """
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
-            launch = mock.AsyncMock(side_effect=[self._locked(), self._locked()])
+            launch = mock.AsyncMock(side_effect=session.LaunchTimeout("slow to start"))
             factory, _ = self._fake_playwright()
             browser = session._Browser()
             with mock.patch("playwright.async_api.async_playwright", factory), \
@@ -902,7 +935,27 @@ class SpareProfileFallbackTests(unittest.IsolatedAsyncioTestCase):
                     mock.patch.object(session, "_endpoint_file", return_value=root / "browser-cdp.txt"), \
                     mock.patch.object(session, "_read_endpoint", return_value=""), \
                     mock.patch.object(session, "profile_in_use", return_value=False), \
-                    mock.patch.object(session, "_launch_persistent", launch):
+                    mock.patch.object(session, "launch_and_attach", launch):
+                with self.assertRaises(ToolError) as caught:
+                    await browser._start(asyncio.get_running_loop())
+            self.assertEqual(launch.await_count, 1)
+            self.assertEqual(str(caught.exception), "slow to start")
+
+    async def test_when_even_the_spare_is_held_the_refusal_is_the_honest_one(self):
+        """The fallback has a floor, and it is the sentence that used to fire
+        on the *first* lock: two held directories are two held directories."""
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            launch = mock.AsyncMock(side_effect=[self._busy(), self._busy()])
+            factory, _ = self._fake_playwright()
+            browser = session._Browser()
+            with mock.patch("playwright.async_api.async_playwright", factory), \
+                    mock.patch.object(session, "_configured_browser_engine", return_value="chromium"), \
+                    mock.patch.object(session, "profile_dir", return_value=root / "browser-profile"), \
+                    mock.patch.object(session, "_endpoint_file", return_value=root / "browser-cdp.txt"), \
+                    mock.patch.object(session, "_read_endpoint", return_value=""), \
+                    mock.patch.object(session, "profile_in_use", return_value=False), \
+                    mock.patch.object(session, "launch_and_attach", launch):
                 with self.assertRaises(ToolError) as caught:
                     await browser._start(asyncio.get_running_loop())
             self.assertEqual(launch.await_count, 2)

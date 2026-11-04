@@ -241,6 +241,56 @@ classifying a paused video. Capture this before restoring or replaying anything.
 Treat a connected CDP socket as control-plane evidence only, not proof that
 playback continued.
 
+### Playback stall root cause — measured 2026-11-03/04
+
+The ~40 s stall recorded above was reproduced under a controlled harness —
+detached launch, CDP attach, one fresh `user-data-dir` per run, muted
+`aqz-KE-bpKQ`, sampled every second for ~65 s — with exactly one variable
+changing per pair. Every stall landed in the same window (~40–44 s: the
+SABR/player "Something went wrong" moment), independent of engine, profile
+state and attach path.
+
+| Held constant | Varied | Result |
+|---|---|---|
+| engine, flags, attach | launch mode: `launch_persistent_context` (pipe) vs detached process + CDP attach | pipe stalls; detached plays past a minute |
+| profile state, attach style | **`--remote-debugging-port=0` vs an explicit port** | `=0` stalled in **10/10** runs (2 fresh profiles, the reused spare, and the real `ensure()` tool path); an explicit port played in **7/7** (Chrome 9339, 9353; Brave 9371, 18397, 1348, plus the fixed spare run) |
+| everything else | Google Chrome vs Brave vs Playwright Chromium (headless, temp dir) | engine is not the variable: Chrome and Brave both play |
+| everything else | the tool's context-wide route guard | not the variable: stalls without it, plays with it |
+| everything else | reused spare profile dir vs fresh | not the variable: the spare plays with an explicit port |
+| engine, flags | `--disable-back-forward-cache` | the flag restores Playwright's history behaviour, and is refused: a person's launch does not carry Playwright switches |
+
+A second, separate finding came out of the same harness: **history navigation
+on a bfcache-intact browser with the route guard registered.** A restored
+entry is invisible to Playwright — `go_back(wait_until="domcontentloaded")`
+never returns (its restore hands over an already-loaded document, so no
+`domContentLoaded` event fires), and with interception on, `commit` returns
+`null` although the URL and title show the tab has moved. `go_history` now
+waits on `commit`, decides "moved" by URL evidence, and gives only a
+**refetched** entry a bounded `HISTORY_SETTLE_MS = 3000` to present its DOM;
+a settle the page never satisfies does not turn a completed hop into a
+refusal. The real-browser test
+(`test_browser_engine.RealBrowserJourneyTests.test_history_and_scroll_move_a_real_page`)
+is the regression gate for it.
+
+The fixed shape is the shipped one: `session.free_debug_port()` picks an
+OS-assigned number and `browser_command` writes it explicitly. Manual
+verification procedure (any future launch change should re-run it):
+
+1. `python -m unittest discover -s agent\tests -p "test_*.py"` — the full suite
+   must pass, including the real-browser journeys.
+2. Drive `session._Browser.ensure()` from a scratch script against
+   `https://www.youtube.com/watch?v=aqz-KE-bpKQ`, sample `video.currentTime`
+   once a second for 75 s, and require `currentTime >= 75` with no player
+   error overlay; then `release()` and require the launched pid to be gone.
+3. Repeat once more with the personal Brave profile held, so the
+   spare-fallback launch is exercised too.
+
+Record which path each run took (`launched ours` vs `joined`), the played-to
+time, and the launcher's pid result. A logged stall should also capture the
+`paused/currentTime/readyState` shape and one line of not-blocking
+failed-request evidence, in the same vocabulary as the 2026-10-30 entries
+above.
+
 ## Phase 1 — engine completion
 
 **Unit**
