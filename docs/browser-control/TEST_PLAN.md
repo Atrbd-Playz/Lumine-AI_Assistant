@@ -69,16 +69,18 @@ verified; uninterrupted media playback was not an acceptance check.
 
 The browser lifecycle tests cover saved/environment engine precedence, automatic
 Brave discovery, clear refusal when explicitly selected Brave is unavailable,
-resolving the native profile named `Lumine`, passing its on-disk profile
-directory into the launcher, and falling back to a spare user-data directory
-when that profile is held. A held directory is re-checked for about a second and
-a half before that fallback, so a lock Chromium is still releasing keeps the
-personal profile; a lock somebody holds does not clear and the spare is used.
-Endpoint files are isolated by engine and owner
-teardown only removes the matching endpoint. They also assert the Brave launch restores
-component updates, background networking, and extensions, while Chromium keeps
-Playwright's default arguments. The media DNS test exercises two consecutive
-transient failures before recovery.
+per-engine isolated directories (`profile_dir(engine)` — Chromium keeps the
+historical `browser-profile` path, Brave gets `browser-profile-brave` beside
+it, and `LUMINE_BROWSER_PROFILE` overrides either), and the
+full-isolation launch contract: **one attempt, one directory of Lumine's own,
+no spare, no `--profile-directory` flag** — a held directory with no live
+endpoint to join refuses with `MSG_OWN_PROFILE_HELD`, a sentence about the
+browser *she* owns, before any launch happens. Endpoint files stay isolated
+by engine and owner teardown only removes the matching endpoint. They also
+assert the Brave launch restores component updates, background networking,
+and extensions,
+while Chromium keeps Playwright's default arguments. The media DNS test
+exercises two consecutive transient failures before recovery.
 The UI setting persists
 `desktop.browsers.personalEngine`; switching takes effect only after the existing
 Lumine browser is closed. Tab tests cover selecting and closing by page title or
@@ -87,11 +89,16 @@ These are local tests: ad delivery and uninterrupted playback on YouTube are not
 asserted, and Brave Shields cannot guarantee either. Lumine no longer ships or
 applies a custom ad filter; Brave Shields handles ad blocking.
 
+**Isolated profile note.** The user's native Brave profiles are not used by
+any of it — the earlier shared-profile design (native `Lumine` profile with a
+spare fallback, `MSG_PROFILE_LOCKED`) is superseded, per the decision below.
+
 ## Background media acceptance — measured on a retired profile
 
 These runs were made against a separate, Lumine-owned Brave profile that the
-product no longer uses; browser tools now open the personal Brave `Lumine`
-profile, where playback and ad blocking are reported working. Keep the table as
+product no longer uses; after full isolation (2026-11-04) the browser tools
+run on her own persistent directory, which is the same shape this table was
+written for. Keep the table as
 a manual checklist for background playback rather than as a description of a
 shipped failure. The evidence below is retained because it records what was
 measured, and because a future profile change should be re-tested against it.
@@ -282,8 +289,11 @@ verification procedure (any future launch change should re-run it):
    `https://www.youtube.com/watch?v=aqz-KE-bpKQ`, sample `video.currentTime`
    once a second for 75 s, and require `currentTime >= 75` with no player
    error overlay; then `release()` and require the launched pid to be gone.
-3. Repeat once more with the personal Brave profile held, so the
-   spare-fallback launch is exercised too.
+3. Repeat once more with the **user's own Brave open** on their personal
+   profile: the isolated launch must still succeed in one attempt against
+   Lumine's own directory — no lock, no fallback, no window of the user's
+   belonging to or being closed by this run — and then `release()` must close
+   only the window she launched.
 
 Record which path each run took (`launched ours` vs `joined`), the played-to
 time, and the launcher's pid result. A logged stall should also capture the

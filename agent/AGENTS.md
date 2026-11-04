@@ -579,9 +579,10 @@ Platform-specific considerations that should be isolated later include:
       WhatsApp tab as an unregistered popup, adopted it as the working page, and closed
       the page the user had open; `_reserve` reclassifies it after the page object
       exists, which cannot miss. Closing the last tab opens a blank one on the live
-      context rather than reaching `_start`, which would launch a second Chromium —
-      and with the spare-profile fallback that second launch opens a second *window*
-      rather than refusing, which is no better an answer to "close the last tab"
+      context rather than reaching `_start`, which would launch a second Chromium
+      against a held directory — with no spare fallback that second launch refuses
+      rather than opening a second window, which is still not an answer to "close
+      the last tab" either
 - [x] A join **borrows** the tab in use instead of opening a blank one.
       `_joined_start_page` used to manufacture an `about:blank` tab whenever the
       joined browser had none lying around — Chromium put it in front, so the shared

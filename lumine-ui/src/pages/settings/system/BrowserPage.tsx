@@ -15,7 +15,7 @@ const ENGINE_OPTIONS = [
   {
     value: "brave",
     label: "Brave",
-    hint: "Use Brave’s existing profile named Lumine.",
+    hint: "Use the installed Brave executable with Lumine's own browser profile.",
   },
   {
     value: "chromium",
@@ -98,8 +98,8 @@ export function BrowserPage() {
 
         <Field
           label="Browser engine"
-          help="Brave uses its existing profile named Lumine, including its saved sign-ins, settings, and extensions."
-          hint="If Brave is already open, Lumine opens a separate window on her own profile. That window is not signed in."
+          help="Lumine's browser always runs on a profile of her own, separate from your Brave profiles — she starts signed out everywhere, and sign-ins she receives persist in her window."
+          hint="If a Brave window is already open on your side, Lumine opens her own separate window. Yours is never shared with her."
           className="mt-3"
         >
           <Dropdown

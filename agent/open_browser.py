@@ -58,7 +58,6 @@ def _browser_command(
     engine: str,
     executable: str,
     user_data_dir: Path,
-    profile_directory: str | None = None,
     debug_port: int | None = None,
 ) -> list[str]:
     """The command that opens a *window*, on the browser's own new tab page."""
@@ -66,7 +65,6 @@ def _browser_command(
         engine,
         executable,
         user_data_dir,
-        profile_directory,
         start_url=_new_tab_url(engine),
         debug_port=debug_port,
     )
@@ -98,60 +96,34 @@ def open_browser() -> str:
     if endpoint:
         session._forget_endpoint(endpoint_file)
 
-    profile_directory: str | None = None
-    if engine == "brave":
-        try:
-            user_data_dir = session.brave_user_data_dir()
-            profile_directory = session.brave_profile_directory(user_data_dir).name
-        except ValueError as exc:
-            raise RuntimeError(
-                f"{session.MSG_BRAVE_PROFILE_NOT_FOUND} {exc}"
-            ) from None
-    else:
-        user_data_dir = session.profile_dir()
-        try:
-            user_data_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            raise RuntimeError(
-                "Lumine couldn't access its browser profile. Check folder permissions."
-            ) from None
+    directory = session.profile_dir(engine)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise RuntimeError(
+            "Lumine couldn't access its browser profile. Check folder permissions."
+        ) from None
 
-    # A browser already using this profile may have started before its endpoint
+    # A browser already using this directory may have started before its endpoint
     # file was published. Join its live endpoint rather than launching a second
     # window or falling back to another profile.
-    port = _active_port(user_data_dir)
+    port = _active_port(directory)
     if port and session._endpoint_alive(f"http://127.0.0.1:{port}"):
         session._publish_endpoint(port, endpoint_file)
         asyncio.run(_focus_browser(engine))
         return engine
 
-    # **A locked profile opens a window beside it, not a refusal.** Brave may be
-    # running on another profile (or on this one), and on Windows a second
-    # `brave.exe` launched against the same user-data directory hands off and
-    # exits 0 -- so the wait that follows would time out with no window and no
-    # reason. `profile_in_use` asks first, and the spare is the same fallback the
-    # worker uses. Its cost is named in `session.spare_profile_dir`: it is not
-    # signed in.
-    #
-    # The held directory is watched for a moment before that fallback, for the
-    # same reason the worker does it: a browser that is *closing* holds the lock
-    # exactly as one that is open does, and sending the next window to the
-    # unsigned-in spare for a lock that clears in 200 ms is the worse mistake.
-    if session.profile_in_use(user_data_dir) and not session.settle_profile_lock(
-        user_data_dir
-    ):
-        user_data_dir = session.spare_profile_dir(engine)
-        profile_directory = None
-        try:
-            user_data_dir.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            raise RuntimeError(
-                "Lumine couldn't access its spare browser profile. Check folder permissions."
-            ) from None
-        if session.profile_in_use(user_data_dir) and not session.settle_profile_lock(
-            user_data_dir
-        ):
-            raise RuntimeError(session.MSG_PROFILE_LOCKED)
+    # **One directory, hers, no spare.** With full isolation (2026-11-04) the
+    # user's own Brave never shares a directory with Lumine, so there is no
+    # contention to route around and no lock question to ask the user. The one
+    # check left is Windows' own: a second `brave.exe` against a held directory
+    # hands off and exits 0, which the wait below would report as a bare
+    # timeout. `profile_in_use` asks first -- its attempted delete is also the
+    # stale-lock cleanup a crash needs -- and a genuinely held directory can
+    # only be a browser *of Lumine's* that stopped answering, so the refusal
+    # describes her own window and never the user's.
+    if session.profile_in_use(directory):
+        raise RuntimeError(session.MSG_OWN_PROFILE_HELD)
 
     if engine == "brave":
         executable_path = session.brave_executable()
@@ -166,10 +138,10 @@ def open_browser() -> str:
     # older discovery route to read (see session.free_debug_port for the
     # measured reason the number has to be explicit).
     port = session.free_debug_port()
-    command = _browser_command(engine, executable, user_data_dir, profile_directory, port)
+    command = _browser_command(engine, executable, directory, port)
     process = _launch_detached(command)
     try:
-        port = _wait_for_browser(user_data_dir, process, port)
+        port = _wait_for_browser(directory, process, port)
     except BaseException:
         # The same teardown the `browse` tool uses, so a launch that never
         # produced a window cannot leave a browser behind either.

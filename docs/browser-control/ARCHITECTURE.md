@@ -51,28 +51,36 @@ not when it joins an already-running Chromium process.
 
 The browser engine is selected in Settings → Browser (or with
 `LUMINE_BROWSER_ENGINE`): `auto` prefers an installed Brave and otherwise uses
-Playwright Chromium; `brave` and `chromium` explicitly select one. Brave uses
-the existing native profile named `Lumine`, resolved from Brave's `Local State`
-metadata, so its cookies, settings, and extensions are shared. Brave permits
-only one running process per user-data directory. When Brave is already open on
-that directory, Lumine opens a window of her own on a spare profile beside the
-isolated Chromium one (`browser-profile-spare-brave`) rather than refusing: that
-window is **not signed in**, which is the honest price of a profile somebody
-else is already using, and the alternative is not a signed-in browser but no
-browser at all. `MSG_PROFILE_LOCKED` therefore fires only when the chosen
-directory and the spare are both held. On Windows the "already in use" question
-is asked *before* the launch, because a second `brave.exe` against a held
-user-data directory hands off and exits 0 — Playwright would then wait out its
-discovery timeout and report a launch that never happened. That question is
-asked a few times over roughly a second and a half before the spare is used,
-because a browser that is *closing* holds its directory exactly as one that is
-open does, and Chromium's hand-off takes a moment to release it; the fallback is
-reserved for a lock that stays held. The Open browser
-command resolves the same profile, starts or focuses it, and publishes its
-loopback DevTools endpoint so the worker joins the same process. A custom Brave
-executable may be supplied with `LUMINE_BRAVE_EXECUTABLE`; a non-standard
-user-data directory may be set with `LUMINE_BRAVE_USER_DATA_DIR`. Switching
-engines applies on the next browser start.
+Playwright Chromium; `brave` and `chromium` explicitly select one.
+**Lumine's browser is fully isolated from the user's (2026-11-04, superseding
+the earlier design that shared the native Brave profile named `Lumine` and
+routed holds to a spare profile):** every engine launches into a user-data
+directory of Lumine's own — `browser-profile` for Playwright Chromium (the
+historical path, so an existing install keeps its profile) and
+`browser-profile-brave` beside it for Brave, named per engine for the same
+reason the endpoint files are per-engine — and the user's native Brave
+profiles are never read, held, or joined against. The cost is stated on the
+Settings screen rather than hidden: her browser starts signed out everywhere,
+whatever the user signed into, and sign-ins she is given (a WhatsApp QR scan)
+persist in her window. `LUMINE_BROWSER_PROFILE` overrides the selected
+engine's directory — one variable, one directory, whatever the engine.
+Because there is no shared directory there is no contention to route around:
+a held one can only be a browser *of Lumine's* (hers with a dead control
+port, or one started by hand against her directory), so a hold with no live
+endpoint to join is `MSG_OWN_PROFILE_HELD` — a sentence about her own
+browser, never an instruction to close the user's windows. On Windows the
+"in use" question is still asked *before* the launch, because a second
+`brave.exe` against a held user-data directory hands off and exits 0 and the
+launcher would otherwise report a launch that never happened; the check's
+attempted lock-delete is also the stale-lock cleanup a crash needs. A lock
+that is *closing* is no longer awaited by the pre-check — `launch_and_attach`
+retries `ProfileBusy` a bounded number of times, which covers a Chromium
+still letting go without putting sync sleeping on the session loop. The Open
+browser command resolves the same directory, starts or focuses it, and
+publishes its loopback DevTools endpoint so the worker joins the same
+process. A custom Brave executable may be supplied with
+`LUMINE_BRAVE_EXECUTABLE`. Switching engines applies on the next browser
+start.
 **Lumine launches her browser the way a person opens one, then attaches to it.**
 An ordinary detached process carries a command line Chromium would get by hand
 (window size, dark appearance, autoplay policy — `_window_args`), and Playwright

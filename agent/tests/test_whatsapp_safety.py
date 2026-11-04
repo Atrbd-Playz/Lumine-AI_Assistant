@@ -523,20 +523,21 @@ class ReadinessTests(unittest.TestCase):
 
 
 class ProfileLockTests(unittest.TestCase):
-    """A locked profile has a one-line fix, and must not arrive as a paragraph.
+    """A held directory is named as *hers*, and never instructs the user.
 
-    Chromium's own wording is "Opening in existing browser session. This usually
-    means that the profile is already in use by another Chrome process", which
-    reads like a product fault. The cause is a Lumine window somewhere -- usually
-    the Tauri app -- and closing it is the whole remedy.
+    With full isolation (2026-11-04) Lumine's launches touch only her own
+    user-data directory, so a directory held with no endpoint can only mean a
+    browser of hers that stopped answering. The old sentence told the user to
+    close *their* Brave windows -- that sharing no longer exists, and the
+    instruction must not outlive it.
     """
 
-    def test_a_locked_profile_is_named_as_such(self):
+    def test_a_held_directory_is_named_as_hers_never_the_users(self):
         from agent.tools.browser import session
 
-        self.assertIn("already open", session.MSG_PROFILE_LOCKED)
-        self.assertIn("only one browser process", session.MSG_PROFILE_LOCKED)
-        self.assertIn("Close all Brave windows", session.MSG_PROFILE_LOCKED)
+        self.assertIn("Lumine's own browser directory", session.MSG_OWN_PROFILE_HELD)
+        self.assertIn("Nothing was done", session.MSG_OWN_PROFILE_HELD)
+        self.assertNotIn("Close", session.MSG_OWN_PROFILE_HELD)
 
     def test_the_probe_checks_the_lock_before_launching(self):
         module = _load_probe("lumine_whatsapp_probe")

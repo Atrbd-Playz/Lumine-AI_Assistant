@@ -43,7 +43,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable, Mapping, NamedTuple, Sequence
+from typing import Any, Iterable, Iterator, Mapping, NamedTuple, Sequence
 from urllib.parse import parse_qs, urlsplit
 
 try:
@@ -64,13 +64,12 @@ except ImportError:  # running below the agent package on sys.path
 
 logger = logging.getLogger("lumine")
 
-#: Where Playwright Chromium's isolated profile lives. Brave uses its existing
-#: native profile named :data:`BRAVE_PROFILE_NAME`.
+#: Where an engine's isolated user-data directory lives, per engine. Every
+#: browser Lumine starts runs on a directory of her own; the user's native
+#: Brave profiles are never read or held (2026-11-04, full isolation).
 PROFILE_VAR = "LUMINE_BROWSER_PROFILE"
 ENGINE_VAR = "LUMINE_BROWSER_ENGINE"
 BRAVE_EXECUTABLE_VAR = "LUMINE_BRAVE_EXECUTABLE"
-BRAVE_USER_DATA_DIR_VAR = "LUMINE_BRAVE_USER_DATA_DIR"
-BRAVE_PROFILE_NAME = "Lumine"
 
 #: The documented escape hatch for people who want their assistant to reach
 #: a NAS or a local dev server. Off by default; see `actions.host_verdict`.
@@ -250,15 +249,15 @@ MSG_BRAVE_NOT_FOUND = (
     "Brave is not installed where Lumine can find it. Choose Auto or Chromium "
     "in Settings → Browser, or set LUMINE_BRAVE_EXECUTABLE. Nothing was opened."
 )
-MSG_BRAVE_PROFILE_NOT_FOUND = (
-    "I couldn't find the existing Brave profile named 'Lumine'. Create or rename "
-    "a Brave profile to 'Lumine', then try again. Nothing was opened."
-)
 MSG_OTHER_LOOP = "The browser is busy with another conversation. Nothing was done."
-MSG_PROFILE_LOCKED = (
-    "The Brave profile 'Lumine' is already open, and Brave allows only one "
-    "browser process to use a profile at a time. Close all Brave windows using "
-    "that profile, then ask me again. Nothing was done."
+#: Only reachable when something *holds Lumine's own* directory while its
+#: control port is dead -- practically, a browser that crashed mid-session or
+#: one started by hand against her directory. Nothing in this code shares a
+#: directory with the user's own browser any more, so "close your own browser
+#: first" is never an answer: whatever is held is hers.
+MSG_OWN_PROFILE_HELD = (
+    "Lumine's own browser directory is held by a browser that stopped answering "
+    "its control port. Ask me again in a few seconds. Nothing was done."
 )
 MSG_NO_PAGE = "No page is open yet -- open one first."
 MSG_UNKNOWN_REF = "I don't have that control -- observe the page again. Nothing was done."
@@ -707,10 +706,38 @@ _JS_SCROLL = """
 """
 
 
-def profile_dir() -> Path:
-    """The isolated Playwright Chromium profile directory.
+def profile_dir(engine: str | None = None) -> Path:
+    """Lumine's OWN user-data directory for an engine -- the whole boundary.
 
-    Brave uses its selected native profile instead.
+    **Full isolation (2026-11-04).** Both engines launch into a directory of
+    Lumine's own. The user's native Brave profiles are never read, held or
+    launched against, and the earlier design -- Brave on the user's native
+    ``Lumine`` profile, with a spare fallback for when the user was using it --
+    is superseded rather than simplified: there is no contention to fall back
+    from. This directory is the only one her launches ever touch, so if it is
+    held, it is held by a browser *she* started, and the refusal can never ask
+    the user to close their own browser.
+
+    The cost is named rather than hidden: her browser is not signed in to
+    anything the user signed in to. WhatsApp in her window asks for a QR scan
+    once, and sites the user is logged into start logged out. That was true of
+    the spare already; it is now true of the whole browser, and the Settings
+    screen says so.
+
+    Two rules carry it, and neither is cosmetic:
+
+    - **It is named per engine**, for the same reason the endpoint files are
+      ``browser-cdp.txt`` and ``browser-cdp-brave.txt`` rather than one: two
+      browsers cannot share a user-data directory, and a settings switch that
+      changes engines must not turn the old engine's still-running browser
+      into a lock on the new engine's only directory.
+    - **``LUMINE_BROWSER_PROFILE`` overrides the selected engine's directory.**
+      One variable, one directory, whatever the engine -- a person who sets it
+      has taken ownership of the boundary, and the code does not second-guess
+      them.
+
+    Chromium keeps the historical path, so an existing installation's profile
+    survives this change untouched.
     """
     raw = (os.getenv(PROFILE_VAR, "") or "").strip()
     if raw:
@@ -721,131 +748,39 @@ def profile_dir() -> Path:
         base = str(Path.home() / "Library" / "Application Support")
     else:
         base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "lumine" / "browser-profile"
-
-
-def spare_profile_dir(engine: str | None = None) -> Path:
-    """A user-data directory of Lumine's own, for when the first choice is held.
-
-    **A locked profile is a fact about one directory, not about the machine.**
-    Chromium takes an exclusive lock on a *user-data directory* -- on Windows and
-    Linux a ``SingletonLock``/mutex at its root, on macOS a symlink -- and no
-    amount of argument gets a second process past it. But that lock says nothing
-    about any *other* directory, so a browser that cannot have the profile it
-    wanted can still have a window. This is that window's directory.
-
-    It exists because of a reported failure: the user kept Brave open on the
-    ``Lumine`` profile, asked for a YouTube search, and was told to go and close
-    their own browser first. The profile is the *personal* one -- it holds the
-    user's cookies, their signed-in WhatsApp, their session state -- so it is
-    the right first choice and stays the first choice. It is no longer the only
-    one. Being told to close a window so the assistant can open one is exactly
-    backwards, and it is the one answer a companion must not give.
-
-    Two rules carry it, and neither is cosmetic:
-
-    - **It is named per engine.** The two engines must not contend on one
-      directory, for the same reason their endpoint files are
-      ``browser-cdp.txt`` and ``browser-cdp-brave.txt`` rather than one: two
-      browsers cannot share a profile, and a fallback that turned into that
-      would trade a refusal for a lock. A Brave spare and a Chromium launch are
-      therefore never the same path, whatever the settings say.
-    - **It sits beside the isolated profile rather than inside it.** ``profile_dir()``
-      honours ``LUMINE_BROWSER_PROFILE``, and a person who pointed that at a
-      directory of their own still gets a spare that is theirs to delete -- one
-      sibling with a name that says what it is, not a subdirectory of a live
-      browser profile that a scan might one day walk into.
-
-    The cost is real and is worth naming: this browser is **not signed in**.
-    WhatsApp in it asks for a QR scan, and any site the user was logged into
-    starts logged out. That is the honest price of a profile somebody else is
-    already using -- the alternative is not a signed-in browser, it is no
-    browser at all -- and it degrades to a sentence the product already says
-    ("scan the QR code in the window this opened") rather than to a failure.
-    """
-    base = profile_dir()
     selected = engine or "chromium"
-    return base.parent / f"{base.name}-spare-{selected}"
-
-
-def brave_user_data_dir() -> Path:
-    """Brave's native user-data directory, which contains all named profiles."""
-    raw = (os.getenv(BRAVE_USER_DATA_DIR_VAR, "") or "").strip()
-    if raw:
-        return Path(raw).expanduser()
-    if sys.platform == "win32":
-        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "BraveSoftware" / "Brave-Browser" / "User Data"
-    if sys.platform == "darwin":
-        return (
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "BraveSoftware"
-            / "Brave-Browser"
-        )
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "BraveSoftware" / "Brave-Browser"
-
-
-def brave_profile_directory(
-    user_data_dir: Path | None = None, profile_name: str = BRAVE_PROFILE_NAME
-) -> Path:
-    """Resolve a Brave display name to its on-disk profile directory."""
-    root = user_data_dir or brave_user_data_dir()
-    local_state = root / "Local State"
-    try:
-        state = json.loads(local_state.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(
-            f"Brave profile metadata could not be read ({type(exc).__name__})"
-        ) from None
-    profile = state.get("profile") if isinstance(state, dict) else None
-    cache = profile.get("info_cache") if isinstance(profile, dict) else None
-    if not isinstance(cache, dict):
-        raise ValueError("Brave profile metadata has no profile list")
-    matches = [
-        str(directory)
-        for directory, info in cache.items()
-        if isinstance(info, dict)
-        and str(info.get("name") or "").strip().casefold() == profile_name.casefold()
-    ]
-    if len(matches) != 1:
-        raise ValueError(
-            f"expected one profile named {profile_name!r}, found {len(matches)}"
-        )
-    candidate = root / matches[0]
-    try:
-        if not candidate.is_dir() or candidate.resolve().parent != root.resolve():
-            raise ValueError("the named Brave profile directory is missing or invalid")
-    except OSError:
-        raise ValueError("the named Brave profile directory could not be accessed") from None
-    return candidate
+    leaf = "browser-profile" if selected == "chromium" else f"browser-profile-{selected}"
+    return Path(base) / "lumine" / leaf
 
 
 def profile_in_use(directory: Path) -> bool:
-    """Whether a running Chromium already owns *this* user-data directory.
+    """Whether a running Chromium already holds *this* user-data directory.
+
+    With full isolation the question it answers shrank: Lumine's directory can
+    be held only by a browser she started with a dead control port, or one
+    started by hand against her directory -- so "held" can never again mean
+    "close your own browser first".
 
     This is asked **before** a launch, and only on Windows, because there the
     lock is invisible to the launch itself: a second ``brave.exe`` started
-    against a directory a running Brave owns hands its command line to that
+    against a directory a running browser owns hands its command line to that
     process and exits **0**. The launcher therefore sees a process that started
     successfully and then spends its discovery window waiting for a DevTools port
     that will never appear -- and there is no Chromium sentence to read, because no
-    second browser started to print one. Measured on this machine with Brave open
-    on another profile: the child exited immediately and the report was a timeout,
-    not a lock.
+    second browser started to print one.
 
-    The lock itself is the one `whatsapp_probe._lock_held` reads, asked the way
-    Windows answers it: Chromium holds ``lockfile`` with an exclusive share
-    mode, so deleting it fails with a sharing violation and trying the delete
-    *is* the test. A stale lock -- the usual state after a crash -- simply
-    deletes, and cleaning it up here means a crash does not cost the profile.
+    The lock itself is asked the way Windows answers it: Chromium holds
+    ``lockfile`` with an exclusive share mode, so deleting it fails with a
+    sharing violation and trying the delete *is* the test. A stale lock -- the
+    usual state after a crash -- simply deletes, and cleaning it up here means a
+    crash does not cost the directory either.
 
     POSIX is deliberately not pre-checked. There the lock is a symlink whose
     presence says nothing about whether the process behind it is alive, so a
-    stale one would push every launch onto the spare; on POSIX the collision
-    surfaces as a launch that exits without an endpoint, which is `ProfileBusy`.
+    stale one would refuse every launch; on POSIX the collision surfaces as a
+    launch that exits without an endpoint, which is `ProfileBusy`, retried and
+    then translated into `MSG_OWN_PROFILE_HELD` -- a held *Lumine* directory,
+    never a held user one.
     """
     if os.name != "nt":
         return False
@@ -859,34 +794,6 @@ def profile_in_use(directory: Path) -> bool:
             os.remove(candidate)
         except OSError:
             return True
-    return False
-
-
-def settle_profile_lock(directory: Path) -> bool:
-    """Watch a held directory for a lock that is *on its way out*. True when free.
-
-    `profile_in_use` answers the question "is this held *now*", and that is the
-    right question before a launch but the wrong one in the one case this code
-    actually creates for itself: `release()` closes the browser and the next
-    `ensure()` arrives while Chromium is still letting go of the directory. The
-    pre-check cannot tell those two states apart -- a lock being released and a
-    lock somebody holds look identical -- and the cost of guessing wrongly is
-    the wrong way round: a lock on its way out would send the very next window
-    to the spare profile, which is *not signed in*, and the session's endpoint
-    would then point at that window for the rest of the conversation.
-
-    So the pre-check gets the same grace the launcher gives a lock that is on its
-    way out: a bounded few checks spaced by `_LAUNCH_RETRY_SECONDS`.
-    A lock somebody genuinely holds does not clear, and the spare is still the
-    answer one and a half seconds later -- that delay is the whole cost, and it
-    is paid once, on the first browser request of a session, only when a window
-    is already open on the profile Lumine wanted.
-    """
-    for attempt in range(_LAUNCH_ATTEMPTS):
-        if not profile_in_use(directory):
-            return True
-        if attempt + 1 < _LAUNCH_ATTEMPTS:
-            time.sleep(_LAUNCH_RETRY_SECONDS)
     return False
 
 
@@ -1079,12 +986,14 @@ SHUTDOWN_GRACE_SECONDS = 3.0
 class ProfileBusy(RuntimeError):
     """A launch produced no browser, because something already owns the directory.
 
-    **This exists because the lock can no longer be read out of the launch.** When
-    Playwright started the browser, a held profile arrived as Chromium's own
-    paragraph about "an existing browser session" and `_profile_locked` read it. A
-    browser started as a normal process reports nothing: on Windows the child hands
-    its command line to the running instance and exits **0**, so the only evidence
-    is that no endpoint ever appeared. Same condition, different witness.
+    **This exists because the lock can no longer be read out of the launch.** A
+    browser started as a normal process reports nothing: on Windows the child
+    hands its command line to the running instance and exits **0**, so the only
+    evidence is that no endpoint ever appeared. Same condition, different
+    witness. With full isolation the directory it names is always a browser of
+    Lumine's own, so its caller translates this into `MSG_OWN_PROFILE_HELD`
+    rather than ever asking about the user's browser. On POSIX the collision
+    surfaces the same way: Chromium refuses a held `SingletonLock`.
     """
 
 
@@ -1121,7 +1030,6 @@ def browser_command(
     engine: str,
     executable: str,
     user_data_dir: Path,
-    profile_directory: str | None = None,
     *,
     extra_args: Iterable[str] = (),
     start_url: str | None = None,
@@ -1151,10 +1059,11 @@ def browser_command(
 
     Three things follow, and they are why this is one shared function rather than
     two shapes: no Playwright default flags are applied (so Brave's own features
-    and extensions are no longer switched off), ``--profile-directory`` reaches the
-    browser directly instead of through a launch option, and ``open_browser.py`` --
-    the "Open browser" button, which has always been healthy -- calls this, so the
-    button and the tool cannot drift apart.
+    and extensions are no longer switched off), and ``open_browser.py`` -- the
+    "Open browser" button, which has always been healthy -- calls this, so the
+    button and the tool cannot drift apart. ``--profile-directory`` is gone with
+    the native-profile design: every launch targets a user-data directory of
+    Lumine's own, which holds only ``Default``.
 
     ``debug_port`` is written into the flag so the same number survives the
     launch: callers that must wait for the endpoint by *polling the number*
@@ -1173,8 +1082,6 @@ def browser_command(
         "--no-default-browser-check",
         *extra_args,
     ]
-    if profile_directory:
-        command.append(f"--profile-directory={profile_directory}")
     command.append(start_url or "about:blank")
     return command
 
@@ -1280,7 +1187,6 @@ async def launch_and_attach(
     executable: str,
     engine: str,
     directory: Path,
-    profile_directory: str | None = None,
 ) -> _Launched:
     """Start the browser as its own process, then attach to it over CDP.
 
@@ -1289,13 +1195,14 @@ async def launch_and_attach(
     the previous window and the next `ensure` can arrive while Chromium is still
     letting go of the directory. On Windows that launch hands off to the running
     instance and exits 0, so the outcome is `ProfileBusy` and no endpoint -- one
-    attempt would turn a window that is already closing into `MSG_PROFILE_LOCKED`,
-    which tells the user to go and close it.
+    attempt would turn a window that is already closing into a refusal, which
+    tells the user to do something when the launch was ours and the next try
+    succeeds.
 
     Only that outcome is retried, and only a bounded number of times: a directory
-    somebody genuinely holds never clears, and every extra attempt is time spent
-    waiting for a refusal that was correct on the first try. A missing executable
-    raises on the first attempt, exactly as before.
+    genuinely held never clears, and every extra attempt is time spent waiting
+    for a refusal that was correct on the first try. A missing executable raises
+    on the first attempt, exactly as before.
     """
     # The port is picked once, before the launch, so the number in the
     # command line is the number the endpoint is waited on: Chromium does not
@@ -1306,7 +1213,6 @@ async def launch_and_attach(
         engine,
         executable,
         directory,
-        profile_directory,
         extra_args=launch_args(),
         start_url="about:blank",
         debug_port=port,
@@ -1505,6 +1411,182 @@ def _discover_devtools_port(profile: Path, attempts: int = 40) -> int:
             pass
         time.sleep(0.25)
     return 0
+
+
+def _held_browser_port(directory: Path) -> int:
+    """The port of a live browser still holding *this* directory, or 0.
+
+    **Why process enumeration, not a marker file.** Brave and Playwright
+    Chromium do not write ``DevToolsActivePort`` even when launched with an
+    explicit ``--remote-debugging-port`` (measured: the port answers CDP but
+    no marker file appears), so a held directory can only be located by
+    enumerating running processes and matching their command lines.
+
+    Two rules carry it, and neither is cosmetic:
+
+    - **We only ever look at *Lumine's* directory.** The match is on
+      ``--user-data-dir=<directory>`` resolved against *this* directory, so
+      the user's own Brave on their personal profile is never touched and
+      never reported as held. A held directory can only mean a browser *of
+      Lumine's* (hers with a dead control port, or one started by hand
+      against her directory), which is why the refusal names her own window
+      and never instructs the user to close theirs.
+    - **The endpoint must actually answer.** A process holding the directory
+      may be mid-shutdown or may not be serving CDP; ``_endpoint_alive`` is
+      the same probe every join decision in this module uses, so a stale or
+      silent process degrades to the refusal about her own browser, never to
+      a join that fails.
+
+    The marker file is still read first as a cheap fast path: any Chromium
+    build that *does* write ``DevToolsActivePort`` is found without process
+    enumeration. The enumeration below covers the measured case where it
+    does not.
+
+    Windows uses a single PowerShell call via ``Get-CimInstance Win32_Process``
+    (``wmic`` is removed on Win11 24H2 and ``psutil`` is deliberately not a
+    dependency); POSIX walks ``/proc/*/cmdline``.
+    """
+    directory = directory.resolve()
+
+    # Fast path: a Chromium build that writes DevToolsActivePort.
+    marker = directory / "DevToolsActivePort"
+    try:
+        first = marker.read_text(encoding="utf-8").splitlines()[0].strip()
+    except (OSError, IndexError):
+        first = ""
+    if first.isdigit():
+        port = int(first)
+        if _endpoint_alive(f"http://127.0.0.1:{port}"):
+            return port
+
+    # Slow path: correlate the holding process with its debugging port.
+    wanted = os.path.normcase(str(directory))
+    for _pid, cmdline in _iter_process_cmdlines():
+        data_dir = _flag_value(cmdline, "--user-data-dir")
+        if not data_dir:
+            continue
+        try:
+            if os.path.normcase(str(Path(data_dir).resolve())) != wanted:
+                continue
+        except OSError:
+            continue
+        port = _flag_value(cmdline, "--remote-debugging-port")
+        if not port or not port.isdigit():
+            continue
+        port = int(port)
+        if _endpoint_alive(f"http://127.0.0.1:{port}"):
+            return port
+    return 0
+
+
+def _iter_process_cmdlines() -> Iterator[tuple[int, str | list[str]]]:
+    """Yield ``(pid, command-line)`` for every running process.
+
+    The command line is a raw string on Windows (PowerShell returns it that
+    way) and an argv list on POSIX (NUL-separated ``/proc/*/cmdline``).
+    """
+    if sys.platform == "win32":
+        yield from _windows_process_cmdlines()
+    else:
+        yield from _posix_process_cmdlines()
+
+
+def _windows_process_cmdlines() -> Iterator[tuple[int, str]]:
+    """Enumerate process command lines on Windows without wmic or psutil.
+
+    ``Get-CimInstance Win32_Process`` is the wmic-free replacement (wmic was
+    removed in Windows 11 24H2). One PowerShell call returns every process's
+    id and full command line, which is what lets us match on
+    ``--user-data-dir`` and ``--remote-debugging-port`` without adding a
+    dependency.
+    """
+    try:
+        out = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | Select-Object ProcessId, CommandLine | ConvertTo-Json -Depth 1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if not out.stdout.strip():
+        return
+    try:
+        rows = json.loads(out.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return
+    if isinstance(rows, dict):
+        rows = [rows]
+    for row in rows:
+        pid = row.get("ProcessId")
+        cmdline = row.get("CommandLine") or ""
+        if pid is not None and cmdline:
+            yield int(pid), cmdline
+
+
+def _posix_process_cmdlines() -> Iterator[tuple[int, list[str]]]:
+    """Enumerate process command lines on POSIX via /proc/*/cmdline."""
+    try:
+        entries = Path("/proc").iterdir()
+    except OSError:
+        return
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if not raw:
+            continue
+        argv = [part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part]
+        if argv:
+            yield int(entry.name), argv
+
+
+def _flag_value(cmdline: str | list[str], flag: str) -> str | None:
+    """Extract ``--flag=VALUE`` or ``--flag VALUE`` from a command line.
+
+    Works on a raw Windows command-line string or a POSIX argv list. Returns
+    ``None`` when the flag is absent or valueless.
+    """
+    flag_lower = flag.casefold()
+    if isinstance(cmdline, list):
+        for index, part in enumerate(cmdline):
+            part_lower = part.casefold()
+            if part_lower == flag_lower:
+                if index + 1 < len(cmdline):
+                    return cmdline[index + 1]
+                return None
+            if part_lower.startswith(flag_lower + "="):
+                return part[len(flag) + 1 :]
+        return None
+    # Raw Windows command-line string.
+    lowered = cmdline.casefold()
+    for form in (flag_lower + "=", flag_lower + " "):
+        index = lowered.find(form)
+        if index == -1:
+            continue
+        rest = cmdline[index + len(form) :]
+        if form.endswith(" "):
+            rest = rest.lstrip(" \t")
+        if not rest:
+            continue
+        if rest.startswith('"'):
+            end = rest.find('"', 1)
+            return rest[1:end] if end != -1 else rest[1:]
+        end = len(rest)
+        for ch in (" ", "\t"):
+            position = rest.find(ch)
+            if position != -1:
+                end = min(end, position)
+        return rest[:end]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2335,12 +2417,35 @@ class _Browser:
             if self._context is not None:
                 # The browser is running; it is the *tab* that ran out, which is
                 # what closing the last one looks like. Going back to `_start`
-                # here would launch a second Chromium against a profile the first
-                # one still holds, and fail with "existing browser session" -- the
-                # exact sentence `MSG_PROFILE_LOCKED` exists to translate.
+                # here would launch a second Chromium against a directory the
+                # first one still holds.
                 page = await self._page_on(self._context)
                 return self._register(page, activate=True).page
             return await self._start(loop, background=background)
+
+    async def _join_cdp(self, playwright: Any, endpoint: str) -> Any:
+        """Attach to the running browser at *endpoint* and return its context.
+
+        `connect_over_cdp` returns a **Browser**, not a BrowserContext -- and
+        everything below this line is written against a context (`route`,
+        `on("page")`, `pages`). Asking the joined browser for a context and
+        handing that back keeps one shape for the rest of `_start`. It also
+        makes the mistake visible: with the Browser passed straight through,
+        the very next line raises
+        `AttributeError: 'Browser' object has no attribute 'route'` -- and the
+        failure handler then stops Playwright, which tears down a browser
+        belonging to *another process*. Verified by doing it: the holder's nine
+        Chromium processes went to zero.
+        """
+        joined = await playwright.chromium.connect_over_cdp(endpoint)
+        contexts = list(getattr(joined, "contexts", []) or [])
+        if not contexts:
+            raise ToolError(
+                "The Lumine browser I found is not serving any window I "
+                "can use. Nothing was sent."
+            )
+        self._joined_browser = joined
+        return contexts[0]
 
     async def _start(self, loop: asyncio.AbstractEventLoop, *, background: bool = False) -> Any:
         try:
@@ -2354,24 +2459,14 @@ class _Browser:
             raise ToolError(MSG_BRAVE_NOT_FOUND)
         endpoint_path = _endpoint_file(selected_engine)
 
-        profile_directory = None
-        if selected_engine == "brave":
-            directory = brave_user_data_dir()
-            try:
-                profile_directory = brave_profile_directory(directory).name
-            except ValueError as exc:
-                raise ToolError(
-                    f"{MSG_BRAVE_PROFILE_NOT_FOUND} {clip(str(exc), 100)}"
-                ) from None
-        else:
-            directory = profile_dir()
-            try:
-                directory.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                raise ToolError(
-                    f"I can't use {clip(str(directory), 60)} for the browser profile: "
-                    f"{clip(str(exc), 80)}"
-                ) from None
+        directory = profile_dir(selected_engine)
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ToolError(
+                f"I can't use {clip(str(directory), 60)} for the browser profile: "
+                f"{clip(str(exc), 80)}"
+            ) from None
 
         playwright = await async_playwright().start()
         shared = False
@@ -2387,29 +2482,35 @@ class _Browser:
             # the browser usable by the worker, the desktop app, every dispatched
             # room and a diagnostic CLI at the same time. See `_endpoint_file`.
             existing = _read_endpoint(endpoint_path)
-            if existing and _endpoint_alive(existing):
+            if existing and not _endpoint_alive(existing):
+                # A crashed browser leaves its endpoint behind; treating that
+                # as "none" is the difference between recovering and refusing
+                # forever.
+                _forget_endpoint(endpoint_path)
+                existing = ""
+            if not existing:
+                # **The endpoint file is not the only witness.** With full
+                # isolation the held directory can only be a browser of
+                # Lumine's, so a held directory with no published endpoint is
+                # recovered from the browser itself: its port is on disk in
+                # ``DevToolsActivePort`` when Chromium writes it, and otherwise
+                # in the holding process's own command line
+                # (``--remote-debugging-port``). A browser with a dead control
+                # port answers nothing and falls to the launch's own refusal
+                # about *her* window.
+                harvested = await asyncio.to_thread(_held_browser_port, directory)
+                if harvested:
+                    existing = f"http://127.0.0.1:{harvested}"
+                    _publish_endpoint(harvested, endpoint_path)
+                    logger.info(
+                        "[Browser] recovered a DevTools endpoint on %s from %s",
+                        harvested,
+                        directory,
+                    )
+            context = None
+            if existing:
                 try:
-                    # `connect_over_cdp` returns a **Browser**, not a
-                    # BrowserContext -- and everything below this line is written
-                    # against a context (`route`, `on("page")`, `pages`).
-                    #
-                    # Asking the joined browser for a context and handing that back
-                    # keeps one shape for the rest of the function. It also makes
-                    # the mistake visible: with the Browser passed straight
-                    # through, the very next line raises
-                    # `AttributeError: 'Browser' object has no attribute 'route'`
-                    # -- and the failure handler then stops Playwright, which tears
-                    # down a browser belonging to *another process*. Verified by
-                    # doing it: the holder's nine Chromium processes went to zero.
-                    joined = await playwright.chromium.connect_over_cdp(existing)
-                    contexts = list(getattr(joined, "contexts", []) or [])
-                    if not contexts:
-                        raise ToolError(
-                            "The Lumine browser I found is not serving any window I "
-                            "can use. Nothing was sent."
-                        )
-                    context = contexts[0]
-                    self._joined_browser = joined
+                    context = await self._join_cdp(playwright, existing)
                     shared = True
                     logger.info("[Browser] joined the running browser at %s", existing)
                 except ToolError:
@@ -2418,19 +2519,14 @@ class _Browser:
                     logger.info("[Browser] could not join %s (%s); launching", existing, exc)
                     _forget_endpoint(endpoint_path)
                     context = None
-            else:
-                if existing:
-                    # A crashed browser leaves its endpoint behind; treating that
-                    # as "none" is the difference between recovering and refusing
-                    # forever.
-                    _forget_endpoint(endpoint_path)
-                context = None
 
             if context is None:
-                # The profile we launch *into*, which is not always the one we
-                # asked for. See `spare_profile_dir` for why the second exists.
-                launched_on = directory
-                spare = spare_profile_dir(selected_engine)
+                # **One directory, hers, no fallback.** The spare-profile branch
+                # existed because the first choice could be held by the user's
+                # own Brave; that sharing is gone (2026-11-04, full isolation),
+                # so there is nothing to fall back *from*. The launch targets
+                # `directory` always, and a held one is a refusal about the
+                # browser Lumine owns, never an instruction about the user's.
                 # Brave's own executable, or the Chromium Playwright installed.
                 # The second raises when the browsers were never installed, and
                 # the handler below turns that into the setup sentence.
@@ -2439,126 +2535,85 @@ class _Browser:
                     if brave_path is not None
                     else playwright.chromium.executable_path
                 )
-                launched: _Launched | None = None
 
                 # Ask before launching, because Windows does not answer through
                 # the error. A second `brave.exe` against a directory a running
-                # Brave owns hands off and exits **0**, so the launcher waits out
-                # its full discovery window and reports a launch that never
-                # happened. See `profile_in_use`.
+                # browser owns hands off and exits **0**, so the launcher would
+                # wait out its full discovery window and report a launch that
+                # never happened. The call's own attempted delete is also the
+                # stale-lock cleanup: a lock left by a crash clears here, and a
+                # launch does not have to fight a file nothing alive holds.
                 #
-                # A held directory is watched for a moment first, because the
-                # lock this code itself creates -- `release()` then `ensure()`
-                # on the next turn -- is on its way out and would otherwise be
-                # indistinguishable from one the user's own Brave holds. See
-                # `settle_profile_lock`, which sleeps between its checks and is
-                # therefore run off this loop -- the same loop as the room's
-                # audio, which a slow lock must not stall.
-                held = profile_in_use(directory)
-                if held and await asyncio.to_thread(settle_profile_lock, directory):
-                    # Worth a line: the wait is short but visible, and without
-                    # this it is indistinguishable from a slow launch.
-                    logger.info(
-                        "[Browser] %s was being released; using it", directory
+                # The release->ensure race -- the lock is on its way out because
+                # *we* closed the browser -- is not decided here; `launch_and_attach`
+                # retries `ProfileBusy` a bounded number of times, which covers a
+                # closing Chromium without putting any sync sleeping on this loop.
+                if await asyncio.to_thread(profile_in_use, directory):
+                    logger.info("[Browser] %s is held with no endpoint to join", directory)
+                    raise ToolError(MSG_OWN_PROFILE_HELD)
+                launched: _Launched | None = None
+                try:
+                    launched = await launch_and_attach(
+                        playwright,
+                        executable=executable,
+                        engine=selected_engine,
+                        directory=directory,
                     )
-                    held = False
-                if held:
-                    logger.info(
-                        "[Browser] %s is held by a running browser; opening Lumine's "
-                        "own window at %s instead",
-                        directory,
-                        spare,
-                    )
-                else:
-                    try:
-                        launched = await launch_and_attach(
-                            playwright,
-                            executable=executable,
-                            engine=selected_engine,
-                            directory=directory,
-                            profile_directory=profile_directory,
-                        )
-                    except ProfileBusy:
-                        # Somebody is holding the profile and is not publishing an
-                        # endpoint to join -- usually the user's own browser window
-                        # on it, which no protocol can attach to. The lock is a fact
-                        # about *this* directory and says nothing about any other,
-                        # so the window opens beside it rather than not at all.
-                        #
-                        # This used to be the refusal `MSG_PROFILE_LOCKED` describes,
-                        # and it was the wrong answer to a companion: the user had
-                        # Brave open on the 'Lumine' profile, asked for a YouTube
-                        # search, and was told to go and close their own browser
-                        # first. The profile is the right *first* choice because it
-                        # is the one already signed in; it is no longer the only one.
-                        launched = None
-                    except LaunchTimeout as exc:
-                        # **Not a fallback.** A browser that started and never
-                        # published is still running, and opening the unsigned-in
-                        # spare beside it would give the user two windows and an
-                        # answer to a question nobody asked. The launcher has
-                        # already ended the process it started.
-                        raise ToolError(str(exc)) from None
+                except ProfileBusy:
+                    # Our launcher handed off to a browser already on the
+                    # directory and exited 0 without publishing anything.
+                    # The head-of-function harvest asked this question a
+                    # moment ago; a holder can have taken the directory since
+                    # -- most plausibly one *we* started whose marker has
+                    # just appeared -- so it is worth one more read before
+                    # the refusal. Joining wipes the launch failure out
+                    # entirely; refusing keeps it a sentence about *her*
+                    # directory, never an instruction about the user's.
+                    harvested = await asyncio.to_thread(_held_browser_port, directory)
+                    context = None
+                    if harvested:
+                        _publish_endpoint(harvested, endpoint_path)
+                        try:
+                            context = await self._join_cdp(
+                                playwright, f"http://127.0.0.1:{harvested}"
+                            )
+                            shared = True
+                            logger.info(
+                                "[Browser] joined the browser recovered on %s",
+                                harvested,
+                            )
+                        except ToolError:
+                            raise
+                        except Exception as exc:  # noqa: BLE001 - the refusal is still the answer
+                            logger.info(
+                                "[Browser] recovered a port on %s but could not join it (%s)",
+                                harvested,
+                                exc,
+                            )
+                    if context is None:
+                        raise ToolError(MSG_OWN_PROFILE_HELD) from None
+                except LaunchTimeout as exc:
+                    # A browser that started and never published is still
+                    # running; the launcher has already ended the process it
+                    # started, and the timeout already says what happened.
+                    raise ToolError(str(exc)) from None
 
-                if launched is None:
-                    launched_on = spare
-                    try:
-                        launched_on.mkdir(parents=True, exist_ok=True)
-                    except OSError as mkdir_exc:
-                        raise ToolError(
-                            f"I can't use {clip(str(launched_on), 60)} for a spare "
-                            f"browser profile: {clip(str(mkdir_exc), 80)}"
-                        ) from None
-                    if profile_in_use(launched_on) and not await asyncio.to_thread(
-                        settle_profile_lock, launched_on
-                    ):
-                        raise ToolError(MSG_PROFILE_LOCKED)
+                if launched is not None:
+                    context = launched.context
+                    cdp_browser = launched.browser
+                    process = launched.process
                     logger.info(
-                        "[Browser] opened a separate %s window on Lumine's own "
-                        "profile at %s",
+                        "[Browser] started the %s engine on Lumine's own browser "
+                        "directory at %s",
                         selected_engine,
-                        launched_on,
+                        directory,
                     )
-                    # No `profile_directory`: a user-data directory of our own
-                    # has only `Default` in it, and naming the personal profile
-                    # here would quietly recreate the directory we were refused.
-                    try:
-                        launched = await launch_and_attach(
-                            playwright,
-                            executable=executable,
-                            engine=selected_engine,
-                            directory=launched_on,
-                            profile_directory=None,
-                        )
-                    except ProfileBusy:
-                        raise ToolError(MSG_PROFILE_LOCKED) from None
-                    except LaunchTimeout as exc:
-                        # Both directories failing to publish is the same fact
-                        # twice, and the spare's own sentence would name the wrong
-                        # directory. The timeout already says what happened.
-                        raise ToolError(str(exc)) from None
-                context = launched.context
-                cdp_browser = launched.browser
-                process = launched.process
-                if launched_on == directory:
-                    if selected_engine == "brave":
-                        logger.info(
-                            "[Browser] started Brave with the existing %r profile",
-                            BRAVE_PROFILE_NAME,
-                        )
-                    else:
-                        logger.info(
-                            "[Browser] started Playwright Chromium with Lumine's isolated profile"
-                        )
-                # The port comes from whichever directory actually got the
-                # browser, because that is the directory Chromium wrote it in --
-                # and the endpoint published for it is still the *engine's*, so a
-                # later process joins this window whether it was the first choice
-                # or the fallback. One browser, either way.
-                _publish_endpoint(launched.port, endpoint_path)
-                logger.info(
-                    "[Browser] published a DevTools endpoint on %s", launched.port
-                )
+                    # The port Chromium actually bound. The endpoint published for
+                    # it is the *engine's*, so a later process joins this window.
+                    _publish_endpoint(launched.port, endpoint_path)
+                    logger.info(
+                        "[Browser] published a DevTools endpoint on %s", launched.port
+                    )
         except Exception as exc:  # noqa: BLE001 -- any launch failure becomes a sentence
             if isinstance(exc, ToolError):
                 # The browser we started, if any, has to go with the failure.
