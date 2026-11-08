@@ -182,7 +182,13 @@ def wrap_untrusted(text: str, *, max_chars: int = MAX_RESULT_CHARS) -> str:
     synthesises its own output from typed arguments alone does not need this, and
     wrapping it anyway would train the model to ignore the marker.
     """
-    body = text if len(text) <= max_chars else text[: max(0, max_chars - len(TRUNCATION_NOTE))].rstrip() + TRUNCATION_NOTE
+    # Page text is untrusted and may contain the framing tokens themselves.
+    # Keep the words readable, but break the exact delimiter before inserting
+    # the body so retrieved content cannot escape its boundary.
+    body = text.replace(UNTRUSTED_OPEN, "< < <LUMINE_TOOL_DATA")
+    body = body.replace(UNTRUSTED_CLOSE, "LUMINE_TOOL_DATA > > >")
+    if len(body) > max_chars:
+        body = body[: max(0, max_chars - len(TRUNCATION_NOTE))].rstrip() + TRUNCATION_NOTE
     return f"{UNTRUSTED_OPEN}\n{UNTRUSTED_PREAMBLE}\n{body}\n{UNTRUSTED_CLOSE}"
 
 

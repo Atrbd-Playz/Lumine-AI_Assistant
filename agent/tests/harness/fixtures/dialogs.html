@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>JavaScript Dialogs Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .btn { padding: 8px 16px; margin: 6px; cursor: pointer; }
+    .status-panel { padding: 10px; background: #fffaf0; border: 1px solid #feebc8; margin-top: 15px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Native Browser Dialogs Certification</h1>
+
+  <button id="btn-trigger-alert" class="btn">Trigger Alert</button>
+  <button id="btn-trigger-confirm" class="btn">Trigger Confirm</button>
+  <button id="btn-trigger-prompt" class="btn">Trigger Prompt</button>
+
+  <div id="dialog-status" class="status-panel">Awaiting dialog trigger</div>
+
+  <script>
+    const status = document.getElementById('dialog-status');
+
+    document.getElementById('btn-trigger-alert').addEventListener('click', () => {
+      alert('Certification Alert: Operation Complete');
+      status.textContent = 'STATUS: alert_dismissed';
+    });
+
+    document.getElementById('btn-trigger-confirm').addEventListener('click', () => {
+      const res = confirm('Do you wish to proceed with this certification step?');
+      status.textContent = 'STATUS: confirm_result_' + res;
+    });
+
+    document.getElementById('btn-trigger-prompt').addEventListener('click', () => {
+      const input = prompt('Please enter your certification secret:', 'DefaultAnswer');
+      status.textContent = 'STATUS: prompt_result_' + input;
+    });
+
+    window.addEventListener('beforeunload', (e) => {
+      e.preventDefault();
+      e.returnValue = 'You have unsaved certification data.';
+    });
+  </script>
+</body>
+</html>

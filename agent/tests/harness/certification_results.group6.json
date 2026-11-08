@@ -1,0 +1,426 @@
+{
+  "campaign": "Lumine browser control certification",
+  "label": "group 6 (phases 16-17)",
+  "generated_at": "2026-11-06T13:02:54",
+  "tests_run": 11,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "recorded_tests": 11,
+  "elapsed_seconds": 36.76,
+  "status_counts": {
+    "PASS": 8,
+    "FAIL": 2,
+    "UNRELIABLE": 1
+  },
+  "failed_capabilities": 2,
+  "capability_matrix": [
+    {
+      "phase": 16,
+      "category": "Security & Safety",
+      "classification": {
+        "PASS": 6,
+        "FAIL": 2,
+        "UNRELIABLE": 1
+      },
+      "capabilities": [
+        {
+          "id": "TC-16-01",
+          "capability": "Strict route guard blocks loopback & private IP navigation",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Loopback 127.0.0.1 blocked: I can't open 127.0.0.1 -- 127.0.0.1 is not a public address. Nothing was shown.",
+          "defect": ""
+        },
+        {
+          "id": "TC-16-02",
+          "capability": "Refusal of non-http/https dangerous schemes (file:, javascript:)",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Schemes file: and javascript: rejected without initiating browser request",
+          "defect": ""
+        },
+        {
+          "id": "TC-16-03",
+          "capability": "Keep prompt-like page content delimited as untrusted data",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Visible and zero-size hidden prompt-like text remained inside the untrusted-data delimiters.",
+          "defect": ""
+        },
+        {
+          "id": "TC-16-04",
+          "capability": "Refuse to type into a password field whichever signal names it",
+          "status": "FAIL",
+          "classification": "failed due to implementation defect",
+          "evidence": "refused by policy=['classic-name']; typed into=['innocuous-placeholder=SYNTHETIC-PROBE-VALUE', 'aria-label=SYNTHETIC-PROBE-VALUE', 'unlabelled-placeholder=SYNTHETIC-PROBE-VALUE']; unresolved=['innocuous-label:more than one thing on the page matches']; approval cards raised=3; password fields that received text=3 of 5",
+          "defect": "A password input received text because `_is_password` reads only the accessible name and never the field's own type; the approval gate then asked for consent it should never have needed."
+        },
+        {
+          "id": "TC-16-05",
+          "capability": "Refuse non-web schemes and URLs carrying embedded credentials",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "refused with the expected reason={\"javascript:document.body.innerHTML='owned'\": 'scheme', 'data:text/html,<h1>inline</h1>': 'scheme', 'file:///C:/Windows/win.ini': 'scheme', 'vbscript:msgbox(1)': 'scheme', 'http://user:password@example.com/admin': 'credentials', 'user:password@example.com/admin': 'credentials', 'http://exa mple.com/': 'whitespace'}; accepted unexpectedly=[]",
+          "defect": ""
+        },
+        {
+          "id": "TC-16-06",
+          "capability": "Price a form submission as sensitive and an ordinary click as an act",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "submit click asked as 'sensitive' and the page reported 'submitted'; ordinary click asked as 'act'",
+          "defect": ""
+        },
+        {
+          "id": "TC-16-07",
+          "capability": "Do not read display:none text, and keep every read phrase inside the fence",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "visible injection read=True; display:none text read=False; zero-size text read=True; aria-hidden text read=True; fenced=True; every read phrase inside the fence=True",
+          "defect": ""
+        },
+        {
+          "id": "TC-16-08",
+          "capability": "A page-initiated navigation to a refused scheme or loopback host is aborted",
+          "status": "UNRELIABLE",
+          "classification": "implemented but unreliable",
+          "evidence": "outcomes={'Open a Local File': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Open a Credentialed URL': 'clicked; stayed-on-page=False; url=chrome-error://chromewebdata/', 'Open a Data URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Run a VBScript URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Run a JavaScript URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html'}; forbidden target loaded=[]; pages replaced by an error page=1; javascript: link executed in-page=False",
+          "defect": "The refused navigation is aborted, but the browser is left on Chromium's error page instead of the page the user was reading, and the click still reports success."
+        },
+        {
+          "id": "TC-16-09",
+          "capability": "Page text imitating the untrusted-data fence cannot end the block early",
+          "status": "FAIL",
+          "classification": "failed due to implementation defect",
+          "evidence": "open markers=2; close markers=2; page-supplied close marker found at 313; injected instruction at 333; instruction outside the fenced block=True",
+          "defect": "`tool_results.wrap_untrusted` appends the page text without neutralising the fence marker, so a page can close the data block and continue in instruction position."
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "phase": 17,
+      "category": "Performance",
+      "classification": {
+        "PASS": 2
+      },
+      "capabilities": [
+        {
+          "id": "TC-17-01",
+          "capability": "Measure latency of core operations",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Navigation: 187.1ms | Observe: 48.2ms | Act: 169.7ms",
+          "defect": ""
+        },
+        {
+          "id": "TC-17-02",
+          "capability": "Repeated operation latency stays within a voice-turn budget",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "observe ms=[41.36, 27.76, 18.83, 33.5] median=30.6; click ms=[143.23, 73.86, 69.98, 65.14] median=71.9; preview screenshot=79.8 ms",
+          "defect": ""
+        }
+      ],
+      "status": "PASS"
+    }
+  ],
+  "scope_gaps": [
+    {
+      "capability": "Authenticated account behaviour",
+      "status": "NOT_TESTED",
+      "reason": "Only the public, signed-out surface was exercised; no account was used."
+    },
+    {
+      "capability": "Real consent round-trip (ask, speak, answer, act)",
+      "status": "NOT_TESTED",
+      "reason": "Local fixtures stub `require_approval`; the gate's class is measured, the spoken consent path is not."
+    },
+    {
+      "capability": "Browser crash and restart recovery",
+      "status": "NOT_TESTED",
+      "reason": "No browser process was deliberately crashed."
+    },
+    {
+      "capability": "Long-duration soak and resource growth",
+      "status": "NOT_TESTED",
+      "reason": "Stability is a bounded repeated-cycle sample, not an hours-long soak."
+    },
+    {
+      "capability": "Model interpretation of screenshots",
+      "status": "NOT_TESTED",
+      "reason": "Capture, format and bounds are measured; what a vision model makes of them is not."
+    },
+    {
+      "capability": "Cross-platform behaviour (macOS/Linux)",
+      "status": "NOT_TESTED",
+      "reason": "This run used the current Windows machine only."
+    },
+    {
+      "capability": "File upload capability",
+      "status": "UNSUPPORTED",
+      "reason": "No `set_input_files`/file-chooser path exists in either tool."
+    },
+    {
+      "capability": "Open Shadow DOM controls",
+      "status": "UNSUPPORTED",
+      "reason": "The collector does not pierce shadow roots; verified rather than assumed."
+    },
+    {
+      "capability": "Same- or cross-origin iframe action by semantic locator",
+      "status": "UNSUPPORTED",
+      "reason": "Frames are resolved by the driver but not by the candidate collector."
+    }
+  ],
+  "environment": {
+    "profile": "Lumine's own persistent profile (LUMINE_CERT_PROFILE overrides)",
+    "headless": "0",
+    "allow_local": "1",
+    "python": "3.14.0"
+  },
+  "details": [
+    {
+      "id": "TC-16-01",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "Strict route guard blocks loopback & private IP navigation",
+      "status": "PASS",
+      "duration_ms": 1.14,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Strict route guard blocks loopback & private IP navigation"
+      ],
+      "expected_outcome": "Strict route guard blocks loopback & private IP navigation",
+      "actual_outcome": "Loopback 127.0.0.1 blocked: I can't open 127.0.0.1 -- 127.0.0.1 is not a public address. Nothing was shown.",
+      "evidence": "Loopback 127.0.0.1 blocked: I can't open 127.0.0.1 -- 127.0.0.1 is not a public address. Nothing was shown.",
+      "evidence_ref": "test:TC-16-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-16-02",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "Refusal of non-http/https dangerous schemes (file:, javascript:)",
+      "status": "PASS",
+      "duration_ms": 0.42,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Refusal of non-http/https dangerous schemes (file:, javascript:)"
+      ],
+      "expected_outcome": "Refusal of non-http/https dangerous schemes (file:, javascript:)",
+      "actual_outcome": "Schemes file: and javascript: rejected without initiating browser request",
+      "evidence": "Schemes file: and javascript: rejected without initiating browser request",
+      "evidence_ref": "test:TC-16-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-16-03",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "Keep prompt-like page content delimited as untrusted data",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Keep prompt-like page content delimited as untrusted data"
+      ],
+      "expected_outcome": "Keep prompt-like page content delimited as untrusted data",
+      "actual_outcome": "Visible and zero-size hidden prompt-like text remained inside the untrusted-data delimiters.",
+      "evidence": "Visible and zero-size hidden prompt-like text remained inside the untrusted-data delimiters.",
+      "evidence_ref": "test:TC-16-03",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-16-04",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "Refuse to type into a password field whichever signal names it",
+      "status": "FAIL",
+      "duration_ms": 603.18,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Refuse to type into a password field whichever signal names it"
+      ],
+      "expected_outcome": "Refuse to type into a password field whichever signal names it",
+      "actual_outcome": "refused by policy=['classic-name']; typed into=['innocuous-placeholder=SYNTHETIC-PROBE-VALUE', 'aria-label=SYNTHETIC-PROBE-VALUE', 'unlabelled-placeholder=SYNTHETIC-PROBE-VALUE']; unresolved=['innocuous-label:more than one thing on the page matches']; approval cards raised=3; password fields that received text=3 of 5",
+      "evidence": "refused by policy=['classic-name']; typed into=['innocuous-placeholder=SYNTHETIC-PROBE-VALUE', 'aria-label=SYNTHETIC-PROBE-VALUE', 'unlabelled-placeholder=SYNTHETIC-PROBE-VALUE']; unresolved=['innocuous-label:more than one thing on the page matches']; approval cards raised=3; password fields that received text=3 of 5",
+      "evidence_ref": "test:TC-16-04",
+      "failure_reason": "A password input received text because `_is_password` reads only the accessible name and never the field's own type; the approval gate then asked for consent it should never have needed.",
+      "defect": "A password input received text because `_is_password` reads only the accessible name and never the field's own type; the approval gate then asked for consent it should never have needed."
+    },
+    {
+      "id": "TC-16-05",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "Refuse non-web schemes and URLs carrying embedded credentials",
+      "status": "PASS",
+      "duration_ms": 0.18,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Refuse non-web schemes and URLs carrying embedded credentials"
+      ],
+      "expected_outcome": "Refuse non-web schemes and URLs carrying embedded credentials",
+      "actual_outcome": "refused with the expected reason={\"javascript:document.body.innerHTML='owned'\": 'scheme', 'data:text/html,<h1>inline</h1>': 'scheme', 'file:///C:/Windows/win.ini': 'scheme', 'vbscript:msgbox(1)': 'scheme', 'http://user:password@example.com/admin': 'credentials', 'user:password@example.com/admin': 'credentials', 'http://exa mple.com/': 'whitespace'}; accepted unexpectedly=[]",
+      "evidence": "refused with the expected reason={\"javascript:document.body.innerHTML='owned'\": 'scheme', 'data:text/html,<h1>inline</h1>': 'scheme', 'file:///C:/Windows/win.ini': 'scheme', 'vbscript:msgbox(1)': 'scheme', 'http://user:password@example.com/admin': 'credentials', 'user:password@example.com/admin': 'credentials', 'http://exa mple.com/': 'whitespace'}; accepted unexpectedly=[]",
+      "evidence_ref": "test:TC-16-05",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-16-06",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "Price a form submission as sensitive and an ordinary click as an act",
+      "status": "PASS",
+      "duration_ms": 416.5,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Price a form submission as sensitive and an ordinary click as an act"
+      ],
+      "expected_outcome": "Price a form submission as sensitive and an ordinary click as an act",
+      "actual_outcome": "submit click asked as 'sensitive' and the page reported 'submitted'; ordinary click asked as 'act'",
+      "evidence": "submit click asked as 'sensitive' and the page reported 'submitted'; ordinary click asked as 'act'",
+      "evidence_ref": "test:TC-16-06",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-16-07",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "Do not read display:none text, and keep every read phrase inside the fence",
+      "status": "PASS",
+      "duration_ms": 238.86,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Do not read display:none text, and keep every read phrase inside the fence"
+      ],
+      "expected_outcome": "Do not read display:none text, and keep every read phrase inside the fence",
+      "actual_outcome": "visible injection read=True; display:none text read=False; zero-size text read=True; aria-hidden text read=True; fenced=True; every read phrase inside the fence=True",
+      "evidence": "visible injection read=True; display:none text read=False; zero-size text read=True; aria-hidden text read=True; fenced=True; every read phrase inside the fence=True",
+      "evidence_ref": "test:TC-16-07",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-16-08",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "A page-initiated navigation to a refused scheme or loopback host is aborted",
+      "status": "UNRELIABLE",
+      "duration_ms": 26281.21,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "A page-initiated navigation to a refused scheme or loopback host is aborted"
+      ],
+      "expected_outcome": "A page-initiated navigation to a refused scheme or loopback host is aborted",
+      "actual_outcome": "outcomes={'Open a Local File': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Open a Credentialed URL': 'clicked; stayed-on-page=False; url=chrome-error://chromewebdata/', 'Open a Data URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Run a VBScript URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Run a JavaScript URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html'}; forbidden target loaded=[]; pages replaced by an error page=1; javascript: link executed in-page=False",
+      "evidence": "outcomes={'Open a Local File': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Open a Credentialed URL': 'clicked; stayed-on-page=False; url=chrome-error://chromewebdata/', 'Open a Data URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Run a VBScript URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html', 'Run a JavaScript URL': 'clicked; stayed-on-page=True; url=http://127.0.0.1:10334/fixtures/security_advanced.html'}; forbidden target loaded=[]; pages replaced by an error page=1; javascript: link executed in-page=False",
+      "evidence_ref": "test:TC-16-08",
+      "failure_reason": "The refused navigation is aborted, but the browser is left on Chromium's error page instead of the page the user was reading, and the click still reports success.",
+      "defect": "The refused navigation is aborted, but the browser is left on Chromium's error page instead of the page the user was reading, and the click still reports success."
+    },
+    {
+      "id": "TC-16-09",
+      "phase": 16,
+      "category": "Security & Safety",
+      "description": "Page text imitating the untrusted-data fence cannot end the block early",
+      "status": "FAIL",
+      "duration_ms": 138.55,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Page text imitating the untrusted-data fence cannot end the block early"
+      ],
+      "expected_outcome": "Page text imitating the untrusted-data fence cannot end the block early",
+      "actual_outcome": "open markers=2; close markers=2; page-supplied close marker found at 313; injected instruction at 333; instruction outside the fenced block=True",
+      "evidence": "open markers=2; close markers=2; page-supplied close marker found at 313; injected instruction at 333; instruction outside the fenced block=True",
+      "evidence_ref": "test:TC-16-09",
+      "failure_reason": "`tool_results.wrap_untrusted` appends the page text without neutralising the fence marker, so a page can close the data block and continue in instruction position.",
+      "defect": "`tool_results.wrap_untrusted` appends the page text without neutralising the fence marker, so a page can close the data block and continue in instruction position."
+    },
+    {
+      "id": "TC-17-01",
+      "phase": 17,
+      "category": "Performance & Benchmarks",
+      "description": "Measure latency of core operations",
+      "status": "PASS",
+      "duration_ms": 404.99,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Measure latency of core operations"
+      ],
+      "expected_outcome": "Measure latency of core operations",
+      "actual_outcome": "Navigation: 187.1ms | Observe: 48.2ms | Act: 169.7ms",
+      "evidence": "Navigation: 187.1ms | Observe: 48.2ms | Act: 169.7ms",
+      "evidence_ref": "test:TC-17-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-17-02",
+      "phase": 17,
+      "category": "Performance",
+      "description": "Repeated operation latency stays within a voice-turn budget",
+      "status": "PASS",
+      "duration_ms": 726.16,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Repeated operation latency stays within a voice-turn budget"
+      ],
+      "expected_outcome": "Repeated operation latency stays within a voice-turn budget",
+      "actual_outcome": "observe ms=[41.36, 27.76, 18.83, 33.5] median=30.6; click ms=[143.23, 73.86, 69.98, 65.14] median=71.9; preview screenshot=79.8 ms",
+      "evidence": "observe ms=[41.36, 27.76, 18.83, 33.5] median=30.6; click ms=[143.23, 73.86, 69.98, 65.14] median=71.9; preview screenshot=79.8 ms",
+      "evidence_ref": "test:TC-17-02",
+      "failure_reason": "",
+      "defect": ""
+    }
+  ]
+}

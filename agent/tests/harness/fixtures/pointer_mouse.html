@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Pointer, Mouse & Scroll Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .interactive-box { width: 220px; height: 100px; border: 2px dashed #4a5568; margin: 12px 0; display: flex; align-items: center; justify-content: center; user-select: none; }
+    .hover-menu { position: relative; display: inline-block; }
+    .hover-content { display: none; position: absolute; background: #fff; box-shadow: 0 4px 6px rgba(0,0,0,0.1); border: 1px solid #e2e8f0; padding: 8px; z-index: 100; min-width: 140px; }
+    .hover-menu:hover .hover-content { display: block; }
+    .scroll-container { width: 300px; height: 150px; overflow-y: scroll; border: 1px solid #718096; padding: 10px; margin: 15px 0; }
+    .tall-content { height: 1200px; background: linear-gradient(white, #cbd5e0); padding: 10px; }
+    #drag-source { width: 100px; height: 50px; background: #3182ce; color: white; cursor: grab; padding: 6px; }
+    #drag-target { width: 160px; height: 100px; background: #edf2f7; border: 2px dashed #cbd5e0; margin-top: 10px; }
+    .status-panel { padding: 10px; background: #f7fafc; border: 1px solid #e2e8f0; margin-top: 12px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Mouse, Pointer & Scrolling Certification</h1>
+
+  <section id="mouse-events">
+    <div id="click-target" class="interactive-box" role="button" tabindex="0">Single Click Target</div>
+    <div id="dblclick-target" class="interactive-box" role="button" tabindex="0">Double Click Target</div>
+    <div id="rightclick-target" class="interactive-box" role="button" tabindex="0">Right Click Target</div>
+
+    <div class="hover-menu" id="dropdown-menu">
+      <button id="hover-trigger" class="btn">Hover Over Me</button>
+      <div class="hover-content" id="hover-submenu">
+        <a href="#item1" id="hover-item-1">Submenu Option 1</a><br>
+        <a href="#item2" id="hover-item-2">Submenu Option 2</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="drag-section">
+    <h3>Drag and Drop Simulator</h3>
+    <div id="drag-source" role="button" draggable="true">Drag Me</div>
+    <div id="drag-target">Drop Target Zone</div>
+  </section>
+
+  <section id="scroll-section">
+    <h3>Nested Scrollable Container</h3>
+    <div class="scroll-container" id="nested-scroll-box">
+      <div class="tall-content">
+        <p>Top of scroll container</p>
+        <p style="margin-top: 300px;" id="mid-scroll-marker">Middle Marker (300px)</p>
+        <p style="margin-top: 500px;" id="deep-scroll-marker">Deep Marker (800px)</p>
+        <p style="margin-top: 350px;" id="bottom-scroll-marker">Bottom of scroll container (1150px)</p>
+      </div>
+    </div>
+  </section>
+
+  <div id="pointer-status" class="status-panel">Awaiting pointer event</div>
+
+  <script>
+    const status = document.getElementById('pointer-status');
+    const update = (text) => { status.textContent = 'EVENT: ' + text; };
+
+    document.getElementById('click-target').addEventListener('click', () => update('single_click'));
+    document.getElementById('dblclick-target').addEventListener('dblclick', () => update('double_click'));
+    document.getElementById('rightclick-target').addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      update('right_click');
+    });
+
+    document.getElementById('hover-item-1').addEventListener('click', (e) => {
+      e.preventDefault();
+      update('hover_submenu_1_clicked');
+    });
+
+    const dragSrc = document.getElementById('drag-source');
+    const dragTarget = document.getElementById('drag-target');
+
+    dragSrc.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', 'dragged-item');
+      update('dragstart');
+    });
+    dragTarget.addEventListener('dragover', (e) => e.preventDefault());
+    dragTarget.addEventListener('drop', (e) => {
+      e.preventDefault();
+      update('dropped_successfully');
+      dragTarget.textContent = 'Item Dropped!';
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,433 @@
+{
+  "campaign": "Lumine browser control certification",
+  "label": "group 3 (phases 7-9)",
+  "generated_at": "2026-11-06T12:52:03",
+  "tests_run": 11,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "recorded_tests": 11,
+  "elapsed_seconds": 14.61,
+  "status_counts": {
+    "PASS": 7,
+    "UNSUPPORTED": 4
+  },
+  "failed_capabilities": 0,
+  "capability_matrix": [
+    {
+      "phase": 7,
+      "category": "Scrolling & Viewport",
+      "classification": {
+        "PASS": 3
+      },
+      "capabilities": [
+        {
+          "id": "TC-07-01",
+          "capability": "Scroll page and verify repeat-read notice flag",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Scroll moved viewport; identical repeated read triggered notice warning",
+          "defect": ""
+        },
+        {
+          "id": "TC-07-02",
+          "capability": "Scroll to content below the fold and read it",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "scroll reported='Scrolled to the bottom of the page.'; final y=2371; below-fold marker=True; text changed=True",
+          "defect": ""
+        },
+        {
+          "id": "TC-07-03",
+          "capability": "Trigger and observe infinite-scroll pagination",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "rows 40 -> 80 after two bottom scrolls",
+          "defect": ""
+        }
+      ],
+      "status": "PASS"
+    },
+    {
+      "phase": 8,
+      "category": "Complex DOM",
+      "classification": {
+        "UNSUPPORTED": 4
+      },
+      "capabilities": [
+        {
+          "id": "TC-08-01",
+          "capability": "Shadow DOM element discovery limitation",
+          "status": "UNSUPPORTED",
+          "classification": "not implemented",
+          "evidence": "Open shadow root button present in observe: False",
+          "defect": "Shadow roots are unpierced by _JS_COLLECT document.querySelectorAll"
+        },
+        {
+          "id": "TC-08-02",
+          "capability": "Child iframe control discovery limitation",
+          "status": "UNSUPPORTED",
+          "classification": "not implemented",
+          "evidence": "Child iframe button found in top-level observe: False",
+          "defect": "_JS_COLLECT does not walk child iframe frames"
+        },
+        {
+          "id": "TC-08-03",
+          "capability": "Act on a control in a named same-origin iframe",
+          "status": "UNSUPPORTED",
+          "classification": "not implemented",
+          "evidence": "The frame was resolved, but semantic preflight refused the unique frame control before acting: more than one thing on the page matches",
+          "defect": "web_control preflight does not resolve candidates from the selected frame"
+        },
+        {
+          "id": "TC-08-04",
+          "capability": "Cross-origin iframe content isolated from parent read and semantic action",
+          "status": "UNSUPPORTED",
+          "classification": "not implemented",
+          "evidence": "parent read=True; child control absent from parent read=True; frames=2; frame-targeted click acted=False ('more than one thing on the page matches'); child state='child idle'",
+          "defect": ""
+        }
+      ],
+      "status": "PARTIAL"
+    },
+    {
+      "phase": 9,
+      "category": "Tabs & Popups",
+      "classification": {
+        "PASS": 4
+      },
+      "capabilities": [
+        {
+          "id": "TC-09-01",
+          "capability": "Tab lifecycle: new tab, list tabs, switch, and close",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Multi-tab switching and lifecycle verified",
+          "defect": ""
+        },
+        {
+          "id": "TC-09-02",
+          "capability": "Register a JavaScript popup as a distinct tab",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Popup registered as tab 14 at http://127.0.0.1:5289/fixtures/forms.html",
+          "defect": ""
+        },
+        {
+          "id": "TC-09-03",
+          "capability": "Close every other tab while keeping the one in use",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "tabs 4 -> 1; active kept=True; result='Closed 3 other tab(s). 1 left, and it is the one you were on.' error=''",
+          "defect": ""
+        },
+        {
+          "id": "TC-09-04",
+          "capability": "A popup that closes itself is removed from the tab registry",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "tabs opened=3 (popup [22]); close action='clicked'; tabs after=2",
+          "defect": ""
+        }
+      ],
+      "status": "PASS"
+    }
+  ],
+  "scope_gaps": [
+    {
+      "capability": "Authenticated account behaviour",
+      "status": "NOT_TESTED",
+      "reason": "Only the public, signed-out surface was exercised; no account was used."
+    },
+    {
+      "capability": "Real consent round-trip (ask, speak, answer, act)",
+      "status": "NOT_TESTED",
+      "reason": "Local fixtures stub `require_approval`; the gate's class is measured, the spoken consent path is not."
+    },
+    {
+      "capability": "Browser crash and restart recovery",
+      "status": "NOT_TESTED",
+      "reason": "No browser process was deliberately crashed."
+    },
+    {
+      "capability": "Long-duration soak and resource growth",
+      "status": "NOT_TESTED",
+      "reason": "Stability is a bounded repeated-cycle sample, not an hours-long soak."
+    },
+    {
+      "capability": "Model interpretation of screenshots",
+      "status": "NOT_TESTED",
+      "reason": "Capture, format and bounds are measured; what a vision model makes of them is not."
+    },
+    {
+      "capability": "Cross-platform behaviour (macOS/Linux)",
+      "status": "NOT_TESTED",
+      "reason": "This run used the current Windows machine only."
+    },
+    {
+      "capability": "File upload capability",
+      "status": "UNSUPPORTED",
+      "reason": "No `set_input_files`/file-chooser path exists in either tool."
+    },
+    {
+      "capability": "Open Shadow DOM controls",
+      "status": "UNSUPPORTED",
+      "reason": "The collector does not pierce shadow roots; verified rather than assumed."
+    },
+    {
+      "capability": "Same- or cross-origin iframe action by semantic locator",
+      "status": "UNSUPPORTED",
+      "reason": "Frames are resolved by the driver but not by the candidate collector."
+    }
+  ],
+  "environment": {
+    "profile": "Lumine's own persistent profile (LUMINE_CERT_PROFILE overrides)",
+    "headless": "0",
+    "allow_local": "1",
+    "python": "3.14.0"
+  },
+  "details": [
+    {
+      "id": "TC-07-01",
+      "phase": 7,
+      "category": "Scrolling & Viewport",
+      "description": "Scroll page and verify repeat-read notice flag",
+      "status": "PASS",
+      "duration_ms": 3178.4,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Scroll page and verify repeat-read notice flag"
+      ],
+      "expected_outcome": "Scroll page and verify repeat-read notice flag",
+      "actual_outcome": "Scroll moved viewport; identical repeated read triggered notice warning",
+      "evidence": "Scroll moved viewport; identical repeated read triggered notice warning",
+      "evidence_ref": "test:TC-07-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-07-02",
+      "phase": 7,
+      "category": "Scrolling & Viewport",
+      "description": "Scroll to content below the fold and read it",
+      "status": "PASS",
+      "duration_ms": 193.94,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Scroll to content below the fold and read it"
+      ],
+      "expected_outcome": "Scroll to content below the fold and read it",
+      "actual_outcome": "scroll reported='Scrolled to the bottom of the page.'; final y=2371; below-fold marker=True; text changed=True",
+      "evidence": "scroll reported='Scrolled to the bottom of the page.'; final y=2371; below-fold marker=True; text changed=True",
+      "evidence_ref": "test:TC-07-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-07-03",
+      "phase": 7,
+      "category": "Scrolling & Viewport",
+      "description": "Trigger and observe infinite-scroll pagination",
+      "status": "PASS",
+      "duration_ms": 1010.67,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Trigger and observe infinite-scroll pagination"
+      ],
+      "expected_outcome": "Trigger and observe infinite-scroll pagination",
+      "actual_outcome": "rows 40 -> 80 after two bottom scrolls",
+      "evidence": "rows 40 -> 80 after two bottom scrolls",
+      "evidence_ref": "test:TC-07-03",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-08-01",
+      "phase": 8,
+      "category": "Complex DOM",
+      "description": "Shadow DOM element discovery limitation",
+      "status": "UNSUPPORTED",
+      "duration_ms": 179.15,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Shadow DOM element discovery limitation"
+      ],
+      "expected_outcome": "Shadow DOM element discovery limitation",
+      "actual_outcome": "Open shadow root button present in observe: False",
+      "evidence": "Open shadow root button present in observe: False",
+      "evidence_ref": "test:TC-08-01",
+      "failure_reason": "Shadow roots are unpierced by _JS_COLLECT document.querySelectorAll",
+      "defect": "Shadow roots are unpierced by _JS_COLLECT document.querySelectorAll"
+    },
+    {
+      "id": "TC-08-02",
+      "phase": 8,
+      "category": "Complex DOM",
+      "description": "Child iframe control discovery limitation",
+      "status": "UNSUPPORTED",
+      "duration_ms": 351.47,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Child iframe control discovery limitation"
+      ],
+      "expected_outcome": "Child iframe control discovery limitation",
+      "actual_outcome": "Child iframe button found in top-level observe: False",
+      "evidence": "Child iframe button found in top-level observe: False",
+      "evidence_ref": "test:TC-08-02",
+      "failure_reason": "_JS_COLLECT does not walk child iframe frames",
+      "defect": "_JS_COLLECT does not walk child iframe frames"
+    },
+    {
+      "id": "TC-08-03",
+      "phase": 8,
+      "category": "Complex DOM",
+      "description": "Act on a control in a named same-origin iframe",
+      "status": "UNSUPPORTED",
+      "duration_ms": 0.0,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Act on a control in a named same-origin iframe"
+      ],
+      "expected_outcome": "Act on a control in a named same-origin iframe",
+      "actual_outcome": "The frame was resolved, but semantic preflight refused the unique frame control before acting: more than one thing on the page matches",
+      "evidence": "The frame was resolved, but semantic preflight refused the unique frame control before acting: more than one thing on the page matches",
+      "evidence_ref": "test:TC-08-03",
+      "failure_reason": "web_control preflight does not resolve candidates from the selected frame",
+      "defect": "web_control preflight does not resolve candidates from the selected frame"
+    },
+    {
+      "id": "TC-08-04",
+      "phase": 8,
+      "category": "Complex DOM",
+      "description": "Cross-origin iframe content isolated from parent read and semantic action",
+      "status": "UNSUPPORTED",
+      "duration_ms": 263.58,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Cross-origin iframe content isolated from parent read and semantic action"
+      ],
+      "expected_outcome": "Cross-origin iframe content isolated from parent read and semantic action",
+      "actual_outcome": "parent read=True; child control absent from parent read=True; frames=2; frame-targeted click acted=False ('more than one thing on the page matches'); child state='child idle'",
+      "evidence": "parent read=True; child control absent from parent read=True; frames=2; frame-targeted click acted=False ('more than one thing on the page matches'); child state='child idle'",
+      "evidence_ref": "test:TC-08-04",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-09-01",
+      "phase": 9,
+      "category": "Tabs & Popups",
+      "description": "Tab lifecycle: new tab, list tabs, switch, and close",
+      "status": "PASS",
+      "duration_ms": 536.8,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Tab lifecycle: new tab, list tabs, switch, and close"
+      ],
+      "expected_outcome": "Tab lifecycle: new tab, list tabs, switch, and close",
+      "actual_outcome": "Multi-tab switching and lifecycle verified",
+      "evidence": "Multi-tab switching and lifecycle verified",
+      "evidence_ref": "test:TC-09-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-09-02",
+      "phase": 9,
+      "category": "Tabs & Popups",
+      "description": "Register a JavaScript popup as a distinct tab",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Register a JavaScript popup as a distinct tab"
+      ],
+      "expected_outcome": "Register a JavaScript popup as a distinct tab",
+      "actual_outcome": "Popup registered as tab 14 at http://127.0.0.1:5289/fixtures/forms.html",
+      "evidence": "Popup registered as tab 14 at http://127.0.0.1:5289/fixtures/forms.html",
+      "evidence_ref": "test:TC-09-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-09-03",
+      "phase": 9,
+      "category": "Tabs & Popups",
+      "description": "Close every other tab while keeping the one in use",
+      "status": "PASS",
+      "duration_ms": 692.93,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Close every other tab while keeping the one in use"
+      ],
+      "expected_outcome": "Close every other tab while keeping the one in use",
+      "actual_outcome": "tabs 4 -> 1; active kept=True; result='Closed 3 other tab(s). 1 left, and it is the one you were on.' error=''",
+      "evidence": "tabs 4 -> 1; active kept=True; result='Closed 3 other tab(s). 1 left, and it is the one you were on.' error=''",
+      "evidence_ref": "test:TC-09-03",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-09-04",
+      "phase": 9,
+      "category": "Tabs & Popups",
+      "description": "A popup that closes itself is removed from the tab registry",
+      "status": "PASS",
+      "duration_ms": 698.64,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "A popup that closes itself is removed from the tab registry"
+      ],
+      "expected_outcome": "A popup that closes itself is removed from the tab registry",
+      "actual_outcome": "tabs opened=3 (popup [22]); close action='clicked'; tabs after=2",
+      "evidence": "tabs opened=3 (popup [22]); close action='clicked'; tabs after=2",
+      "evidence_ref": "test:TC-09-04",
+      "failure_reason": "",
+      "defect": ""
+    }
+  ]
+}

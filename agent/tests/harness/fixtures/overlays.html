@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Overlay and Modal Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    #backdrop {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: rgb(0 0 0 / 55%);
+    }
+    #notice {
+      width: min(28rem, calc(100vw - 32px));
+      padding: 24px;
+      background: white;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Overlay fixture</h1>
+    <p id="underlay">The page beneath the notice remains present.</p>
+    <div id="backdrop">
+      <section id="notice" role="dialog" aria-modal="true" aria-labelledby="notice-title">
+        <h2 id="notice-title">Certification notice</h2>
+        <p>This modal is local test content and has no external effect.</p>
+        <button id="close-notice" type="button" aria-label="Close notice">Close</button>
+      </section>
+    </div>
+    <p id="overlay-status">Notice is open</p>
+  </main>
+  <script>
+    document.getElementById("close-notice").addEventListener("click", () => {
+      document.getElementById("backdrop").remove();
+      document.getElementById("overlay-status").textContent = "Notice closed";
+    });
+  </script>
+</body>
+</html>

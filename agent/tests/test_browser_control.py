@@ -338,6 +338,31 @@ class FrameTests(unittest.TestCase):
             locators.frame_for(self.page, "9")
 
 
+class DragExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_drag_uses_the_locator_page_property(self):
+        mouse = SimpleNamespace(
+            move=mock.AsyncMock(),
+            down=mock.AsyncMock(),
+            up=mock.AsyncMock(),
+        )
+        page = SimpleNamespace(mouse=mouse)
+        locator = SimpleNamespace(
+            page=page,
+            bounding_box=mock.AsyncMock(
+                return_value={"x": 10, "y": 20, "width": 40, "height": 20}
+            ),
+            hover=mock.AsyncMock(),
+        )
+
+        await engine._drag(locator, engine.EngineAction(kind="drag", text="right 100"))
+
+        locator.hover.assert_awaited_once()
+        mouse.down.assert_awaited_once()
+        mouse.up.assert_awaited_once()
+        mouse.move.assert_any_await(30, 30)
+        mouse.move.assert_any_await(130, 30, steps=8)
+
+
 # -- the reporting layer ---------------------------------------------------------
 
 

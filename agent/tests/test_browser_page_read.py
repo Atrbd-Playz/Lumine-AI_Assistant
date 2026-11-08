@@ -284,6 +284,15 @@ class CandidateContextTests(unittest.TestCase):
             "Wireless headphones $79.99",
         )
 
+    def test_all_bounded_collector_candidates_remain_searchable(self):
+        rows = [
+            {"ref": f"r{index}", "role": "button", "name": f"Button {index}", "tag": "button"}
+            for index in range(1, 81)
+        ]
+        candidates = state.candidates_from_script({"candidates": rows})
+        self.assertEqual(len(candidates), 80)
+        self.assertEqual(candidates[-1].name, "Button 80")
+
 
 class LadderTests(unittest.TestCase):
     def test_the_ladder_ends_at_body_and_reports_that_case_as_no_region(self):

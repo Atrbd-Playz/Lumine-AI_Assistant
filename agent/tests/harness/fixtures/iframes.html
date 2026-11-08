@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Iframes & Nested Frames Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    iframe { border: 2px solid #718096; width: 100%; height: 200px; margin: 10px 0; }
+    .status-panel { padding: 10px; background: #ebf8ff; border: 1px solid #bee3f8; margin-top: 15px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Iframes Certification Fixture</h1>
+  
+  <p>Top document content</p>
+  <button id="btn-top-document">Top Document Action</button>
+
+  <h3>Same-Origin Iframe</h3>
+  <iframe id="iframe-same-origin" src="/fixtures/static_elements.html"></iframe>
+
+  <h3>Inline Data Frame</h3>
+  <iframe id="iframe-inline" srcdoc="<html><body><button id='btn-inside-inline-iframe'>Button Inside Inline Iframe</button></body></html>"></iframe>
+
+  <div id="iframe-status" class="status-panel">Awaiting interaction</div>
+
+  <script>
+    document.getElementById('btn-top-document').addEventListener('click', () => {
+      document.getElementById('iframe-status').textContent = 'STATUS: top_button_clicked';
+    });
+  </script>
+</body>
+</html>

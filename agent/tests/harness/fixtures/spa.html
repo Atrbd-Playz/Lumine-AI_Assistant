@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SPA Client-Side Routing Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    nav a { margin-right: 12px; font-weight: bold; }
+    .page-view { padding: 20px; border: 1px solid #cbd5e0; margin-top: 15px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>SPA Routing & History Navigation</h1>
+
+  <nav>
+    <a href="#/home" id="link-spa-home">Home View</a>
+    <a href="#/dashboard" id="link-spa-dashboard">Dashboard View</a>
+    <a href="#/settings" id="link-spa-settings">Settings View</a>
+    <button id="btn-pushstate-view">Navigate via pushState (/view/pushed)</button>
+  </nav>
+
+  <div id="view-home" class="page-view">
+    <h2>Home View Component</h2>
+    <p>Welcome to the SPA Home Screen.</p>
+  </div>
+
+  <div id="view-dashboard" class="page-view hidden">
+    <h2>Dashboard View Component</h2>
+    <p>Analytics and Metrics Dashboard.</p>
+  </div>
+
+  <div id="view-settings" class="page-view hidden">
+    <h2>Settings View Component</h2>
+    <p>Application Settings Panel.</p>
+  </div>
+
+  <div id="view-pushed" class="page-view hidden">
+    <h2>History API Pushed Component</h2>
+    <p>Rendered via window.history.pushState.</p>
+  </div>
+
+  <div id="spa-current-route" style="margin-top: 10px; font-family: monospace;">ROUTE: #/home</div>
+
+  <script>
+    const updateRoute = () => {
+      const hash = window.location.hash || '#/home';
+      document.querySelectorAll('.page-view').forEach(el => el.classList.add('hidden'));
+      if (hash === '#/dashboard') document.getElementById('view-dashboard').classList.remove('hidden');
+      else if (hash === '#/settings') document.getElementById('view-settings').classList.remove('hidden');
+      else document.getElementById('view-home').classList.remove('hidden');
+      document.getElementById('spa-current-route').textContent = 'ROUTE: ' + hash;
+    };
+
+    window.addEventListener('hashchange', updateRoute);
+    window.addEventListener('popstate', () => {
+      if (window.location.pathname.includes('/view/pushed')) {
+        document.querySelectorAll('.page-view').forEach(el => el.classList.add('hidden'));
+        document.getElementById('view-pushed').classList.remove('hidden');
+        document.getElementById('spa-current-route').textContent = 'ROUTE: /view/pushed';
+      } else {
+        updateRoute();
+      }
+    });
+
+    document.getElementById('btn-pushstate-view').addEventListener('click', () => {
+      window.history.pushState({ page: 'pushed' }, 'Pushed View', '/view/pushed');
+      window.dispatchEvent(new Event('popstate'));
+    });
+
+    updateRoute();
+  </script>
+</body>
+</html>

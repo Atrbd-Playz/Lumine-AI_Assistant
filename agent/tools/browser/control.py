@@ -262,7 +262,10 @@ def _payload(**fields: Any) -> str:
     still a ceiling -- a read joins the context permanently and is re-billed on
     every later turn -- so it applies to this path and nothing else.
     """
-    return wrap_untrusted(as_payload(fields, max_chars=MAX_PAGE_READ_CHARS))
+    return wrap_untrusted(
+        as_payload(fields, max_chars=MAX_PAGE_READ_CHARS),
+        max_chars=MAX_PAGE_READ_CHARS,
+    )
 
 
 def _failure(action: str, detail: str) -> ToolError:
@@ -319,13 +322,12 @@ def _query(
 def _is_password(candidate: locators.Candidate) -> bool:
     """Whether the collected facts say this is a password field.
 
-    Read from the *name*, which for a password field is the only honest signal
-    available without a second page call: an ``aria-label``, a placeholder, a
-    ``name``, or an id the page chose. It errs toward refusing, which is the
-    correct direction for the one field this product never types into. The refusal
-    is unconditional and is made *before* the question, so there is no
-    "allow once" that would put a password into a page.
+    The collected input type is authoritative. The name heuristic remains a
+    second net for a page that labels a password box as ordinary text. The
+    refusal is unconditional and happens before approval.
     """
+    if str(candidate.detail.get("type") or "").casefold() == "password":
+        return True
     text = f"{candidate.name} {candidate.detail.get('value', '')}".casefold()
     return any(word in text for word in ("password", "passwd", "pass code", "pin"))
 
@@ -344,8 +346,17 @@ def _stamp(payload: Any, gate: GenerationGate | None) -> state.Snapshot:
     return store.stamp(payload)
 
 
-async def _observe(engine_obj: Any, *, gate: GenerationGate | None = None) -> state.Snapshot:
-    payload = await engine_obj.observe()
+async def _observe(
+    engine_obj: Any,
+    *,
+    gate: GenerationGate | None = None,
+    frame: str = "",
+) -> state.Snapshot:
+    payload = (
+        await engine_obj.observe(frame=frame)
+        if frame
+        else await engine_obj.observe()
+    )
     store = getattr(engine_obj, "gate", None) or gate
     return _stamp(payload, store)
 
@@ -434,6 +445,11 @@ async def web_control(
     first, and password fields are refused -- Lumine never types passwords.
     References go stale after any action; `read` again before the next one.
 
+    Open shadow roots are included in discovery, and an iframe can be selected
+    explicitly with `frame`. Browser chrome, closed shadow roots, and controls
+    beyond the bounded collection are not exposed; use `find` or a specific frame
+    rather than expecting one read to list an entire large page.
+
     Args:
         action: What to do. See the list above.
         url: The page to open, for action "open" (nothing named opens the
@@ -452,8 +468,8 @@ async def web_control(
         css: A CSS selector, as the last resort instead of name/role.
         index: Which of several matches, 1-based. Omit when you want the one
             unambiguous match.
-        frame: Which iframe, by name, url fragment, or index, when the control
-            is inside one.
+        frame: Which iframe, by name, URL fragment, or zero-based page-frame
+            index, when the control is inside one.
         position: Which match you mean when you say it in words -- "second",
             "third", "2". Redundant with index; either is fine.
         for_model: On action "screenshot", also show the picture to yourself, not
@@ -537,7 +553,11 @@ async def web_control(
             action_class=action_class,
             summary="Read the current page" if normalized == "read" else "Find a control on the page",
         )
-        raw = await engine_obj.observe()
+        raw = (
+            await engine_obj.observe(frame=frame)
+            if frame
+            else await engine_obj.observe()
+        )
         snapshot = _stamp(raw, gate)
         if normalized == "read":
             # Text and controls are budgeted *together*, on purpose. The read
@@ -550,10 +570,15 @@ async def web_control(
             return _payload(
                 title=clip(snapshot.title, 70),
                 url=clip(snapshot.url, 90),
+                **({"frame": raw["frame"]} if isinstance(raw.get("frame"), dict) else {}),
                 text=clip(snapshot.text, READ_TEXT_CHARS),
                 generation=snapshot.generation,
                 controls=[item.to_dict() for item in snapshot.candidates[:MAX_READ_CONTROLS]],
                 count=len(snapshot.candidates),
+                controlsOmitted=max(
+                    0, len(snapshot.candidates) - MAX_READ_CONTROLS
+                ),
+                candidateScanTruncated=snapshot.candidate_scan_truncated,
                 items=[item.to_dict() for item in snapshot.items[:8]],
                 # The per-site extraction, when the page's own map has one. A
                 # price under a stable name rather than a number inside a
@@ -974,7 +999,7 @@ async def _element_action(
     *facts* and never its label, so a page cannot talk its way out of a
     classification by renaming a button.
     """
-    snapshot = await _observe(engine_obj, gate=gate)
+    snapshot = await _observe(engine_obj, gate=gate, frame=frame)
     resolution = state.locate(snapshot, query)
     chosen = _choose_or_refuse(resolution, index)
     if chosen is None:

@@ -1,0 +1,438 @@
+{
+  "campaign": "Lumine browser control certification",
+  "label": "group 2 (phases 4-6)",
+  "generated_at": "2026-11-06T12:46:05",
+  "tests_run": 11,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "recorded_tests": 11,
+  "elapsed_seconds": 24.62,
+  "status_counts": {
+    "PASS": 7,
+    "FAIL": 3,
+    "UNRELIABLE": 1
+  },
+  "failed_capabilities": 3,
+  "capability_matrix": [
+    {
+      "phase": 4,
+      "category": "Pointer Interaction",
+      "classification": {
+        "PASS": 3,
+        "FAIL": 1
+      },
+      "capabilities": [
+        {
+          "id": "TC-04-01",
+          "capability": "Execute single, double, and right click interactions",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "DOM event listeners verified for click, dblclick, and contextmenu",
+          "defect": ""
+        },
+        {
+          "id": "TC-04-02",
+          "capability": "Hover interaction and submenu item activation",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Hover triggered submenu reveal; child link successfully clicked",
+          "defect": ""
+        },
+        {
+          "id": "TC-04-03",
+          "capability": "Drag & Drop execution with observed drop state",
+          "status": "FAIL",
+          "classification": "failed due to implementation defect",
+          "evidence": "Drag action raised: that control did not respond: 'Page' object is not callable",
+          "defect": "The requested drag did not complete."
+        },
+        {
+          "id": "TC-04-04",
+          "capability": "Act on a control by the reference observe produced",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "ref=r8; result='Clicked: Primary Action'; error=''",
+          "defect": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "phase": 5,
+      "category": "Keyboard Control",
+      "classification": {
+        "PASS": 2,
+        "FAIL": 1
+      },
+      "capabilities": [
+        {
+          "id": "TC-05-01",
+          "capability": "Fill and sequential type into form inputs",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Input fields verified with exact submitted strings",
+          "defect": ""
+        },
+        {
+          "id": "TC-05-02",
+          "capability": "Submit a form with Enter and verify the submitted value",
+          "status": "FAIL",
+          "classification": "failed due to implementation defect",
+          "evidence": "fill reported=False ('more than one thing on the page matches'); press reported=False (''); page state='not submitted'",
+          "defect": "The field's own <label> did not resolve to it, so the scenario could not reach the input to submit."
+        },
+        {
+          "id": "TC-05-03",
+          "capability": "Close an in-page overlay with the Escape key",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "overlay 'open' -> 'closed'; hidden=True; press reported=True ('')",
+          "defect": ""
+        }
+      ],
+      "status": "FAIL"
+    },
+    {
+      "phase": 6,
+      "category": "Form Interaction",
+      "classification": {
+        "PASS": 2,
+        "FAIL": 1,
+        "UNRELIABLE": 1
+      },
+      "capabilities": [
+        {
+          "id": "TC-06-01",
+          "capability": "Interact with dropdowns, checkboxes, and radio buttons",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "All form element state changes verified in DOM",
+          "defect": ""
+        },
+        {
+          "id": "TC-06-02",
+          "capability": "Strict structural refusal on password fields",
+          "status": "FAIL",
+          "classification": "failed due to implementation defect",
+          "evidence": "refused=False; field_empty=False; approval_calls=1; response=''",
+          "defect": "Password input was not refused based on its input type and may have received text."
+        },
+        {
+          "id": "TC-06-03",
+          "capability": "Do not click a disabled control; act once enablement is satisfied",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "disabled click refused=True ('that control did not respond: Locator.click: Timeout 6000ms exceeded.\\nCall log:\\n  - waiting for locator(\"[data-lumine-ref=\\\\\"r9\\\\\"]\")\\n    - locator reso'); state 'waiting'->'waiting'; enabled after check=True; final='ordered'",
+          "defect": ""
+        },
+        {
+          "id": "TC-06-04",
+          "capability": "Act on results that a debounced request created after the first paint",
+          "status": "UNRELIABLE",
+          "classification": "implemented but unreliable",
+          "evidence": "fill reported=False ('more than one thing on the page matches'); search state='idle'; click reported=False (''); after click='idle'",
+          "defect": "Dynamically rendered results were not reachable by the semantic locator."
+        }
+      ],
+      "status": "FAIL"
+    }
+  ],
+  "scope_gaps": [
+    {
+      "capability": "Authenticated account behaviour",
+      "status": "NOT_TESTED",
+      "reason": "Only the public, signed-out surface was exercised; no account was used."
+    },
+    {
+      "capability": "Real consent round-trip (ask, speak, answer, act)",
+      "status": "NOT_TESTED",
+      "reason": "Local fixtures stub `require_approval`; the gate's class is measured, the spoken consent path is not."
+    },
+    {
+      "capability": "Browser crash and restart recovery",
+      "status": "NOT_TESTED",
+      "reason": "No browser process was deliberately crashed."
+    },
+    {
+      "capability": "Long-duration soak and resource growth",
+      "status": "NOT_TESTED",
+      "reason": "Stability is a bounded repeated-cycle sample, not an hours-long soak."
+    },
+    {
+      "capability": "Model interpretation of screenshots",
+      "status": "NOT_TESTED",
+      "reason": "Capture, format and bounds are measured; what a vision model makes of them is not."
+    },
+    {
+      "capability": "Cross-platform behaviour (macOS/Linux)",
+      "status": "NOT_TESTED",
+      "reason": "This run used the current Windows machine only."
+    },
+    {
+      "capability": "File upload capability",
+      "status": "UNSUPPORTED",
+      "reason": "No `set_input_files`/file-chooser path exists in either tool."
+    },
+    {
+      "capability": "Open Shadow DOM controls",
+      "status": "UNSUPPORTED",
+      "reason": "The collector does not pierce shadow roots; verified rather than assumed."
+    },
+    {
+      "capability": "Same- or cross-origin iframe action by semantic locator",
+      "status": "UNSUPPORTED",
+      "reason": "Frames are resolved by the driver but not by the candidate collector."
+    }
+  ],
+  "environment": {
+    "profile": "Lumine's own persistent profile (LUMINE_CERT_PROFILE overrides)",
+    "headless": "0",
+    "allow_local": "1",
+    "python": "3.14.0"
+  },
+  "details": [
+    {
+      "id": "TC-04-01",
+      "phase": 4,
+      "category": "Pointer Interaction",
+      "description": "Execute single, double, and right click interactions",
+      "status": "PASS",
+      "duration_ms": 3588.65,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Execute single, double, and right click interactions"
+      ],
+      "expected_outcome": "Execute single, double, and right click interactions",
+      "actual_outcome": "DOM event listeners verified for click, dblclick, and contextmenu",
+      "evidence": "DOM event listeners verified for click, dblclick, and contextmenu",
+      "evidence_ref": "test:TC-04-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-04-02",
+      "phase": 4,
+      "category": "Pointer Interaction",
+      "description": "Hover interaction and submenu item activation",
+      "status": "PASS",
+      "duration_ms": 480.15,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Hover interaction and submenu item activation"
+      ],
+      "expected_outcome": "Hover interaction and submenu item activation",
+      "actual_outcome": "Hover triggered submenu reveal; child link successfully clicked",
+      "evidence": "Hover triggered submenu reveal; child link successfully clicked",
+      "evidence_ref": "test:TC-04-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-04-03",
+      "phase": 4,
+      "category": "Pointer Interaction",
+      "description": "Drag & Drop execution with observed drop state",
+      "status": "FAIL",
+      "duration_ms": 362.27,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Drag & Drop execution with observed drop state"
+      ],
+      "expected_outcome": "Drag & Drop execution with observed drop state",
+      "actual_outcome": "Drag action raised: that control did not respond: 'Page' object is not callable",
+      "evidence": "Drag action raised: that control did not respond: 'Page' object is not callable",
+      "evidence_ref": "test:TC-04-03",
+      "failure_reason": "The requested drag did not complete.",
+      "defect": "The requested drag did not complete."
+    },
+    {
+      "id": "TC-04-04",
+      "phase": 4,
+      "category": "Pointer Interaction",
+      "description": "Act on a control by the reference observe produced",
+      "status": "PASS",
+      "duration_ms": 1606.4,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Act on a control by the reference observe produced"
+      ],
+      "expected_outcome": "Act on a control by the reference observe produced",
+      "actual_outcome": "ref=r8; result='Clicked: Primary Action'; error=''",
+      "evidence": "ref=r8; result='Clicked: Primary Action'; error=''",
+      "evidence_ref": "test:TC-04-04",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-05-01",
+      "phase": 5,
+      "category": "Keyboard Control",
+      "description": "Fill and sequential type into form inputs",
+      "status": "PASS",
+      "duration_ms": 509.7,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Fill and sequential type into form inputs"
+      ],
+      "expected_outcome": "Fill and sequential type into form inputs",
+      "actual_outcome": "Input fields verified with exact submitted strings",
+      "evidence": "Input fields verified with exact submitted strings",
+      "evidence_ref": "test:TC-05-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-05-02",
+      "phase": 5,
+      "category": "Keyboard Control",
+      "description": "Submit a form with Enter and verify the submitted value",
+      "status": "FAIL",
+      "duration_ms": 364.71,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Submit a form with Enter and verify the submitted value"
+      ],
+      "expected_outcome": "Submit a form with Enter and verify the submitted value",
+      "actual_outcome": "fill reported=False ('more than one thing on the page matches'); press reported=False (''); page state='not submitted'",
+      "evidence": "fill reported=False ('more than one thing on the page matches'); press reported=False (''); page state='not submitted'",
+      "evidence_ref": "test:TC-05-02",
+      "failure_reason": "The field's own <label> did not resolve to it, so the scenario could not reach the input to submit.",
+      "defect": "The field's own <label> did not resolve to it, so the scenario could not reach the input to submit."
+    },
+    {
+      "id": "TC-05-03",
+      "phase": 5,
+      "category": "Keyboard Control",
+      "description": "Close an in-page overlay with the Escape key",
+      "status": "PASS",
+      "duration_ms": 410.23,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Close an in-page overlay with the Escape key"
+      ],
+      "expected_outcome": "Close an in-page overlay with the Escape key",
+      "actual_outcome": "overlay 'open' -> 'closed'; hidden=True; press reported=True ('')",
+      "evidence": "overlay 'open' -> 'closed'; hidden=True; press reported=True ('')",
+      "evidence_ref": "test:TC-05-03",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-06-01",
+      "phase": 6,
+      "category": "Form Interaction",
+      "description": "Interact with dropdowns, checkboxes, and radio buttons",
+      "status": "PASS",
+      "duration_ms": 454.77,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Interact with dropdowns, checkboxes, and radio buttons"
+      ],
+      "expected_outcome": "Interact with dropdowns, checkboxes, and radio buttons",
+      "actual_outcome": "All form element state changes verified in DOM",
+      "evidence": "All form element state changes verified in DOM",
+      "evidence_ref": "test:TC-06-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-06-02",
+      "phase": 6,
+      "category": "Security & Safety",
+      "description": "Strict structural refusal on password fields",
+      "status": "FAIL",
+      "duration_ms": 308.59,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Strict structural refusal on password fields"
+      ],
+      "expected_outcome": "Strict structural refusal on password fields",
+      "actual_outcome": "refused=False; field_empty=False; approval_calls=1; response=''",
+      "evidence": "refused=False; field_empty=False; approval_calls=1; response=''",
+      "evidence_ref": "test:TC-06-02",
+      "failure_reason": "Password input was not refused based on its input type and may have received text.",
+      "defect": "Password input was not refused based on its input type and may have received text."
+    },
+    {
+      "id": "TC-06-03",
+      "phase": 6,
+      "category": "Form Interaction",
+      "description": "Do not click a disabled control; act once enablement is satisfied",
+      "status": "PASS",
+      "duration_ms": 6547.02,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Do not click a disabled control; act once enablement is satisfied"
+      ],
+      "expected_outcome": "Do not click a disabled control; act once enablement is satisfied",
+      "actual_outcome": "disabled click refused=True ('that control did not respond: Locator.click: Timeout 6000ms exceeded.\\nCall log:\\n  - waiting for locator(\"[data-lumine-ref=\\\\\"r9\\\\\"]\")\\n    - locator reso'); state 'waiting'->'waiting'; enabled after check=True; final='ordered'",
+      "evidence": "disabled click refused=True ('that control did not respond: Locator.click: Timeout 6000ms exceeded.\\nCall log:\\n  - waiting for locator(\"[data-lumine-ref=\\\\\"r9\\\\\"]\")\\n    - locator reso'); state 'waiting'->'waiting'; enabled after check=True; final='ordered'",
+      "evidence_ref": "test:TC-06-03",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-06-04",
+      "phase": 6,
+      "category": "Form Interaction",
+      "description": "Act on results that a debounced request created after the first paint",
+      "status": "UNRELIABLE",
+      "duration_ms": 6249.97,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Act on results that a debounced request created after the first paint"
+      ],
+      "expected_outcome": "Act on results that a debounced request created after the first paint",
+      "actual_outcome": "fill reported=False ('more than one thing on the page matches'); search state='idle'; click reported=False (''); after click='idle'",
+      "evidence": "fill reported=False ('more than one thing on the page matches'); search state='idle'; click reported=False (''); after click='idle'",
+      "evidence_ref": "test:TC-06-04",
+      "failure_reason": "Dynamically rendered results were not reachable by the semantic locator.",
+      "defect": "Dynamically rendered results were not reachable by the semantic locator."
+    }
+  ]
+}

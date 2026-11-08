@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Failure Injection Certification</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 24px; max-width: 860px; margin: 0 auto; }
+    section { border: 1px solid #cbd5e0; border-radius: 6px; padding: 12px 16px; margin: 14px 0; }
+    button, a { padding: 6px 12px; margin: 4px; }
+    .status-panel { padding: 10px; background: #fff5f5; border: 1px solid #fed7d7; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Failure Injection Certification</h1>
+
+  <section>
+    <h2>HTTP Failures</h2>
+    <a id="link-500" href="/api/status?code=500">Open HTTP 500</a>
+    <a id="link-404" href="/api/status?code=404">Open HTTP 404</a>
+    <a id="link-redirect-loop" href="/api/redirect-loop">Open Redirect Loop</a>
+    <a id="link-abort" href="/api/abort">Open Aborted Connection</a>
+  </section>
+
+  <section>
+    <h2>JavaScript Failures</h2>
+    <button id="btn-throw">Throw Uncaught Error</button>
+    <button id="btn-reject">Reject a Promise</button>
+    <button id="btn-break-dom">Replace Body With Garbage</button>
+  </section>
+
+  <section>
+    <h2>Broken Resources</h2>
+    <img id="broken-image" src="/api/status?code=404&as=image" alt="Deliberately broken image">
+    <script src="/api/status?code=500&as=script"></script>
+  </section>
+
+  <div id="failure-status" class="status-panel">Awaiting failure</div>
+
+  <script>
+    const status = document.getElementById('failure-status');
+    const update = (text) => { status.textContent = 'STATUS: ' + text; };
+    window.addEventListener('error', (event) => update(`window_error:${event.message}`));
+    window.addEventListener('unhandledrejection', () => update('unhandled_rejection'));
+    document.getElementById('btn-throw').addEventListener('click', () => {
+      update('about_to_throw');
+      throw new Error('Synthetic uncaught certification error');
+    });
+    document.getElementById('btn-reject').addEventListener('click', () => {
+      update('about_to_reject');
+      Promise.reject(new Error('Synthetic rejected certification promise'));
+    });
+    document.getElementById('btn-break-dom').addEventListener('click', () => {
+      document.body.innerHTML = '<p id="broken-dom">The document was replaced.</p>';
+    });
+  </script>
+</body>
+</html>

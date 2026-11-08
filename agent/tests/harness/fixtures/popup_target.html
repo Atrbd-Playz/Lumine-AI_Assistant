@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Popup Target Certification</title>
+</head>
+<body>
+  <h1>Popup Target</h1>
+  <p id="popup-target-marker">This page was opened as a popup.</p>
+  <button id="popup-self-close">Close This Popup</button>
+  <script>
+    document.getElementById('popup-self-close').addEventListener('click', () => window.close());
+  </script>
+</body>
+</html>

@@ -680,7 +680,7 @@ def _target_in(words: list[str]) -> str | None:
 
 
 def _named_tab_target(raw: object) -> str | None:
-    """Return a title/site target from phrases such as "switch to YouTube tab"."""
+    """Return a title/site target from a tab name, with or without "tab"."""
     text = " ".join(str(raw or "").split())
     named = re.search(
         r"\btab\s+(?:named|called)\s+(?P<name>[\w .&'’()-]{1,80})$",
@@ -692,9 +692,18 @@ def _named_tab_target(raw: object) -> str | None:
         return f"title:{candidate}" if candidate else None
 
     match = re.search(r"\b(?P<before>.+?)\s+tabs?\b", text, re.IGNORECASE)
-    if not match:
-        return None
-    candidate = match.group("before").strip()
+    if match:
+        candidate = match.group("before").strip()
+    else:
+        match = re.search(
+            r"\b(?:switch|jump|return|go)\s+(?:back\s+)?(?:to\s+)?"
+            r"(?P<name>[\w .&'’()-]{1,80})$",
+            text,
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+        candidate = match.group("name").strip()
     candidate = re.sub(
         r"^(?:(?:please|can|could|would|you|switch|go|jump|return|back|close|delete|remove|dismiss|"
         r"quit|exit|kill|discard|shut|open|to|the|browser)\s+)+",
@@ -1044,6 +1053,7 @@ def observe_payload(
     items: Sequence[object] = (),
     scroll: object = None,
     notice: object = None,
+    candidate_scan_truncated: bool = False,
     max_chars: int = MAX_PAGE_READ_CHARS,
 ) -> str:
     """The page as a compact payload: title, address, text, and controls.
@@ -1121,7 +1131,11 @@ def observe_payload(
         "url": clip(str(url or ""), URL_CHARS),
         "text": body,
         "controls": reported,
+        "controlsCount": len(controls),
+        "controlsOmitted": max(0, len(controls) - len(reported)),
     }
+    if candidate_scan_truncated:
+        payload["candidateScanTruncated"] = True
     # Only what the page actually answered with. A `fields` key naming selectors
     # that matched nothing is a claim that the site has no price, which is a
     # different statement from "we do not know where this site keeps one".

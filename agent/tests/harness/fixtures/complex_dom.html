@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Complex DOM & Shadow DOM Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; }
+    .status-panel { padding: 10px; background: #f0fff4; border: 1px solid #9ae6b4; margin-top: 15px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Complex DOM & Modern Web Applications</h1>
+
+  <section id="shadow-dom-section">
+    <h2>Shadow DOM Components</h2>
+    <div id="host-open-shadow"></div>
+    <div id="host-nested-shadow"></div>
+  </section>
+
+  <section id="dynamic-spa-section">
+    <h2>Client-Side Hydration & Dynamic Re-rendering</h2>
+    <div id="spa-container">
+      <p id="spa-loading">Hydrating dynamic components...</p>
+    </div>
+    <button id="btn-trigger-rerender" class="btn">Trigger In-Page Re-render</button>
+  </section>
+
+  <div id="complex-status" class="status-panel">Awaiting interaction</div>
+
+  <script>
+    const update = (text) => { document.getElementById('complex-status').textContent = 'STATUS: ' + text; };
+
+    // 1. Open Shadow DOM
+    const openHost = document.getElementById('host-open-shadow');
+    const openShadow = openHost.attachShadow({ mode: 'open' });
+    openShadow.innerHTML = `
+      <style>
+        .shadow-btn { background: #4299e1; color: white; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; }
+      </style>
+      <div class="shadow-card">
+        <h3>Shadow DOM Web Component</h3>
+        <button id="btn-inside-open-shadow" class="shadow-btn">Click Inside Open Shadow</button>
+        <input type="text" id="input-inside-shadow" placeholder="Shadow text field">
+      </div>
+    `;
+    openShadow.getElementById('btn-inside-open-shadow').addEventListener('click', () => {
+      update('open_shadow_button_clicked');
+    });
+
+    // 2. Nested Shadow DOM
+    const nestedHost = document.getElementById('host-nested-shadow');
+    const outerShadow = nestedHost.attachShadow({ mode: 'open' });
+    outerShadow.innerHTML = `<div id="inner-host"></div>`;
+    const innerShadow = outerShadow.getElementById('inner-host').attachShadow({ mode: 'open' });
+    innerShadow.innerHTML = `
+      <button id="btn-nested-shadow" style="background:#e53e3e; color:white; padding:6px;">Nested Shadow Button</button>
+    `;
+    innerShadow.getElementById('btn-nested-shadow').addEventListener('click', () => {
+      update('nested_shadow_button_clicked');
+    });
+
+    // 3. Dynamic Hydration Simulation
+    setTimeout(() => {
+      document.getElementById('spa-container').innerHTML = `
+        <div id="hydrated-content">
+          <p>Component Successfully Hydrated!</p>
+          <button id="btn-hydrated-action">Hydrated Action</button>
+        </div>
+      `;
+      document.getElementById('btn-hydrated-action').addEventListener('click', () => {
+        update('hydrated_action_clicked');
+      });
+    }, 200);
+
+    // 4. Re-rendering / Replacing Element
+    let renderCount = 0;
+    document.getElementById('btn-trigger-rerender').addEventListener('click', () => {
+      renderCount++;
+      const container = document.getElementById('spa-container');
+      container.innerHTML = `
+        <div id="rerendered-vdom-${renderCount}">
+          <p>Virtual DOM Generation: ${renderCount}</p>
+          <button id="btn-vdom-active" class="btn">Dynamic Control ${renderCount}</button>
+        </div>
+      `;
+      document.getElementById('btn-vdom-active').addEventListener('click', () => {
+        update('vdom_generation_' + renderCount + '_clicked');
+      });
+      update('rerender_triggered_' + renderCount);
+    });
+  </script>
+</body>
+</html>

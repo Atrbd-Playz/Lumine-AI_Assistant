@@ -136,6 +136,64 @@ ITEM_FIXTURE = b"""<!doctype html>
 </body>
 </html>"""
 
+SHADOW_FIXTURE = b"""<!doctype html>
+<html><head><title>Shadow fixture</title></head>
+<body>
+  <p id="note">unchanged</p>
+  <div id="host" style="width: 180px; height: 40px"></div>
+  <script>
+    const root = document.getElementById('host').attachShadow({mode: 'open'});
+    root.innerHTML = '<button aria-label="Shadow action">Shadow button</button>';
+    root.querySelector('button').addEventListener('click', () => {
+      document.getElementById('note').textContent = 'shadow clicked';
+    });
+  </script>
+</body></html>"""
+
+FRAME_FIXTURE = b"""<!doctype html>
+<html><head><title>Frame fixture</title></head>
+<body>
+  <iframe name="checkout" srcdoc="&lt;!doctype html&gt;&lt;button id='frame-action' onclick=&quot;document.body.textContent='Frame clicked'&quot;&gt;Frame action&lt;/button&gt;"></iframe>
+</body></html>"""
+
+MANY_CONTROLS_FIXTURE = b"""<!doctype html>
+<html><head><title>Many controls</title></head>
+<body>
+  <p id="note">unchanged</p>
+  <script>
+    for (let i = 1; i <= 80; i += 1) {
+      const button = document.createElement('button');
+      button.textContent = i === 75 ? 'Target action' : 'Control ' + i;
+      button.addEventListener('click', () => {
+        document.getElementById('note').textContent = 'target clicked';
+      });
+      document.body.appendChild(button);
+    }
+  </script>
+</body></html>"""
+
+OFFSCREEN_CONTROLS_FIXTURE = b"""<!doctype html>
+<html><head><title>Offscreen controls</title></head>
+<body>
+  <script>
+    for (let i = 0; i < 420; i += 1) {
+      const button = document.createElement('button');
+      button.textContent = 'Offscreen control ' + i;
+      button.style.position = 'absolute';
+      button.style.top = (2000 + i * 30) + 'px';
+      document.body.appendChild(button);
+    }
+    const target = document.createElement('button');
+    target.textContent = 'Visible target';
+    target.style.position = 'fixed';
+    target.style.top = '20px';
+    target.addEventListener('click', () => {
+      target.textContent = 'target clicked';
+    });
+    document.body.appendChild(target);
+  </script>
+</body></html>"""
+
 
 class _FixtureHandler(http.server.BaseHTTPRequestHandler):
     """Every path answers a fixture page: `/tall` overflows, the rest fits."""
@@ -145,6 +203,14 @@ class _FixtureHandler(http.server.BaseHTTPRequestHandler):
             body = TALL_FIXTURE
         elif self.path.startswith("/items"):
             body = ITEM_FIXTURE
+        elif self.path.startswith("/shadow"):
+            body = SHADOW_FIXTURE
+        elif self.path.startswith("/frames"):
+            body = FRAME_FIXTURE
+        elif self.path.startswith("/many-controls"):
+            body = MANY_CONTROLS_FIXTURE
+        elif self.path.startswith("/offscreen-controls"):
+            body = OFFSCREEN_CONTROLS_FIXTURE
         else:
             body = FIXTURE
         self.send_response(200)
@@ -354,6 +420,103 @@ class RealBrowserJourneyTests(unittest.TestCase):
                 payload = _payload_of(result)
                 self.assertIn("/watch?v=fixture", payload["url"])
                 self.assertEqual(payload["actedOn"]["detail"]["itemTitle"], "How to tune a guitar")
+            finally:
+                await session.release()
+
+        self._run(journey())
+
+    def test_open_shadow_controls_are_observable_and_actionable(self):
+        async def journey():
+            ctx = SimpleNamespace()
+            try:
+                await browse(ctx, "open", url=self.url + "shadow")
+                controls = _payload_of(await browse(ctx, "observe"))["controls"]
+                shadow = next(item for item in controls if item["label"] == "Shadow action")
+                await browse(ctx, "act", ref=shadow["ref"])
+                self.assertIn(
+                    "shadow clicked",
+                    _payload_of(await browse(ctx, "observe"))["text"],
+                )
+            finally:
+                await session.release()
+
+        self._run(journey())
+
+    def test_named_frame_can_be_read_and_acted_on(self):
+        async def journey():
+            ctx = SimpleNamespace()
+            try:
+                await browse(ctx, "open", url=self.url + "frames")
+                read = _payload_of(
+                    await web_control.web_control(ctx, action="read", frame="checkout")
+                )
+                self.assertEqual(read["frame"]["name"], "checkout")
+                self.assertEqual(read["controls"][0]["name"], "Frame action")
+                await web_control.web_control(
+                    ctx, action="click", name="Frame action", frame="checkout"
+                )
+                after = _payload_of(
+                    await web_control.web_control(ctx, action="read", frame="checkout")
+                )
+                self.assertIn("Frame clicked", after["text"])
+            finally:
+                await session.release()
+
+        self._run(journey())
+
+    def test_controls_beyond_the_visible_report_cap_remain_findable(self):
+        async def journey():
+            ctx = SimpleNamespace()
+            try:
+                await browse(ctx, "open", url=self.url + "many-controls")
+                read = _payload_of(
+                    await web_control.web_control(ctx, action="read")
+                )
+                self.assertEqual(read["count"], 80)
+                self.assertEqual(read["controlsOmitted"], 60)
+                found = _payload_of(
+                    await web_control.web_control(
+                        ctx, action="find", name="Target action"
+                    )
+                )
+                self.assertEqual(found["chosen"]["name"], "Target action")
+                await web_control.web_control(
+                    ctx, action="click", name="Target action"
+                )
+                self.assertIn(
+                    "target clicked",
+                    _payload_of(await browse(ctx, "observe"))["text"],
+                )
+            finally:
+                await session.release()
+
+        self._run(journey())
+
+    def test_viewport_controls_are_prioritized_over_offscreen_controls(self):
+        async def journey():
+            ctx = SimpleNamespace()
+            try:
+                await browse(ctx, "open", url=self.url + "offscreen-controls")
+                observed = _payload_of(await browse(ctx, "observe"))
+                self.assertTrue(observed["candidateScanTruncated"])
+                self.assertEqual(observed["controls"][0]["label"], "Visible target")
+                semantic_read = _payload_of(
+                    await web_control.web_control(ctx, action="read")
+                )
+                self.assertTrue(semantic_read["candidateScanTruncated"])
+                found = _payload_of(
+                    await web_control.web_control(
+                        ctx, action="find", name="Visible target", role="button"
+                    )
+                )
+                self.assertEqual(found["chosen"]["name"], "Visible target")
+                await web_control.web_control(
+                    ctx, action="click", name="Visible target", role="button"
+                )
+                self.assertIn(
+                    "target clicked",
+                    _payload_of(await browse(ctx, "observe"))["text"],
+                )
             finally:
                 await session.release()
 

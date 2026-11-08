@@ -45,7 +45,7 @@ class Engine(Protocol):
     a fake in the tests."""
 
     async def navigate(self, url: str) -> dict[str, Any]: ...
-    async def observe(self) -> dict[str, Any]: ...
+    async def observe(self, frame: str = "") -> dict[str, Any]: ...
     async def act(self, step: "EngineAction") -> dict[str, Any]: ...
     async def history(self, direction: str) -> dict[str, Any]: ...
     async def reload(self) -> dict[str, Any]: ...
@@ -219,19 +219,29 @@ class PlaywrightEngine:
         except Exception as exc:  # noqa: BLE001
             raise EngineError(str(exc)) from None
 
-    async def observe(self) -> dict[str, Any]:
+    async def observe(self, frame: str = "") -> dict[str, Any]:
         page = await self._page()
+        scope = _scope(page, frame)
         try:
-            payload = await page.evaluate(state._JS_COLLECT)
+            payload = await scope.evaluate(state._JS_COLLECT)
         except Exception as exc:  # noqa: BLE001
             raise EngineError(f"I could not read that page: {str(exc)[:120]}") from None
         data = dict(payload or {})
+        if frame:
+            data["frame"] = {
+                "name": str(getattr(scope, "name", "") or ""),
+                "url": str(getattr(scope, "url", "") or ""),
+                "index": next(
+                    (index for index, item in enumerate(page.frames) if item == scope),
+                    -1,
+                ),
+            }
         try:
             data["tabs"] = await page.evaluate(state._JS_TABS)
         except Exception:  # noqa: BLE001 - tabs are a nicety, not a requirement
             data["tabs"] = []
         try:
-            data["forms"] = await page.evaluate(state._JS_FORM)
+            data["forms"] = await scope.evaluate(state._JS_FORM)
         except Exception:  # noqa: BLE001
             data["forms"] = []
         try:
@@ -247,9 +257,10 @@ class PlaywrightEngine:
         # site's named fields, which is what makes "what does this cost" answerable
         # at all -- the body text of a product page is a banner and a nav drawer.
         # Best effort on purpose: a page with no region keeps its body text.
-        data = state.apply_region(
-            data, await state.read_region(page, url=data.get("url") or page.url)
-        )
+        if not frame:
+            data = state.apply_region(
+                data, await state.read_region(page, url=data.get("url") or page.url)
+            )
         return data
 
     async def history(self, direction: str) -> dict[str, Any]:
@@ -381,7 +392,7 @@ class PlaywrightEngine:
         if refusal:
             raise EngineError(refusal)
 
-        candidates = await _collect(scope, step.query)
+        candidates = await _collect(page, step.query)
         resolution = locators.resolve_one(candidates, step.query or locators.ElementQuery())
         chosen = _choose(resolution, step.index)
         if chosen is None:
@@ -478,7 +489,8 @@ async def _collect(page: Any, query: locators.ElementQuery | None) -> list[locat
     if query is None:
         raise EngineError("tell me what to act on")
     try:
-        payload = await page.evaluate(state._JS_COLLECT)
+        scope = _scope(page, query.frame)
+        payload = await scope.evaluate(state._JS_COLLECT)
     except Exception as exc:  # noqa: BLE001
         raise EngineError(f"I could not read that page: {str(exc)[:120]}") from None
     candidates = state.ground_candidates(
@@ -487,7 +499,7 @@ async def _collect(page: Any, query: locators.ElementQuery | None) -> list[locat
     )
     if query.css:
         try:
-            refs = await page.evaluate(_JS_MATCH_CSS_REFS, query.css)
+            refs = await scope.evaluate(_JS_MATCH_CSS_REFS, query.css)
         except Exception as exc:  # noqa: BLE001 - a selector failure must be explicit
             raise EngineError(f"I could not resolve that selector: {str(exc)[:100]}") from None
         if not isinstance(refs, list):
@@ -590,7 +602,7 @@ async def _drag(locator: Any, step: EngineAction) -> None:
     start_x = box["x"] + box["width"] / 2
     start_y = box["y"] + box["height"] / 2
     await locator.hover(timeout=ACTION_TIMEOUT_MS)
-    page = await locator.page()
+    page = locator.page
     await page.mouse.move(start_x, start_y)
     await page.mouse.down()
     await page.mouse.move(start_x + offset[0], start_y + offset[1], steps=8)

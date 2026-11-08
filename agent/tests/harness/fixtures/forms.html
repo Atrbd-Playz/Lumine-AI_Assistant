@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Form Controls & Validation Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; max-width: 800px; margin: 0 auto; }
+    .form-group { margin-bottom: 14px; }
+    label { display: block; margin-bottom: 4px; font-weight: 600; }
+    input, select, textarea { width: 100%; max-width: 400px; padding: 6px; box-sizing: border-box; }
+    input[type="checkbox"], input[type="radio"] { width: auto; margin-right: 6px; }
+    .btn-submit { padding: 8px 16px; background: #2b6cb0; color: white; border: none; cursor: pointer; border-radius: 4px; }
+    .status-msg { margin-top: 15px; padding: 10px; background: #e2e8f0; border-radius: 4px; font-family: monospace; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>HTML5 Forms & Interaction Certification</h1>
+
+  <form id="certification-form" action="/api/form-submit" method="POST">
+    <div class="form-group">
+      <label for="input-text">Full Name (Required)</label>
+      <input type="text" id="input-text" name="full_name" placeholder="John Doe" required>
+    </div>
+
+    <div class="form-group">
+      <label for="input-email">Email Address</label>
+      <input type="email" id="input-email" name="email" placeholder="john@example.com">
+    </div>
+
+    <!-- Security sensitive: Password field -->
+    <div class="form-group">
+      <label for="input-password">Secret Password (Must Be Refused)</label>
+      <input type="password" id="input-password" name="password" placeholder="SuperSecret123">
+    </div>
+
+    <div class="form-group">
+      <label for="input-search">Catalog Search</label>
+      <input type="search" id="input-search" name="search_query" placeholder="Search products...">
+    </div>
+
+    <div class="form-group">
+      <label for="input-number">Quantity (1-100)</label>
+      <input type="number" id="input-number" name="quantity" min="1" max="100" value="1">
+    </div>
+
+    <div class="form-group">
+      <label for="select-country">Country / Region</label>
+      <select id="select-country" name="country">
+        <option value="">-- Choose Country --</option>
+        <option value="BD">Bangladesh</option>
+        <option value="US">United States</option>
+        <option value="UK">United Kingdom</option>
+        <option value="JP">Japan</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Preferences</label>
+      <label><input type="checkbox" id="check-newsletter" name="newsletter"> Subscribe to newsletter</label>
+      <label><input type="checkbox" id="check-terms" name="terms" required> Accept terms and conditions</label>
+    </div>
+
+    <div class="form-group">
+      <label>Shipping Method</label>
+      <label><input type="radio" id="radio-standard" name="shipping" value="standard" checked> Standard Shipping</label>
+      <label><input type="radio" id="radio-express" name="shipping" value="express"> Express Shipping</label>
+    </div>
+
+    <div class="form-group">
+      <label for="textarea-notes">Order Notes</label>
+      <textarea id="textarea-notes" name="notes" rows="3" placeholder="Special delivery instructions"></textarea>
+    </div>
+
+    <!-- Conditional dynamic field -->
+    <div class="form-group">
+      <label><input type="checkbox" id="check-gift"> This is a gift</label>
+      <div id="gift-message-container" class="hidden">
+        <label for="input-gift-message">Gift Message</label>
+        <input type="text" id="input-gift-message" name="gift_message" placeholder="Happy Birthday!">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <button type="submit" id="btn-submit-form" class="btn-submit">Submit Certification Form</button>
+      <button type="button" id="btn-reset-form">Reset Form</button>
+    </div>
+  </form>
+
+  <div id="form-result" class="status-msg">Form awaiting submission</div>
+
+  <script>
+    document.getElementById('check-gift').addEventListener('change', (e) => {
+      document.getElementById('gift-message-container').classList.toggle('hidden', !e.target.checked);
+    });
+
+    document.getElementById('certification-form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const data = new FormData(e.target);
+      const obj = Object.fromEntries(data.entries());
+      document.getElementById('form-result').textContent = 'SUCCESS: ' + JSON.stringify(obj);
+    });
+
+    document.getElementById('btn-reset-form').addEventListener('click', () => {
+      document.getElementById('certification-form').reset();
+      document.getElementById('form-result').textContent = 'FORM RESET';
+    });
+  </script>
+</body>
+</html>

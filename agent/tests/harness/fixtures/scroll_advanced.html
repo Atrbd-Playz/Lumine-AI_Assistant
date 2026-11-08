@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Scrolling & Viewport Certification</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; }
+    header { position: sticky; top: 0; background: #1a202c; color: white; padding: 12px 24px; }
+    main { padding: 0 24px 40px; }
+    .spacer { height: 900px; background: linear-gradient(#fff, #e2e8f0); }
+    #nested-scroll { height: 220px; width: 460px; overflow-y: scroll; border: 1px solid #4a5568; padding: 8px; margin: 16px 0; }
+    #nested-inner { height: 1400px; background: linear-gradient(#ebf8ff, #90cdf4); padding: 8px; }
+    #infinite-list { list-style: none; padding: 0; }
+    #infinite-list li { padding: 6px; border-bottom: 1px solid #e2e8f0; }
+    #scroll-readout { position: fixed; right: 12px; bottom: 12px; background: #1a202c; color: white; padding: 8px 12px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <header><h1>Scrolling Certification</h1></header>
+  <main>
+    <section id="top-section">
+      <h2>Top of page</h2>
+      <p id="top-marker">Top marker</p>
+    </section>
+
+    <section id="nested-section">
+      <h2>Nested Scroll Container</h2>
+      <div id="nested-scroll">
+        <div id="nested-inner">
+          <p>Nested top</p>
+          <p style="margin-top:600px" id="nested-middle">Nested middle marker</p>
+          <p style="margin-top:600px" id="nested-bottom">Nested bottom marker</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="spacer">
+      <h2 style="margin-top:700px" id="deep-section-heading">Deep Section</h2>
+      <p id="deep-marker">Deep marker below the fold</p>
+    </section>
+
+    <section id="infinite-section">
+      <h2>Infinite List</h2>
+      <ul id="infinite-list"></ul>
+      <p id="infinite-status">20 rows loaded</p>
+    </section>
+  </main>
+  <div id="scroll-readout">y=0</div>
+
+  <script>
+    const readout = document.getElementById('scroll-readout');
+    const paint = () => {
+      readout.textContent = `y=${Math.round(window.scrollY)} doc=${document.documentElement.scrollHeight}`;
+    };
+    window.addEventListener('scroll', paint, { passive: true });
+    paint();
+
+    let loaded = 20;
+    const list = document.getElementById('infinite-list');
+    function appendRows(count) {
+      for (let i = 0; i < count; i += 1) {
+        const li = document.createElement('li');
+        li.textContent = `Row ${loaded + i + 1}`;
+        li.setAttribute('data-row', String(loaded + i + 1));
+        list.appendChild(li);
+      }
+      loaded += count;
+      document.getElementById('infinite-status').textContent = `${loaded} rows loaded`;
+    }
+    appendRows(20);
+
+    window.addEventListener('scroll', () => {
+      if (window.innerHeight + window.scrollY >= document.body.scrollHeight - 200) {
+        appendRows(20);
+      }
+    }, { passive: true });
+  </script>
+</body>
+</html>

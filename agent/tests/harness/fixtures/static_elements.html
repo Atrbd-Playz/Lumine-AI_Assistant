@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Static Elements & Inspection Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 24px; max-width: 900px; margin: 0 auto; }
+    .hidden-display { display: none; }
+    .hidden-visibility { visibility: hidden; }
+    .zero-dim { width: 0; height: 0; overflow: hidden; opacity: 0; }
+    #btn-zero-dim { padding: 0; border: 0; }
+    .no-pointer { pointer-events: none; opacity: 0.5; }
+    .card { border: 1px solid #ccc; padding: 12px; margin: 12px 0; border-radius: 6px; }
+    .btn { padding: 6px 12px; margin: 4px; cursor: pointer; }
+    #mutation-result { font-weight: bold; color: green; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Static DOM Inspection & Element Discovery</h1>
+    <nav aria-label="Main Navigation">
+      <a href="#section-headings" id="nav-headings">Headings</a>
+      <a href="#section-buttons" id="nav-buttons">Buttons</a>
+      <a href="#section-cards" id="nav-cards">Cards</a>
+    </nav>
+  </header>
+
+  <main>
+    <section id="section-headings">
+      <h2>Section Level 2</h2>
+      <h3>Subsection Level 3</h3>
+      <p id="visible-paragraph">This is a clearly visible paragraph with <strong>bold</strong> and <em>italic</em> text.</p>
+      <p id="bangla-paragraph" lang="bn">আমার সোনার বাংলা, আমি তোমায় ভালোবাসি। চিরদিন তোমার আকাশ, তোমার বাতাস, আমার প্রাণে বাজায় বাঁশি।</p>
+      <p id="emoji-paragraph">Browser test with emojis: 🚀 💻 🔍 🎯 ⚡</p>
+    </section>
+
+    <section id="section-buttons">
+      <h2>Interactive Buttons & Edge Cases</h2>
+      <!-- Standard buttons -->
+      <button id="btn-primary" class="btn">Primary Action</button>
+      <button id="btn-secondary" class="btn">Secondary Action</button>
+      
+      <!-- Duplicate names for disambiguation testing -->
+      <div class="card" id="card-alpha">
+        <h3>Card Alpha</h3>
+        <button class="btn btn-duplicate" data-card="alpha">Add to Cart</button>
+      </div>
+      <div class="card" id="card-beta">
+        <h3>Card Beta</h3>
+        <button class="btn btn-duplicate" data-card="beta">Add to Cart</button>
+      </div>
+
+      <!-- Icon-only and SVG buttons -->
+      <button id="btn-svg-search" aria-label="Search Catalog" class="btn">
+        <svg width="16" height="16" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      </button>
+      <button id="btn-icon-unlabelled" class="btn" title="Refresh Feed">🔄</button>
+      <button id="btn-no-accessible-name" class="btn"><span></span></button>
+
+      <!-- Disabled & Hidden controls -->
+      <button id="btn-disabled" class="btn" disabled>Disabled Button</button>
+      <button id="btn-display-none" class="btn hidden-display">Display None Button</button>
+      <button id="btn-visibility-hidden" class="btn hidden-visibility">Hidden Visibility Button</button>
+      <button id="btn-zero-dim" class="btn zero-dim">Zero Dimension Button</button>
+      <button id="btn-no-pointer" class="btn no-pointer">Pointer Events Disabled</button>
+      
+      <div id="mutation-result">Awaiting interaction</div>
+    </section>
+
+    <section id="section-cards">
+      <h2>Structured Content Items</h2>
+      <article class="card" data-component-type="s-search-result" id="item-product-1">
+        <h4 class="title"><a href="/product/1" data-testid="product-title-1">Ultra Wireless Mechanical Keyboard</a></h4>
+        <div class="price">$149.99</div>
+        <p class="description">Premium tactile mechanical keyboard with RGB backlighting and Bluetooth 5.2 connectivity.</p>
+        <button class="btn" id="btn-buy-1">Buy Now</button>
+      </article>
+
+      <article class="card" data-component-type="s-search-result" id="item-product-2">
+        <h4 class="title"><a href="/product/2" data-testid="product-title-2">Ergonomic Vertical Mouse</a></h4>
+        <div class="price">$59.99</div>
+        <p class="description">Designed to reduce wrist strain with adjustable 4000 DPI sensor.</p>
+        <button class="btn" id="btn-buy-2">Buy Now</button>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    document.querySelectorAll('.btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const text = btn.getAttribute('aria-label') || btn.innerText || btn.id || 'button';
+        document.getElementById('mutation-result').textContent = 'Clicked: ' + text;
+      });
+    });
+  </script>
+</body>
+</html>

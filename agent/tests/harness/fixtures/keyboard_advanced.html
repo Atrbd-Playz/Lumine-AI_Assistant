@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Keyboard Control Certification</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 24px; max-width: 820px; margin: 0 auto; }
+    section { border: 1px solid #cbd5e0; border-radius: 6px; padding: 12px 16px; margin: 14px 0; }
+    input, button, select { padding: 6px; margin: 4px; }
+    #key-log { font-family: monospace; background: #edf2f7; padding: 8px; min-height: 24px; }
+    #press-overlay { position: fixed; inset: 30% 30% auto 30%; background: white; border: 2px solid #2b6cb0; padding: 20px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Keyboard Control Certification</h1>
+
+  <section>
+    <h2>Typing and Key Events</h2>
+    <label for="key-input">Key Capture Field</label>
+    <input id="key-input" placeholder="Type and press keys">
+    <div id="key-log">no keys yet</div>
+  </section>
+
+  <section>
+    <h2>Submit by Enter</h2>
+    <form id="enter-form" action="/api/form-submit" method="POST">
+      <label for="enter-field">Search Query</label>
+      <input id="enter-field" name="query" placeholder="Press Enter to submit">
+      <button type="submit" id="enter-submit">Submit Query</button>
+    </form>
+    <output id="enter-state">not submitted</output>
+  </section>
+
+  <section>
+    <h2>Escape Closes an Overlay</h2>
+    <button id="open-press-overlay">Open Keyboard Overlay</button>
+    <div id="press-overlay" class="hidden" role="dialog" aria-label="Keyboard overlay">
+      <p>Press Escape to close this overlay.</p>
+      <button id="close-press-overlay">Close Overlay</button>
+    </div>
+    <output id="overlay-state">closed</output>
+  </section>
+
+  <section>
+    <h2>Tab Order</h2>
+    <button id="focus-first">First Control</button>
+    <button id="focus-second">Second Control</button>
+    <button id="focus-third">Third Control</button>
+    <output id="focus-state">none</output>
+  </section>
+
+  <script>
+    const log = document.getElementById('key-log');
+    const pressed = [];
+    document.getElementById('key-input').addEventListener('keydown', (event) => {
+      pressed.push(event.key);
+      log.textContent = 'keys: ' + pressed.join(',');
+      if (event.key === 'Escape') log.textContent += ' | escape_seen';
+    });
+
+    const enterForm = document.getElementById('enter-form');
+    enterForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      document.getElementById('enter-state').textContent =
+        'submitted:' + new FormData(enterForm).get('query');
+    });
+
+    const overlay = document.getElementById('press-overlay');
+    document.getElementById('open-press-overlay').addEventListener('click', () => {
+      overlay.classList.remove('hidden');
+      document.getElementById('overlay-state').textContent = 'open';
+    });
+    document.getElementById('close-press-overlay').addEventListener('click', () => {
+      overlay.classList.add('hidden');
+      document.getElementById('overlay-state').textContent = 'closed';
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && !overlay.classList.contains('hidden')) {
+        overlay.classList.add('hidden');
+        document.getElementById('overlay-state').textContent = 'closed';
+      }
+    });
+
+    for (const id of ['focus-first', 'focus-second', 'focus-third']) {
+      document.getElementById(id).addEventListener('focus', () => {
+        document.getElementById('focus-state').textContent = id;
+      });
+    }
+  </script>
+</body>
+</html>

@@ -568,6 +568,7 @@ async def browse(
                 # only carries them.
                 scroll=data.get("scroll"),
                 notice=data.get("notice"),
+                candidate_scan_truncated=bool(data.get("candidateScanTruncated")),
             ),
             max_chars=MAX_PAGE_READ_CHARS,
         ) + _where_am_i(data)

@@ -656,6 +656,15 @@ class ObservePayloadTests(unittest.TestCase):
         self.assertLessEqual(len(parsed["text"]), actions.OBSERVE_TEXT_CHARS)
         self.assertEqual(parsed["controls"][0]["kind"], "input:submit")
 
+    def test_control_omission_is_explicit_when_the_report_is_capped(self):
+        controls = [
+            {"ref": f"r{i}", "tag": "button", "label": f"Button {i}"}
+            for i in range(1, actions.MAX_REPORTED_CONTROLS + 4)
+        ]
+        parsed = json.loads(self._payload(controls=controls))
+        self.assertEqual(parsed["controlsCount"], len(controls))
+        self.assertEqual(parsed["controlsOmitted"], 3)
+
     def test_a_full_result_that_exceeds_the_budget_says_it_was_cut(self):
         # A full page of max-length controls plus full text does not fit the
         # ceiling, and a model told a list is complete answers as though it
@@ -680,6 +689,22 @@ class ObservePayloadTests(unittest.TestCase):
         self.assertTrue(parsed.get("truncated") or parsed.get("omitted"), "a cut list must say so")
         # And the part that survived is readable, which is the whole point.
         self.assertEqual(parsed["controls"][0]["label"], "L" * actions.LABEL_CHARS)
+
+    def test_browser_tool_payload_keeps_the_complete_json_inside_its_fence(self):
+        from agent.tools.browser.control import _payload
+
+        payload = _payload(
+            text="page content " * 50,
+            controls=[{"ref": f"r{i}", "name": f"Control {i}"} for i in range(1, 8)],
+        )
+        body = payload.split("<<<LUMINE_TOOL_DATA", 1)[1].split(
+            "LUMINE_TOOL_DATA>>>", 1
+        )[0]
+        encoded = body.split("\n", 2)[2].strip()
+        parsed = json.loads(encoded)
+        self.assertIn("text", parsed)
+        self.assertIn("controls", parsed)
+        self.assertGreater(len(parsed["controls"]), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1115,7 +1140,7 @@ class FillFlowTests(unittest.TestCase):
         "url": "https://x.test/form",
         "label": "Your name",
     }
-    PASSWORD = {**FIELD, "type": "password", "label": "Password"}
+    PASSWORD = {**FIELD, "type": "password", "label": "Contact"}
 
     def test_password_fields_are_refused_before_any_question(self):
         # A card the user answers "yes" to is not consent to have a password

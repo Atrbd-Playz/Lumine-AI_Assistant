@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Downloads & Uploads Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .btn { padding: 8px 16px; margin: 6px; cursor: pointer; }
+    .dropzone { border: 2px dashed #4a5568; padding: 30px; text-align: center; margin: 15px 0; }
+    .status-panel { padding: 10px; background: #f7fafc; border: 1px solid #e2e8f0; margin-top: 15px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Downloads & Uploads Certification</h1>
+
+  <section>
+    <h3>Downloads</h3>
+    <a href="/api/download?file=report.txt" id="link-direct-download" class="btn">Download Static Text File</a>
+    <button id="btn-blob-download" class="btn">Trigger Client-Side Blob Download</button>
+  </section>
+
+  <section>
+    <h3>Uploads</h3>
+    <div class="form-group">
+      <label for="input-file-single">Single File Input</label>
+      <input type="file" id="input-file-single">
+    </div>
+    <div class="form-group" style="margin-top: 10px;">
+      <label for="input-file-multiple">Multiple File Input</label>
+      <input type="file" id="input-file-multiple" multiple>
+    </div>
+    <div id="drop-target-zone" class="dropzone">Drag and drop file here</div>
+  </section>
+
+  <div id="files-status" class="status-panel">Awaiting file interaction</div>
+
+  <script>
+    const status = document.getElementById('files-status');
+
+    document.getElementById('btn-blob-download').addEventListener('click', () => {
+      const blob = new Blob(['Sample synthetic client-side data'], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'synthetic_blob.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      status.textContent = 'STATUS: blob_download_triggered';
+    });
+
+    document.getElementById('input-file-single').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      status.textContent = 'STATUS: file_selected_' + (file ? file.name : 'none');
+    });
+  </script>
+</body>
+</html>

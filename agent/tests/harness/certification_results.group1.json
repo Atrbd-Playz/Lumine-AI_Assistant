@@ -1,0 +1,556 @@
+{
+  "campaign": "Lumine browser control certification",
+  "label": "group 1 (phases 1-3)",
+  "generated_at": "2026-11-06T12:36:51",
+  "tests_run": 15,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "recorded_tests": 15,
+  "elapsed_seconds": 11.95,
+  "status_counts": {
+    "PASS": 12,
+    "UNRELIABLE": 2,
+    "FAIL": 1
+  },
+  "failed_capabilities": 1,
+  "capability_matrix": [
+    {
+      "phase": 1,
+      "category": "Lifecycle & Navigation",
+      "classification": {
+        "PASS": 5,
+        "UNRELIABLE": 2
+      },
+      "capabilities": [
+        {
+          "id": "TC-01-01",
+          "capability": "Launch browser and navigate to target URL",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Landed on http://127.0.0.1:14825/fixtures/static_elements.html with verified title",
+          "defect": ""
+        },
+        {
+          "id": "TC-01-02",
+          "capability": "Handle multiple redirects",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Successfully resolved 3 redirects to http://127.0.0.1:14825/fixtures/static_elements.html",
+          "defect": ""
+        },
+        {
+          "id": "TC-01-03",
+          "capability": "Handle HTTP 404 status code",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "404 error page observed with correct response text",
+          "defect": ""
+        },
+        {
+          "id": "TC-01-04",
+          "capability": "Handle SPA client-side hash navigation",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Dashboard View rendered without full page reload",
+          "defect": ""
+        },
+        {
+          "id": "TC-01-05",
+          "capability": "Browser history back/forward traversal",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Successfully moved back to static_elements and forward to forms",
+          "defect": ""
+        },
+        {
+          "id": "TC-01-06",
+          "capability": "Report an aborted connection and stay usable afterwards",
+          "status": "UNRELIABLE",
+          "classification": "implemented but unreliable",
+          "evidence": "connection failure reported=True ('I couldn\\'t open 127.0.0.1: Page.goto: net::ERR_EMPTY_RESPONSE at http://127.0.0.1:14825/api/abort Call log: - navigating to \"http://127.0.0.1:14...'); recovery attempts=2; landed on http://127.0.0.1:14825/fixtures/static_elements.html; last recovery error=''",
+          "defect": "A failed navigation left the browser racing its own error page, so the next open needed more than one attempt."
+        },
+        {
+          "id": "TC-01-07",
+          "capability": "Terminate an endless redirect loop with a named error",
+          "status": "UNRELIABLE",
+          "classification": "implemented but unreliable",
+          "evidence": "redirect loop reported=True ('I couldn\\'t open 127.0.0.1: Page.goto: net::ERR_TOO_MANY_REDIRECTS at http://127.0.0.1:14825/api/redirect-loop Call log: - navigating to \"http://...'); recovery attempts=2; last recovery error=''",
+          "defect": "A redirect-loop error left the browser racing its own error page, so the next open needed more than one attempt."
+        }
+      ],
+      "status": "UNRELIABLE"
+    },
+    {
+      "phase": 2,
+      "category": "Page Inspection",
+      "classification": {
+        "PASS": 3
+      },
+      "capabilities": [
+        {
+          "id": "TC-02-01",
+          "capability": "Distinguish visible controls from hidden/zero-dimension elements",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Hidden elements properly excluded from candidates",
+          "defect": ""
+        },
+        {
+          "id": "TC-02-02",
+          "capability": "Verify Unicode, Bangla and Emoji text inspection",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Bangla sentence and emoji glyphs accurately extracted",
+          "defect": ""
+        },
+        {
+          "id": "TC-02-03",
+          "capability": "A read reports the viewport it read and moves with the page",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "scroll.y 0 -> 2371; text changed=True; below-fold marker visible after scroll=True",
+          "defect": ""
+        }
+      ],
+      "status": "PASS"
+    },
+    {
+      "phase": 3,
+      "category": "Element Discovery",
+      "classification": {
+        "PASS": 4,
+        "FAIL": 1
+      },
+      "capabilities": [
+        {
+          "id": "TC-03-01",
+          "capability": "Semantic locator ranking & ordinal disambiguation",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Ordinal ranking resolved 'second Add to Cart' correctly",
+          "defect": ""
+        },
+        {
+          "id": "TC-03-02",
+          "capability": "Discover SVG and unlabelled icon buttons via title and aria-label",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "SVG search button and refresh icon correctly located",
+          "defect": ""
+        },
+        {
+          "id": "TC-03-03",
+          "capability": "Resolve an input by its associated visible label",
+          "status": "FAIL",
+          "classification": "failed due to implementation defect",
+          "evidence": "Input value after label-based fill: ''; error: more than one thing on the page matches",
+          "defect": "The visible label did not resolve to its associated textbox."
+        },
+        {
+          "id": "TC-03-04",
+          "capability": "Resolve a text field by its placeholder and verify the typed value",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "find matched=True; fill attempted=True (''); field value='synthetic catalog query'",
+          "defect": ""
+        },
+        {
+          "id": "TC-03-05",
+          "capability": "Refuse an ambiguous name instead of clicking an arbitrary match",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "refused=True ('more than one thing on the page matches'); page mutation unchanged=True",
+          "defect": ""
+        }
+      ],
+      "status": "FAIL"
+    }
+  ],
+  "scope_gaps": [
+    {
+      "capability": "Authenticated account behaviour",
+      "status": "NOT_TESTED",
+      "reason": "Only the public, signed-out surface was exercised; no account was used."
+    },
+    {
+      "capability": "Real consent round-trip (ask, speak, answer, act)",
+      "status": "NOT_TESTED",
+      "reason": "Local fixtures stub `require_approval`; the gate's class is measured, the spoken consent path is not."
+    },
+    {
+      "capability": "Browser crash and restart recovery",
+      "status": "NOT_TESTED",
+      "reason": "No browser process was deliberately crashed."
+    },
+    {
+      "capability": "Long-duration soak and resource growth",
+      "status": "NOT_TESTED",
+      "reason": "Stability is a bounded repeated-cycle sample, not an hours-long soak."
+    },
+    {
+      "capability": "Model interpretation of screenshots",
+      "status": "NOT_TESTED",
+      "reason": "Capture, format and bounds are measured; what a vision model makes of them is not."
+    },
+    {
+      "capability": "Cross-platform behaviour (macOS/Linux)",
+      "status": "NOT_TESTED",
+      "reason": "This run used the current Windows machine only."
+    },
+    {
+      "capability": "File upload capability",
+      "status": "UNSUPPORTED",
+      "reason": "No `set_input_files`/file-chooser path exists in either tool."
+    },
+    {
+      "capability": "Open Shadow DOM controls",
+      "status": "UNSUPPORTED",
+      "reason": "The collector does not pierce shadow roots; verified rather than assumed."
+    },
+    {
+      "capability": "Same- or cross-origin iframe action by semantic locator",
+      "status": "UNSUPPORTED",
+      "reason": "Frames are resolved by the driver but not by the candidate collector."
+    }
+  ],
+  "environment": {
+    "profile": "Lumine's own persistent profile (LUMINE_CERT_PROFILE overrides)",
+    "headless": "0",
+    "allow_local": "1",
+    "python": "3.14.0"
+  },
+  "details": [
+    {
+      "id": "TC-01-01",
+      "phase": 1,
+      "category": "Lifecycle & Navigation",
+      "description": "Launch browser and navigate to target URL",
+      "status": "PASS",
+      "duration_ms": 3124.02,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Launch browser and navigate to target URL"
+      ],
+      "expected_outcome": "Launch browser and navigate to target URL",
+      "actual_outcome": "Landed on http://127.0.0.1:14825/fixtures/static_elements.html with verified title",
+      "evidence": "Landed on http://127.0.0.1:14825/fixtures/static_elements.html with verified title",
+      "evidence_ref": "test:TC-01-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-01-02",
+      "phase": 1,
+      "category": "Lifecycle & Navigation",
+      "description": "Handle multiple redirects",
+      "status": "PASS",
+      "duration_ms": 258.97,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Handle multiple redirects"
+      ],
+      "expected_outcome": "Handle multiple redirects",
+      "actual_outcome": "Successfully resolved 3 redirects to http://127.0.0.1:14825/fixtures/static_elements.html",
+      "evidence": "Successfully resolved 3 redirects to http://127.0.0.1:14825/fixtures/static_elements.html",
+      "evidence_ref": "test:TC-01-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-01-03",
+      "phase": 1,
+      "category": "Lifecycle & Navigation",
+      "description": "Handle HTTP 404 status code",
+      "status": "PASS",
+      "duration_ms": 226.65,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Handle HTTP 404 status code"
+      ],
+      "expected_outcome": "Handle HTTP 404 status code",
+      "actual_outcome": "404 error page observed with correct response text",
+      "evidence": "404 error page observed with correct response text",
+      "evidence_ref": "test:TC-01-03",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-01-04",
+      "phase": 1,
+      "category": "Lifecycle & Navigation",
+      "description": "Handle SPA client-side hash navigation",
+      "status": "PASS",
+      "duration_ms": 259.35,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Handle SPA client-side hash navigation"
+      ],
+      "expected_outcome": "Handle SPA client-side hash navigation",
+      "actual_outcome": "Dashboard View rendered without full page reload",
+      "evidence": "Dashboard View rendered without full page reload",
+      "evidence_ref": "test:TC-01-04",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-01-05",
+      "phase": 1,
+      "category": "Lifecycle & Navigation",
+      "description": "Browser history back/forward traversal",
+      "status": "PASS",
+      "duration_ms": 478.31,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Browser history back/forward traversal"
+      ],
+      "expected_outcome": "Browser history back/forward traversal",
+      "actual_outcome": "Successfully moved back to static_elements and forward to forms",
+      "evidence": "Successfully moved back to static_elements and forward to forms",
+      "evidence_ref": "test:TC-01-05",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-01-06",
+      "phase": 1,
+      "category": "Lifecycle & Navigation",
+      "description": "Report an aborted connection and stay usable afterwards",
+      "status": "UNRELIABLE",
+      "duration_ms": 561.54,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Report an aborted connection and stay usable afterwards"
+      ],
+      "expected_outcome": "Report an aborted connection and stay usable afterwards",
+      "actual_outcome": "connection failure reported=True ('I couldn\\'t open 127.0.0.1: Page.goto: net::ERR_EMPTY_RESPONSE at http://127.0.0.1:14825/api/abort Call log: - navigating to \"http://127.0.0.1:14...'); recovery attempts=2; landed on http://127.0.0.1:14825/fixtures/static_elements.html; last recovery error=''",
+      "evidence": "connection failure reported=True ('I couldn\\'t open 127.0.0.1: Page.goto: net::ERR_EMPTY_RESPONSE at http://127.0.0.1:14825/api/abort Call log: - navigating to \"http://127.0.0.1:14...'); recovery attempts=2; landed on http://127.0.0.1:14825/fixtures/static_elements.html; last recovery error=''",
+      "evidence_ref": "test:TC-01-06",
+      "failure_reason": "A failed navigation left the browser racing its own error page, so the next open needed more than one attempt.",
+      "defect": "A failed navigation left the browser racing its own error page, so the next open needed more than one attempt."
+    },
+    {
+      "id": "TC-01-07",
+      "phase": 1,
+      "category": "Lifecycle & Navigation",
+      "description": "Terminate an endless redirect loop with a named error",
+      "status": "UNRELIABLE",
+      "duration_ms": 642.65,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Terminate an endless redirect loop with a named error"
+      ],
+      "expected_outcome": "Terminate an endless redirect loop with a named error",
+      "actual_outcome": "redirect loop reported=True ('I couldn\\'t open 127.0.0.1: Page.goto: net::ERR_TOO_MANY_REDIRECTS at http://127.0.0.1:14825/api/redirect-loop Call log: - navigating to \"http://...'); recovery attempts=2; last recovery error=''",
+      "evidence": "redirect loop reported=True ('I couldn\\'t open 127.0.0.1: Page.goto: net::ERR_TOO_MANY_REDIRECTS at http://127.0.0.1:14825/api/redirect-loop Call log: - navigating to \"http://...'); recovery attempts=2; last recovery error=''",
+      "evidence_ref": "test:TC-01-07",
+      "failure_reason": "A redirect-loop error left the browser racing its own error page, so the next open needed more than one attempt.",
+      "defect": "A redirect-loop error left the browser racing its own error page, so the next open needed more than one attempt."
+    },
+    {
+      "id": "TC-02-01",
+      "phase": 2,
+      "category": "Page Inspection",
+      "description": "Distinguish visible controls from hidden/zero-dimension elements",
+      "status": "PASS",
+      "duration_ms": 258.48,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Distinguish visible controls from hidden/zero-dimension elements"
+      ],
+      "expected_outcome": "Distinguish visible controls from hidden/zero-dimension elements",
+      "actual_outcome": "Hidden elements properly excluded from candidates",
+      "evidence": "Hidden elements properly excluded from candidates",
+      "evidence_ref": "test:TC-02-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-02-02",
+      "phase": 2,
+      "category": "Page Inspection",
+      "description": "Verify Unicode, Bangla and Emoji text inspection",
+      "status": "PASS",
+      "duration_ms": 281.58,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Verify Unicode, Bangla and Emoji text inspection"
+      ],
+      "expected_outcome": "Verify Unicode, Bangla and Emoji text inspection",
+      "actual_outcome": "Bangla sentence and emoji glyphs accurately extracted",
+      "evidence": "Bangla sentence and emoji glyphs accurately extracted",
+      "evidence_ref": "test:TC-02-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-02-03",
+      "phase": 2,
+      "category": "Page Inspection",
+      "description": "A read reports the viewport it read and moves with the page",
+      "status": "PASS",
+      "duration_ms": 178.66,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "A read reports the viewport it read and moves with the page"
+      ],
+      "expected_outcome": "A read reports the viewport it read and moves with the page",
+      "actual_outcome": "scroll.y 0 -> 2371; text changed=True; below-fold marker visible after scroll=True",
+      "evidence": "scroll.y 0 -> 2371; text changed=True; below-fold marker visible after scroll=True",
+      "evidence_ref": "test:TC-02-03",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-03-01",
+      "phase": 3,
+      "category": "Element Discovery",
+      "description": "Semantic locator ranking & ordinal disambiguation",
+      "status": "PASS",
+      "duration_ms": 332.61,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Semantic locator ranking & ordinal disambiguation"
+      ],
+      "expected_outcome": "Semantic locator ranking & ordinal disambiguation",
+      "actual_outcome": "Ordinal ranking resolved 'second Add to Cart' correctly",
+      "evidence": "Ordinal ranking resolved 'second Add to Cart' correctly",
+      "evidence_ref": "test:TC-03-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-03-02",
+      "phase": 3,
+      "category": "Element Discovery",
+      "description": "Discover SVG and unlabelled icon buttons via title and aria-label",
+      "status": "PASS",
+      "duration_ms": 291.67,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Discover SVG and unlabelled icon buttons via title and aria-label"
+      ],
+      "expected_outcome": "Discover SVG and unlabelled icon buttons via title and aria-label",
+      "actual_outcome": "SVG search button and refresh icon correctly located",
+      "evidence": "SVG search button and refresh icon correctly located",
+      "evidence_ref": "test:TC-03-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-03-03",
+      "phase": 3,
+      "category": "Element Discovery",
+      "description": "Resolve an input by its associated visible label",
+      "status": "FAIL",
+      "duration_ms": 36.71,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Resolve an input by its associated visible label"
+      ],
+      "expected_outcome": "Resolve an input by its associated visible label",
+      "actual_outcome": "Input value after label-based fill: ''; error: more than one thing on the page matches",
+      "evidence": "Input value after label-based fill: ''; error: more than one thing on the page matches",
+      "evidence_ref": "test:TC-03-03",
+      "failure_reason": "The visible label did not resolve to its associated textbox.",
+      "defect": "The visible label did not resolve to its associated textbox."
+    },
+    {
+      "id": "TC-03-04",
+      "phase": 3,
+      "category": "Element Discovery",
+      "description": "Resolve a text field by its placeholder and verify the typed value",
+      "status": "PASS",
+      "duration_ms": 351.39,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Resolve a text field by its placeholder and verify the typed value"
+      ],
+      "expected_outcome": "Resolve a text field by its placeholder and verify the typed value",
+      "actual_outcome": "find matched=True; fill attempted=True (''); field value='synthetic catalog query'",
+      "evidence": "find matched=True; fill attempted=True (''); field value='synthetic catalog query'",
+      "evidence_ref": "test:TC-03-04",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-03-05",
+      "phase": 3,
+      "category": "Element Discovery",
+      "description": "Refuse an ambiguous name instead of clicking an arbitrary match",
+      "status": "PASS",
+      "duration_ms": 318.45,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Refuse an ambiguous name instead of clicking an arbitrary match"
+      ],
+      "expected_outcome": "Refuse an ambiguous name instead of clicking an arbitrary match",
+      "actual_outcome": "refused=True ('more than one thing on the page matches'); page mutation unchanged=True",
+      "evidence": "refused=True ('more than one thing on the page matches'); page mutation unchanged=True",
+      "evidence_ref": "test:TC-03-05",
+      "failure_reason": "",
+      "defect": ""
+    }
+  ]
+}

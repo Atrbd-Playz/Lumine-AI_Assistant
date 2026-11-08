@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Cross-Origin Child Frame</title>
+</head>
+<body>
+  <h1>Cross-Origin Child</h1>
+  <button id="cross-origin-action">Cross-Origin Action</button>
+  <output id="cross-origin-status">child idle</output>
+  <script>
+    document.getElementById('cross-origin-action').addEventListener('click', () => {
+      document.getElementById('cross-origin-status').textContent = 'child clicked';
+    });
+  </script>
+</body>
+</html>

@@ -65,6 +65,7 @@ MAX_TEXT = MAX_PAGE_READ_CHARS
 MAX_CANDIDATES = locators.MAX_CANDIDATES
 MAX_TABS = 12
 MAX_PAGE_ITEMS = 20
+MAX_DOM_NODES_SCANNED = 5000
 
 #: How many controls one collection reports. Raised alongside `MAX_TEXT` for the
 #: same reason: 8 was a page's header, and a model asked to find "the second
@@ -154,6 +155,7 @@ class Snapshot:
     #: Empty for a page no entry claims, which is the honest state -- there is no
     #: schema to guess at.
     fields: dict[str, str] = field(default_factory=dict)
+    candidate_scan_truncated: bool = False
     observed_at: float = field(default_factory=time.time)
 
     def candidate_list(self) -> list[locators.Candidate]:
@@ -171,6 +173,8 @@ class Snapshot:
         }
         if self.fields:
             out["fields"] = dict(self.fields)
+        if self.candidate_scan_truncated:
+            out["candidateScanTruncated"] = True
         return out
 
 
@@ -419,13 +423,6 @@ _JS_COLLECT = """(generation) => {
 """ + _JS_VIEWPORT_FN + """
 """ + _JS_ITEM_CONTEXT_FN + """
 """ + _JS_PAGE_ITEMS_FN + """
-  // Stale markers from a previous collection are cleared first. Leaving them
-  // behind would mean an action that presents an old reference resolves against
-  // a node this run never looked at -- which is exactly the "clicked something
-  // else" failure the generation check exists to prevent.
-  for (const old of document.querySelectorAll('[data-lumine-ref]')) {
-    old.removeAttribute('data-lumine-ref');
-  }
   if (generation !== undefined && generation !== null && document.documentElement) {
     document.documentElement.setAttribute('data-lumine-gen', String(generation));
   }
@@ -435,9 +432,26 @@ _JS_COLLECT = """(generation) => {
     const style = window.getComputedStyle(el);
     return style.visibility !== 'hidden' && style.display !== 'none';
   };
-  const labelFor = (el) => {
+  const labelFor = (el, root) => {
+    const labelledBy = (el.getAttribute('aria-labelledby') || '')
+      .split(/\\s+/)
+      .map((id) => root.getElementById && root.getElementById(id))
+      .filter(Boolean)
+      .map((node) => (node.textContent || '').trim())
+      .filter(Boolean)
+      .join(' ');
+    if (labelledBy) return labelledBy.slice(0, 120);
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
+    // Native labels provide a better name than a placeholder, which often
+    // describes an example rather than the field's purpose.
+    if (el.id) {
+      const label = root.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (label && label.textContent) return label.textContent.trim().slice(0, 120);
+    }
+    const wrapper = el.closest('label');
+    if (wrapper && wrapper.textContent) return wrapper.textContent.trim().slice(0, 120);
     const parts = [
-      el.getAttribute('aria-label'),
       el.getAttribute('placeholder'),
       el.getAttribute('alt'),
       el.getAttribute('title')
@@ -445,16 +459,6 @@ _JS_COLLECT = """(generation) => {
     for (const part of parts) {
       if (part && part.trim()) return part.trim();
     }
-    // A <label for> whose target is this control. Before `name`, because a name
-    // is an implementation detail and a label is what a person would call it --
-    // YouTube's search box is `name="search_query"` with no aria-label, and a
-    // label check finds nothing, but a checkout input has both.
-    if (el.id) {
-      const label = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
-      if (label && label.textContent) return label.textContent.trim().slice(0, 120);
-    }
-    const wrapper = el.closest('label');
-    if (wrapper && wrapper.textContent) return wrapper.textContent.trim().slice(0, 120);
     // Only now the identifier-ish attributes. A placeholder-less input with
     // nothing else is addressable by `name`, which is better than not being
     // addressable at all.
@@ -514,17 +518,89 @@ _JS_COLLECT = """(generation) => {
     });
     return typed.length === 1 && typed[0] === el;
   };
+  // Walk the document and open shadow roots only. Closed roots and browser
+  // chrome are intentionally outside page-script access. The root cap prevents
+  // custom-element-heavy pages from turning an observation into an unbounded
+  // traversal.
+  const roots = [document];
+  let inspectedHosts = 0;
+  for (let cursor = 0; cursor < roots.length && roots.length < 100; cursor++) {
+    const walker = document.createTreeWalker(roots[cursor], NodeFilter.SHOW_ELEMENT);
+    let host = walker.nextNode();
+    while (host && inspectedHosts < 10000) {
+      inspectedHosts += 1;
+      if (host.shadowRoot) roots.push(host.shadowRoot);
+      if (roots.length >= 100) break;
+      host = walker.nextNode();
+    }
+    if (inspectedHosts >= 10000) break;
+  }
+  for (const root of roots) {
+    for (const old of root.querySelectorAll('[data-lumine-ref]')) {
+      old.removeAttribute('data-lumine-ref');
+    }
+  }
   const seen = new Set();
+  const viewportMainNodes = [];
+  const viewportOtherNodes = [];
+  const offscreenMainNodes = [];
+  const offscreenOtherNodes = [];
+  let scanned = 0;
+  let candidateScanTruncated = false;
+  const inViewport = (node) => {
+    const rect = node.getBoundingClientRect();
+    return rect.bottom > 0 && rect.top < window.innerHeight &&
+      rect.right > 0 && rect.left < window.innerWidth;
+  };
+  const inMainContent = (node) => {
+    for (let current = node; current;) {
+      if (current.closest && current.closest('main, [role="main"], article, [role="article"]')) {
+        return true;
+      }
+      const root = current.getRootNode && current.getRootNode();
+      current = root && root.host ? root.host : null;
+    }
+    return false;
+  };
+  collection:
+  for (const root of roots) {
+    for (const node of root.querySelectorAll(selectors.join(','))) {
+      if (seen.has(node)) continue;
+      seen.add(node);
+      scanned += 1;
+      if (visible(node)) {
+        const entry = {node: node, root: root};
+        const mainContent = inMainContent(node);
+        if (inViewport(node)) {
+          (mainContent ? viewportMainNodes : viewportOtherNodes).push(entry);
+        } else if (offscreenMainNodes.length + offscreenOtherNodes.length < 400) {
+          (mainContent ? offscreenMainNodes : offscreenOtherNodes).push(entry);
+        }
+      }
+      if (viewportMainNodes.length + viewportOtherNodes.length >= 400) {
+        candidateScanTruncated = true;
+        break collection;
+      }
+      if (scanned >= """ + str(MAX_DOM_NODES_SCANNED) + """) {
+        candidateScanTruncated = true;
+        break collection;
+      }
+    }
+  }
+  const nodes = viewportMainNodes.concat(
+    viewportOtherNodes,
+    offscreenMainNodes,
+    offscreenOtherNodes
+  ).slice(0, 400);
+  if (nodes.length >= 400) candidateScanTruncated = true;
   const out = [];
   let index = 0;
-  for (const node of document.querySelectorAll(selectors.join(','))) {
-    if (out.length >= 400) break;
-    if (seen.has(node)) continue;
-    seen.add(node);
-    if (!visible(node)) continue;
+  for (const entry of nodes) {
+    const node = entry.node;
+    const root = entry.root;
     const role = roleOf(node);
     index += 1;
-    const raw = labelFor(node);
+    const raw = labelFor(node, root);
     // A control with no name at all is still a control. The rule here used to be
     // `if (!name) continue`, so a page of icon buttons and unlabelled headings
     // reported *no controls at all* -- a state indistinguishable, to the model,
@@ -631,6 +707,7 @@ _JS_COLLECT = """(generation) => {
     scroll: scrollPosition(),
     ready: document.readyState,
     candidates: out,
+    candidateScanTruncated: candidateScanTruncated || nodes.length >= 400,
     items: pageItems()
   };
 }
@@ -934,7 +1011,10 @@ def candidates_from_script(payload: Any) -> list[locators.Candidate]:
                 detail=detail,
             )
         )
-        if len(out) >= MAX_CANDIDATES * 4:
+        # The in-page collector is already capped at 400. Keep that entire
+        # bounded set available to semantic queries; truncating here meant a
+        # visible control after the first 32 could never be found by name.
+        if len(out) >= 400:
             break
     return out
 
@@ -1025,6 +1105,7 @@ def snapshot_from_script(
         tab_count=_as_count(count),
         ready=str(data.get("ready") or "loading"),
         fields=fields_from_script(data),
+        candidate_scan_truncated=bool(data.get("candidateScanTruncated")),
     )
 
 

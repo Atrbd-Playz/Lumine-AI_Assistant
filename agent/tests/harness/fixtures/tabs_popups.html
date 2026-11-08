@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tabs, Windows & Popups Certification</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    .btn { padding: 8px 16px; margin: 6px; cursor: pointer; }
+    .status-panel { padding: 10px; background: #faf5ff; border: 1px solid #e9d8fd; margin-top: 15px; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <h1>Tabs, Windows & Popups Certification</h1>
+
+  <section>
+    <h3>Target="_blank" Links</h3>
+    <a href="/fixtures/static_elements.html" target="_blank" id="link-target-blank" class="btn">Open Static Elements in New Tab</a>
+    <a href="/fixtures/forms.html" target="_blank" id="link-blank-forms" class="btn">Open Forms in New Tab</a>
+  </section>
+
+  <section>
+    <h3>JavaScript window.open Popups</h3>
+    <button id="btn-open-popup" class="btn">Open Popup Window</button>
+    <button id="btn-open-popup-target" class="btn">Open Self-Closing Popup Target</button>
+  </section>
+
+  <section>
+    <h3>Multiple Tabs</h3>
+    <button id="btn-open-three-tabs" class="btn">Open Three Tabs</button>
+  </section>
+
+  <div id="tabs-status" class="status-panel">Awaiting tab / popup action</div>
+
+  <script>
+    document.getElementById('btn-open-popup').addEventListener('click', () => {
+      const popup = window.open('/fixtures/forms.html', 'CertificationPopup', 'width=500,height=600');
+      if (popup) {
+        document.getElementById('tabs-status').textContent = 'STATUS: popup_opened';
+      } else {
+        document.getElementById('tabs-status').textContent = 'STATUS: popup_blocked';
+      }
+    });
+
+    document.getElementById('btn-open-popup-target').addEventListener('click', () => {
+      const popup = window.open('/fixtures/popup_target.html', 'CertificationTarget', 'width=420,height=320');
+      document.getElementById('tabs-status').textContent = popup
+        ? 'STATUS: popup_target_opened'
+        : 'STATUS: popup_target_blocked';
+    });
+
+    document.getElementById('btn-open-three-tabs').addEventListener('click', () => {
+      window.open('/fixtures/static_elements.html', 'CertTabA');
+      window.open('/fixtures/forms.html', 'CertTabB');
+      window.open('/fixtures/complex_dom.html', 'CertTabC');
+      document.getElementById('tabs-status').textContent = 'STATUS: three_tabs_requested';
+    });
+  </script>
+</body>
+</html>

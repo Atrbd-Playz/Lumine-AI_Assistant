@@ -501,9 +501,32 @@ _JS_STALE = """
   if (gen !== String(expected)) return { ok: false, reason: 'stale' };
 """
 
+_JS_FIND_REF_FN = """
+  const findLumRef = (ref) => {
+    const selector = '[data-lumine-ref="' + CSS.escape(String(ref)) + '"]';
+    const roots = [document];
+    let inspected = 0;
+    for (let cursor = 0; cursor < roots.length && cursor < 100; cursor++) {
+      const root = roots[cursor];
+      const found = root.querySelector(selector);
+      if (found) return found;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let host = walker.nextNode();
+      while (host && inspected < 10000 && roots.length < 100) {
+        inspected += 1;
+        if (host.shadowRoot) roots.push(host.shadowRoot);
+        host = walker.nextNode();
+      }
+      if (inspected >= 10000) break;
+    }
+    return null;
+  };
+"""
+
 _JS_FACTS = """
 ([ref, expected]) => {
-  const el = document.querySelector('[data-lumine-ref="' + ref + '"]');
+""" + _JS_FIND_REF_FN + """
+  const el = findLumRef(ref);
   if (!el) return { found: false, url: location.href };
   if (!el.isConnected) return { found: false, url: location.href };
 """ + _JS_STALE + """
@@ -586,7 +609,8 @@ _JS_PLAYABILITY = """
 
 _JS_CLICK = """
 ([ref, sig, expected]) => {
-  const el = document.querySelector('[data-lumine-ref="' + ref + '"]');
+""" + _JS_FIND_REF_FN + """
+  const el = findLumRef(ref);
   if (!el) return { ok: false, reason: 'gone' };
 """ + _JS_STALE + """
   const tag = el.tagName.toLowerCase();
@@ -609,7 +633,8 @@ _JS_CLICK = """
 
 _JS_FILL = """
 ([ref, value, expected]) => {
-  const el = document.querySelector('[data-lumine-ref="' + ref + '"]');
+""" + _JS_FIND_REF_FN + """
+  const el = findLumRef(ref);
   if (!el) return { ok: false, reason: 'gone' };
 """ + _JS_STALE + """
   const tag = el.tagName.toLowerCase();
@@ -646,7 +671,8 @@ _JS_FILL = """
 
 _JS_SELECT = """
 ([ref, sig, wanted, expected]) => {
-  const el = document.querySelector('[data-lumine-ref="' + ref + '"]');
+""" + _JS_FIND_REF_FN + """
+  const el = findLumRef(ref);
   if (!el) return { ok: false, reason: 'gone' };
 """ + _JS_STALE + """
   const tag = el.tagName.toLowerCase();
@@ -3457,6 +3483,7 @@ class _Browser:
             "ready": str(raw.get("ready") or "loading"),
             "controls": controls,
             "items": [item.to_dict() for item in items],
+            "candidateScanTruncated": bool(raw.get("candidateScanTruncated")),
         }
         # Every video the page just showed us is an id worth remembering. A
         # results page is the only place this happens, which is why it has to be

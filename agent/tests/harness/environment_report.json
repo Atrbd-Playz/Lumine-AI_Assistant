@@ -1,0 +1,125 @@
+{
+  "generated_at": "2026-11-06T09:59:33+0600",
+  "python": {
+    "executable": "G:\\Project\\Lumine-AI_Assistant\\.venv\\Scripts\\python.exe",
+    "version": "3.14.0 (tags/v3.14.0:ebf955d, Oct  7 2025, 10:15:03) [MSC v.1944 64 bit (AMD64)]",
+    "implementation": "CPython",
+    "architecture": "AMD64",
+    "in_virtualenv": true,
+    "pip": "26.2.1"
+  },
+  "platform": {
+    "system": "Windows",
+    "release": "11",
+    "version": "10.0.26300"
+  },
+  "packages": {
+    "playwright": "1.63.0",
+    "greenlet": "3.5.6",
+    "pyee": "13.0.1",
+    "httpx": "0.28.1",
+    "beautifulsoup4": "4.15.0",
+    "pyyaml": "6.0.3",
+    "livekit-agents": "1.8.3",
+    "livekit": "1.1.18"
+  },
+  "browsers": [
+    {
+      "name": "b",
+      "bytes": 50590
+    },
+    {
+      "name": "chromium-1243",
+      "bytes": 452902880
+    },
+    {
+      "name": "chromium-1248",
+      "bytes": 457625672
+    },
+    {
+      "name": "chromium_headless_shell-1243",
+      "bytes": 283219090
+    },
+    {
+      "name": "chromium_headless_shell-1248",
+      "bytes": 290917901
+    },
+    {
+      "name": "ffmpeg-1011",
+      "bytes": 3517342
+    },
+    {
+      "name": "ffmpeg-1013",
+      "bytes": 4025246
+    },
+    {
+      "name": "winldd-1007",
+      "bytes": 258560
+    }
+  ],
+  "launch_probe": {
+    "ok": true,
+    "browser_version": "153.0.8010.12",
+    "title": "env-probe",
+    "text": "probe",
+    "cdp": {
+      "protocolVersion": "1.3",
+      "product": "HeadlessChrome/153.0.8010.12",
+      "revision": "@971a7443b0c9b0a9b2860529b33331b76077ec62",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.12 Safari/537.36",
+      "jsVersion": "15.3.76.4"
+    },
+    "duration_ms": 5859.42
+  },
+  "lockfiles": [
+    {
+      "path": "agent\\requirements.txt",
+      "bytes": 1310,
+      "sha256": "093ccd9ca53d32f0a4cdb8eed30018805a2b47bc5dda00f85e880b7f1f61b098"
+    },
+    {
+      "path": "package.json",
+      "bytes": 60,
+      "sha256": "b488ae5b08d59242dc11fcc8ca055817cd70b4518912d95fe66103afce6b96d7"
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 5854,
+      "sha256": "13e9afc98e3089618580e359460c7cd00cd8ae41df68516e995ecbfe4cbdeb96"
+    },
+    {
+      "path": "lumine-ui\\package.json",
+      "bytes": 2450,
+      "sha256": "50fe00cf5909e23ca5f7074b2863fb4a329d9793dfccc7e9e71102fcd3bcb963"
+    },
+    {
+      "path": "lumine-ui\\package-lock.json",
+      "bytes": 253274,
+      "sha256": "c6d0a2b72579664b64a3ba0d4267bebc1b6082283379fe2796932c5ac46f3382"
+    },
+    {
+      "path": "lumine-ui\\src-tauri\\Cargo.toml",
+      "bytes": 1790,
+      "sha256": "5de90713ab5c002a0b4d7cfdee36ba4b47fb74702cbedd276fade2a13f9a54ae"
+    },
+    {
+      "path": "lumine-ui\\src-tauri\\Cargo.lock",
+      "bytes": 132874,
+      "sha256": "a4748778f1693889f372992e2d3ea81d11d823ccabb90039f7bf883917498afa"
+    }
+  ],
+  "git": {
+    "branch": "beta",
+    "commit": "e36860a32acd89f7c3e750846d79f55aa7ce6e90",
+    "dirty_entries": 3
+  },
+  "test_environment": {
+    "LUMINE_BROWSER_HEADLESS": "",
+    "LUMINE_BROWSER_ALLOW_LOCAL": "",
+    "LUMINE_BROWSER_PROFILE": "",
+    "LUMINE_BROWSER_ENGINE": "",
+    "PLAYWRIGHT_BROWSERS_PATH": "",
+    "PYTHONPATH": ""
+  },
+  "modifications_made": []
+}

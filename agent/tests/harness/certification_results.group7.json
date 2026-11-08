@@ -1,0 +1,182 @@
+{
+  "campaign": "Lumine browser control certification",
+  "label": "group 7 (phases 18-19)",
+  "generated_at": "2026-11-06T13:00:07",
+  "tests_run": 3,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "recorded_tests": 3,
+  "elapsed_seconds": 10.39,
+  "status_counts": {
+    "PASS": 3
+  },
+  "failed_capabilities": 0,
+  "capability_matrix": [
+    {
+      "phase": 18,
+      "category": "Stability",
+      "classification": {
+        "PASS": 2
+      },
+      "capabilities": [
+        {
+          "id": "TC-18-01",
+          "capability": "Repeated cross-fixture navigation and observation cycles",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "3 consecutive dual-page cycles completed without process leak or error",
+          "defect": ""
+        },
+        {
+          "id": "TC-18-02",
+          "capability": "Repeated tab open/close returns to the same registry size",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "cycles completed=5/5; tabs 2 -> 2; errors=[]; page still usable=True",
+          "defect": ""
+        }
+      ],
+      "status": "PASS"
+    },
+    {
+      "phase": 19,
+      "category": "Real-World Compatibility",
+      "classification": {
+        "PASS": 1
+      },
+      "capabilities": [
+        {
+          "id": "TC-19-01",
+          "capability": "Open and read two unauthenticated public websites",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "pages read=['https://example.com: read=True; fenced=True', 'https://www.wikipedia.org: read=True; fenced=True']; failures=[]",
+          "defect": ""
+        }
+      ],
+      "status": "PASS"
+    }
+  ],
+  "scope_gaps": [
+    {
+      "capability": "Authenticated account behaviour",
+      "status": "NOT_TESTED",
+      "reason": "Only the public, signed-out surface was exercised; no account was used."
+    },
+    {
+      "capability": "Real consent round-trip (ask, speak, answer, act)",
+      "status": "NOT_TESTED",
+      "reason": "Local fixtures stub `require_approval`; the gate's class is measured, the spoken consent path is not."
+    },
+    {
+      "capability": "Browser crash and restart recovery",
+      "status": "NOT_TESTED",
+      "reason": "No browser process was deliberately crashed."
+    },
+    {
+      "capability": "Long-duration soak and resource growth",
+      "status": "NOT_TESTED",
+      "reason": "Stability is a bounded repeated-cycle sample, not an hours-long soak."
+    },
+    {
+      "capability": "Model interpretation of screenshots",
+      "status": "NOT_TESTED",
+      "reason": "Capture, format and bounds are measured; what a vision model makes of them is not."
+    },
+    {
+      "capability": "Cross-platform behaviour (macOS/Linux)",
+      "status": "NOT_TESTED",
+      "reason": "This run used the current Windows machine only."
+    },
+    {
+      "capability": "File upload capability",
+      "status": "UNSUPPORTED",
+      "reason": "No `set_input_files`/file-chooser path exists in either tool."
+    },
+    {
+      "capability": "Open Shadow DOM controls",
+      "status": "UNSUPPORTED",
+      "reason": "The collector does not pierce shadow roots; verified rather than assumed."
+    },
+    {
+      "capability": "Same- or cross-origin iframe action by semantic locator",
+      "status": "UNSUPPORTED",
+      "reason": "Frames are resolved by the driver but not by the candidate collector."
+    }
+  ],
+  "environment": {
+    "profile": "Lumine's own persistent profile (LUMINE_CERT_PROFILE overrides)",
+    "headless": "0",
+    "allow_local": "1",
+    "python": "3.14.0"
+  },
+  "details": [
+    {
+      "id": "TC-18-01",
+      "phase": 18,
+      "category": "Stability & Stress",
+      "description": "Repeated cross-fixture navigation and observation cycles",
+      "status": "PASS",
+      "duration_ms": 4061.09,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Repeated cross-fixture navigation and observation cycles"
+      ],
+      "expected_outcome": "Repeated cross-fixture navigation and observation cycles",
+      "actual_outcome": "3 consecutive dual-page cycles completed without process leak or error",
+      "evidence": "3 consecutive dual-page cycles completed without process leak or error",
+      "evidence_ref": "test:TC-18-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-18-02",
+      "phase": 18,
+      "category": "Stability",
+      "description": "Repeated tab open/close returns to the same registry size",
+      "status": "PASS",
+      "duration_ms": 1719.33,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Repeated tab open/close returns to the same registry size"
+      ],
+      "expected_outcome": "Repeated tab open/close returns to the same registry size",
+      "actual_outcome": "cycles completed=5/5; tabs 2 -> 2; errors=[]; page still usable=True",
+      "evidence": "cycles completed=5/5; tabs 2 -> 2; errors=[]; page still usable=True",
+      "evidence_ref": "test:TC-18-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-19-01",
+      "phase": 19,
+      "category": "Real-World Compatibility",
+      "description": "Open and read two unauthenticated public websites",
+      "status": "PASS",
+      "duration_ms": 1843.24,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Open and read two unauthenticated public websites"
+      ],
+      "expected_outcome": "Open and read two unauthenticated public websites",
+      "actual_outcome": "pages read=['https://example.com: read=True; fenced=True', 'https://www.wikipedia.org: read=True; fenced=True']; failures=[]",
+      "evidence": "pages read=['https://example.com: read=True; fenced=True', 'https://www.wikipedia.org: read=True; fenced=True']; failures=[]",
+      "evidence_ref": "test:TC-19-01",
+      "failure_reason": "",
+      "defect": ""
+    }
+  ]
+}

@@ -1,0 +1,316 @@
+{
+  "campaign": "Lumine browser control certification",
+  "label": "group 4 (phases 10-12)",
+  "generated_at": "2026-11-06T12:52:46",
+  "tests_run": 7,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "recorded_tests": 7,
+  "elapsed_seconds": 11.05,
+  "status_counts": {
+    "UNSUPPORTED": 3,
+    "PASS": 3,
+    "INTENTIONALLY_REFUSED": 1
+  },
+  "failed_capabilities": 0,
+  "capability_matrix": [
+    {
+      "phase": 10,
+      "category": "Dialogs & Permissions",
+      "classification": {
+        "UNSUPPORTED": 2,
+        "PASS": 1
+      },
+      "capabilities": [
+        {
+          "id": "TC-10-01",
+          "capability": "Native dialog handling (Unobserved Dialog Architecture)",
+          "status": "UNSUPPORTED",
+          "classification": "not implemented",
+          "evidence": "Alert was auto-dismissed by driver without Lumine observing or recording message",
+          "defect": "No dialog listener registered in session.py to capture or reply to prompts"
+        },
+        {
+          "id": "TC-10-02",
+          "capability": "Read and dismiss an in-page modal overlay",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Named dialog was found and its close action removed the overlay.",
+          "defect": ""
+        },
+        {
+          "id": "TC-10-03",
+          "capability": "Native confirm/prompt answers and beforeunload navigation",
+          "status": "UNSUPPORTED",
+          "classification": "not implemented",
+          "evidence": "confirm='STATUS: confirm_result_false'; prompt='STATUS: prompt_result_null'; navigation through beforeunload=True",
+          "defect": "The dialog was dismissed by the driver's default (cancel/null) and never observed or answered by Lumine; beforeunload does not block navigation."
+        }
+      ],
+      "status": "PARTIAL"
+    },
+    {
+      "phase": 11,
+      "category": "Downloads & Uploads",
+      "classification": {
+        "INTENTIONALLY_REFUSED": 1,
+        "UNSUPPORTED": 1
+      },
+      "capabilities": [
+        {
+          "id": "TC-11-01",
+          "capability": "Download interception and deletion by design",
+          "status": "INTENTIONALLY_REFUSED",
+          "classification": "intentionally blocked by policy",
+          "evidence": "_refuse_download event handler canceled and deleted download file",
+          "defect": ""
+        },
+        {
+          "id": "TC-11-02",
+          "capability": "File upload capability absence",
+          "status": "UNSUPPORTED",
+          "classification": "not implemented",
+          "evidence": "File inputs cannot be set via web_control or browse",
+          "defect": "set_input_files / file_chooser is not implemented in any browser module"
+        }
+      ],
+      "status": "PARTIAL"
+    },
+    {
+      "phase": 12,
+      "category": "Screenshots & Vision",
+      "classification": {
+        "PASS": 2
+      },
+      "capabilities": [
+        {
+          "id": "TC-12-01",
+          "capability": "Capture viewport screenshot with JPEG downscaling & PNG",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "Preview: 46118 bytes JPEG; Full: 38848 bytes PNG",
+          "defect": ""
+        },
+        {
+          "id": "TC-12-02",
+          "capability": "The captured image reflects the page, and the preview is bounded",
+          "status": "PASS",
+          "classification": "implemented and verified",
+          "evidence": "two pages produced different bytes=True; preview=37311 B JPEG=True; full=38848 B PNG=True; preview under cap=True; preview smaller=True",
+          "defect": ""
+        }
+      ],
+      "status": "PASS"
+    }
+  ],
+  "scope_gaps": [
+    {
+      "capability": "Authenticated account behaviour",
+      "status": "NOT_TESTED",
+      "reason": "Only the public, signed-out surface was exercised; no account was used."
+    },
+    {
+      "capability": "Real consent round-trip (ask, speak, answer, act)",
+      "status": "NOT_TESTED",
+      "reason": "Local fixtures stub `require_approval`; the gate's class is measured, the spoken consent path is not."
+    },
+    {
+      "capability": "Browser crash and restart recovery",
+      "status": "NOT_TESTED",
+      "reason": "No browser process was deliberately crashed."
+    },
+    {
+      "capability": "Long-duration soak and resource growth",
+      "status": "NOT_TESTED",
+      "reason": "Stability is a bounded repeated-cycle sample, not an hours-long soak."
+    },
+    {
+      "capability": "Model interpretation of screenshots",
+      "status": "NOT_TESTED",
+      "reason": "Capture, format and bounds are measured; what a vision model makes of them is not."
+    },
+    {
+      "capability": "Cross-platform behaviour (macOS/Linux)",
+      "status": "NOT_TESTED",
+      "reason": "This run used the current Windows machine only."
+    },
+    {
+      "capability": "File upload capability",
+      "status": "UNSUPPORTED",
+      "reason": "No `set_input_files`/file-chooser path exists in either tool."
+    },
+    {
+      "capability": "Open Shadow DOM controls",
+      "status": "UNSUPPORTED",
+      "reason": "The collector does not pierce shadow roots; verified rather than assumed."
+    },
+    {
+      "capability": "Same- or cross-origin iframe action by semantic locator",
+      "status": "UNSUPPORTED",
+      "reason": "Frames are resolved by the driver but not by the candidate collector."
+    }
+  ],
+  "environment": {
+    "profile": "Lumine's own persistent profile (LUMINE_CERT_PROFILE overrides)",
+    "headless": "0",
+    "allow_local": "1",
+    "python": "3.14.0"
+  },
+  "details": [
+    {
+      "id": "TC-10-01",
+      "phase": 10,
+      "category": "Dialogs & Permissions",
+      "description": "Native dialog handling (Unobserved Dialog Architecture)",
+      "status": "UNSUPPORTED",
+      "duration_ms": 3423.2,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Native dialog handling (Unobserved Dialog Architecture)"
+      ],
+      "expected_outcome": "Native dialog handling (Unobserved Dialog Architecture)",
+      "actual_outcome": "Alert was auto-dismissed by driver without Lumine observing or recording message",
+      "evidence": "Alert was auto-dismissed by driver without Lumine observing or recording message",
+      "evidence_ref": "test:TC-10-01",
+      "failure_reason": "No dialog listener registered in session.py to capture or reply to prompts",
+      "defect": "No dialog listener registered in session.py to capture or reply to prompts"
+    },
+    {
+      "id": "TC-10-02",
+      "phase": 10,
+      "category": "Dialogs & Permissions",
+      "description": "Read and dismiss an in-page modal overlay",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Read and dismiss an in-page modal overlay"
+      ],
+      "expected_outcome": "Read and dismiss an in-page modal overlay",
+      "actual_outcome": "Named dialog was found and its close action removed the overlay.",
+      "evidence": "Named dialog was found and its close action removed the overlay.",
+      "evidence_ref": "test:TC-10-02",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-10-03",
+      "phase": 10,
+      "category": "Dialogs & Permissions",
+      "description": "Native confirm/prompt answers and beforeunload navigation",
+      "status": "UNSUPPORTED",
+      "duration_ms": 621.32,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Native confirm/prompt answers and beforeunload navigation"
+      ],
+      "expected_outcome": "Native confirm/prompt answers and beforeunload navigation",
+      "actual_outcome": "confirm='STATUS: confirm_result_false'; prompt='STATUS: prompt_result_null'; navigation through beforeunload=True",
+      "evidence": "confirm='STATUS: confirm_result_false'; prompt='STATUS: prompt_result_null'; navigation through beforeunload=True",
+      "evidence_ref": "test:TC-10-03",
+      "failure_reason": "The dialog was dismissed by the driver's default (cancel/null) and never observed or answered by Lumine; beforeunload does not block navigation.",
+      "defect": "The dialog was dismissed by the driver's default (cancel/null) and never observed or answered by Lumine; beforeunload does not block navigation."
+    },
+    {
+      "id": "TC-11-01",
+      "phase": 11,
+      "category": "Downloads & Uploads",
+      "description": "Download interception and deletion by design",
+      "status": "INTENTIONALLY_REFUSED",
+      "duration_ms": 458.55,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Download interception and deletion by design"
+      ],
+      "expected_outcome": "Download interception and deletion by design",
+      "actual_outcome": "_refuse_download event handler canceled and deleted download file",
+      "evidence": "_refuse_download event handler canceled and deleted download file",
+      "evidence_ref": "test:TC-11-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-11-02",
+      "phase": 11,
+      "category": "Downloads & Uploads",
+      "description": "File upload capability absence",
+      "status": "UNSUPPORTED",
+      "duration_ms": 280.84,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "File upload capability absence"
+      ],
+      "expected_outcome": "File upload capability absence",
+      "actual_outcome": "File inputs cannot be set via web_control or browse",
+      "evidence": "File inputs cannot be set via web_control or browse",
+      "evidence_ref": "test:TC-11-02",
+      "failure_reason": "set_input_files / file_chooser is not implemented in any browser module",
+      "defect": "set_input_files / file_chooser is not implemented in any browser module"
+    },
+    {
+      "id": "TC-12-01",
+      "phase": 12,
+      "category": "Screenshots & Vision",
+      "description": "Capture viewport screenshot with JPEG downscaling & PNG",
+      "status": "PASS",
+      "duration_ms": 533.33,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "Capture viewport screenshot with JPEG downscaling & PNG"
+      ],
+      "expected_outcome": "Capture viewport screenshot with JPEG downscaling & PNG",
+      "actual_outcome": "Preview: 46118 bytes JPEG; Full: 38848 bytes PNG",
+      "evidence": "Preview: 46118 bytes JPEG; Full: 38848 bytes PNG",
+      "evidence_ref": "test:TC-12-01",
+      "failure_reason": "",
+      "defect": ""
+    },
+    {
+      "id": "TC-12-02",
+      "phase": 12,
+      "category": "Screenshots & Vision",
+      "description": "The captured image reflects the page, and the preview is bounded",
+      "status": "PASS",
+      "duration_ms": 794.65,
+      "preconditions": [
+        "Lumine's own persistent browser profile, with a visible window",
+        "Local certification fixture server (plus a second origin)",
+        "Approval stub enabled for test-only interactions"
+      ],
+      "steps": [
+        "The captured image reflects the page, and the preview is bounded"
+      ],
+      "expected_outcome": "The captured image reflects the page, and the preview is bounded",
+      "actual_outcome": "two pages produced different bytes=True; preview=37311 B JPEG=True; full=38848 B PNG=True; preview under cap=True; preview smaller=True",
+      "evidence": "two pages produced different bytes=True; preview=37311 B JPEG=True; full=38848 B PNG=True; preview under cap=True; preview smaller=True",
+      "evidence_ref": "test:TC-12-02",
+      "failure_reason": "",
+      "defect": ""
+    }
+  ]
+}
